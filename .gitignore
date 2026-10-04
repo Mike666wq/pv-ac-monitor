@@ -1,0 +1,35 @@
+# Publish only source, build inputs and the user-facing README.
+# Local data, credentials, developer notes and validation evidence stay local.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/*.cs
+!/build-source.ps1
+!/protocol.json
+!/ExperimentMonitorDemo.exe.config
+!/ExperimentMonitorDemo.manifest
+!/System.Data.SQLite.dll
+!/x64/
+!/x86/
+/x64/*
+/x86/*
+!/x64/SQLite.Interop.dll
+!/x86/SQLite.Interop.dll
+
+# Defensive exclusions for runtime data and editor/build artifacts.
+**/data/
+**/logs/
+**/settings/
+**/cloud-settings.json
+**/settings.json
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite-*
+**/*.log
+**/*.pdb
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/

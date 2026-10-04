@@ -1,0 +1,68 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Globalization;
+using System.Linq;
+using System.Windows.Forms;
+using DrawingPoint=System.Drawing.Point;
+
+namespace ExperimentMonitor {
+    public sealed class ChartSample {
+        public DateTime Utc { get; set; }
+        public double? Value { get; set; }
+        public string Quality { get; set; }
+    }
+
+    /// <summary>Shared realtime and history chart. Stores exact samples supplied by caller; drawing never mutates values.</summary>
+    public sealed class ExperimentChart : Control {
+        readonly Dictionary<string,List<ChartSample>> data=new Dictionary<string,List<ChartSample>>();
+        readonly Dictionary<string,bool> visible=new Dictionary<string,bool>();
+        readonly Color[] colors={Color.FromArgb(54,112,220),Color.FromArgb(0,153,132),Color.FromArgb(232,145,38),Color.FromArgb(167,78,184),Color.FromArgb(220,80,90),Color.FromArgb(48,155,196),Color.FromArgb(130,142,50),Color.FromArgb(181,118,27)};
+        readonly ToolTip tooltip=new ToolTip { InitialDelay=0,ReshowDelay=0,AutoPopDelay=12000,ShowAlways=true };
+        string[] selected=new string[0]; bool fixedRange,dragging; DateTime rangeStart,rangeEnd,dragStartTime; DrawingPoint dragStart; int WindowMinutes=30; bool followLatest=true; readonly List<Rectangle> plotRects=new List<Rectangle>();
+        public event Action<string,bool> LegendVisibilityChanged;
+        public event Action<string,DateTime> ExactSampleRequested;
+        public bool RequestExactSamples { get; set; }
+        public int RequiredHeight { get { return Math.Max(210,selected.Select(n=>PointCatalog.Get(n).Unit??"").Distinct().Count()*205); } }
+        public ExperimentChart() { DoubleBuffered=true;BackColor=Color.White;Font=new Font("Microsoft YaHei UI",9);MinimumSize=new Size(280,170);SetStyle(ControlStyles.ResizeRedraw|ControlStyles.OptimizedDoubleBuffer,true); }
+        public void SelectPoints(IEnumerable<string> names) { selected=(names??Enumerable.Empty<string>()).Distinct().ToArray();foreach(string n in selected)if(!visible.ContainsKey(n))visible[n]=true;Invalidate(); }
+        public void Clear() { data.Clear();exactSamples.Clear();exactTargets.Clear();fixedRange=false;Invalidate(); }
+        public void SetWindowMinutes(int minutes) { WindowMinutes=Math.Max(1,minutes);followLatest=true;fixedRange=false;Invalidate(); }
+        public void SetTimeRange(DateTime fromUtc,DateTime toUtc,bool follow) { if(toUtc<=fromUtc)throw new ArgumentException("趋势结束时间必须晚于开始时间");rangeStart=fromUtc.ToUniversalTime();rangeEnd=toUtc.ToUniversalTime();followLatest=follow;fixedRange=!follow;Invalidate(); }
+        public void SetSeriesData(IDictionary<string,IEnumerable<ChartSample>> series) { data.Clear();exactSamples.Clear();exactTargets.Clear();if(series!=null)foreach(var pair in series)data[pair.Key]=(pair.Value??Enumerable.Empty<ChartSample>()).OrderBy(x=>x.Utc).ToList();if(rangeEnd>rangeStart)fixedRange=true;Invalidate(); }
+        public void Add(Observation o) { if(o==null)return;List<ChartSample> list;if(!data.TryGetValue(o.Point,out list)){list=new List<ChartSample>();data[o.Point]=list;}list.Add(new ChartSample{Utc=o.Utc.ToUniversalTime(),Value=o.Quality=="good"?o.Number:null,Quality=o.Quality});if(list.Count>12000)list.RemoveRange(0,list.Count-12000);if(followLatest&&!fixedRange)Invalidate(); }
+        Rectangle PlotAt(DrawingPoint p) { foreach(Rectangle rect in plotRects)if(rect.Contains(p))return rect;return Rectangle.Empty; }
+        protected override void OnMouseWheel(MouseEventArgs e) { Rectangle rect=PlotAt(e.Location);if(rect.Width<1){base.OnMouseWheel(e);return;}DateTime a,b;GetRange(out a,out b);double old=(b-a).TotalSeconds;double next=Math.Max(10,Math.Min(86400*90,old*(e.Delta>0?.75:1.33)));double left=Math.Max(0,Math.Min(1,(double)(e.X-rect.Left)/rect.Width));rangeStart=a.AddSeconds((old-next)*left);rangeEnd=rangeStart.AddSeconds(next);fixedRange=true;followLatest=false;Invalidate();base.OnMouseWheel(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { Rectangle rect=PlotAt(e.Location);if(e.Button==MouseButtons.Left&&rect.Width>0){dragging=true;dragStart=e.Location;GetRange(out rangeStart,out rangeEnd);dragStartTime=rangeStart;dragPlot=rect;Capture=true;}base.OnMouseDown(e); }
+        Rectangle dragPlot;
+        protected override void OnMouseMove(MouseEventArgs e) { if(dragging){double seconds=(rangeEnd-rangeStart).TotalSeconds;double shift=-(e.X-dragStart.X)*seconds/Math.Max(1,dragPlot.Width);rangeStart=dragStartTime.AddSeconds(shift);rangeEnd=rangeStart.AddSeconds(seconds);fixedRange=true;followLatest=false;Invalidate();}else{lastPointer=e.Location;ShowNearest(e.Location);RequestExactAt(e.Location);}base.OnMouseMove(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { if(dragging){dragging=false;Capture=false;}base.OnMouseUp(e); }
+        protected override void OnDoubleClick(EventArgs e) { followLatest=true;fixedRange=false;Invalidate();base.OnDoubleClick(e); }
+        string hoveredId;DateTime hoveredTarget,lastExactRequest;DrawingPoint lastPointer;readonly Dictionary<string,ChartSample> exactSamples=new Dictionary<string,ChartSample>();readonly Dictionary<string,DateTime> exactTargets=new Dictionary<string,DateTime>();
+        public void SetExactSample(string point,ChartSample sample,DateTime target){if(point!=hoveredId||Math.Abs((target.ToUniversalTime()-hoveredTarget).TotalSeconds)>2)return;exactSamples[point]=sample;exactTargets[point]=target.ToUniversalTime();ShowNearest(lastPointer);}
+        void RequestExactAt(DrawingPoint p){if(!RequestExactSamples)return;Rectangle rect=PlotAt(p);if(rect.Width==0)return;DateTime a,b;GetRange(out a,out b);DateTime target=a.AddSeconds((double)(p.X-rect.Left)/Math.Max(1,rect.Width)*(b-a).TotalSeconds);string unit=UnitForRect(rect),best=null;double bestDistance=double.MaxValue;foreach(string id in selected){if((PointCatalog.Get(id).Unit??"")!=unit)continue;List<ChartSample> values;if(!data.TryGetValue(id,out values))continue;ChartSample nearest=values.Where(x=>x.Value.HasValue).OrderBy(x=>Math.Abs((x.Utc-target).TotalSeconds)).FirstOrDefault();if(nearest!=null){double distance=Math.Abs((nearest.Utc-target).TotalSeconds);if(distance<bestDistance){best=id;bestDistance=distance;}}}if(best==null)return;if(lastExactRequest!=DateTime.MinValue&&(DateTime.UtcNow-lastExactRequest).TotalMilliseconds<650&&hoveredId==best&&Math.Abs((target-hoveredTarget).TotalSeconds)<3)return;hoveredId=best;hoveredTarget=target;lastExactRequest=DateTime.UtcNow;Action<string,DateTime> handler=ExactSampleRequested;if(handler!=null)handler(best,target);}
+        void ShowNearest(DrawingPoint p) { Rectangle rect=PlotAt(p);if(rect.Width==0){tooltip.Hide(this);return;}DateTime a,b;GetRange(out a,out b);ChartSample best=null;string bestId=null;double dist=double.MaxValue;foreach(string id in selected){if((PointCatalog.Get(id).Unit??"")!=UnitForRect(rect))continue;bool shown;if(visible.TryGetValue(id,out shown)&&!shown)continue;List<ChartSample> list;if(!data.TryGetValue(id,out list))continue;foreach(ChartSample sample in list){double x=rect.Left+(sample.Utc-a).TotalSeconds/Math.Max(.001,(b-a).TotalSeconds)*rect.Width;double d=Math.Abs(x-p.X);if(d<dist&&d<16){dist=d;best=sample;bestId=id;}}}if(best==null){tooltip.Hide(this);return;}ChartSample exact;DateTime exactTarget;if(RequestExactSamples&&bestId==hoveredId&&exactSamples.TryGetValue(bestId,out exact)&&exactTargets.TryGetValue(bestId,out exactTarget)&&Math.Abs((exactTarget-hoveredTarget).TotalSeconds)<=2&&Math.Abs((exact.Utc-hoveredTarget).TotalSeconds)<Math.Max(30,WindowMinutes*60.0/Math.Max(1,rect.Width)*16))best=exact;string value=best.Value.HasValue?best.Value.Value.ToString("G9",CultureInfo.InvariantCulture):"无有效数值（"+(best.Quality??"缺失")+")";tooltip.Show(PointCatalog.Get(bestId).Label+" · "+bestId+"\r\n"+best.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture)+"\r\n"+value+" "+PointCatalog.Get(bestId).Unit,this,new DrawingPoint(p.X+14,p.Y+18),5000); }
+        readonly Dictionary<Rectangle,string> axisUnits=new Dictionary<Rectangle,string>();
+        string UnitForRect(Rectangle rect){string unit;return axisUnits.TryGetValue(rect,out unit)?unit:"";}
+        void GetRange(out DateTime from,out DateTime to) { if(fixedRange){from=rangeStart;to=rangeEnd;return;}var all=selected.Where(data.ContainsKey).SelectMany(n=>data[n]).ToArray();if(all.Length==0){to=DateTime.UtcNow;from=to.AddMinutes(-WindowMinutes);return;}to=all.Max(x=>x.Utc);DateTime earliest=all.Min(x=>x.Utc);from=to.AddMinutes(-WindowMinutes);if(earliest>from)from=earliest;if(from==to)from=to.AddSeconds(-Math.Max(1,WindowMinutes*60)); }
+        protected override void OnPaint(PaintEventArgs e) {
+            base.OnPaint(e);legendHits.Clear();plotRects.Clear();axisUnits.Clear();Graphics g=e.Graphics;g.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;g.Clear(BackColor);
+            string[] names=selected.Where(data.ContainsKey).ToArray();if(names.Length==0){TextRenderer.DrawText(g,"选择测点后查看趋势；故障和缺失数据会保留断点。滚轮缩放，拖动平移，双击回到最新。",Font,ClientRectangle,UiTheme.Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.WordBreak);return;}
+            var groups=names.GroupBy(n=>PointCatalog.Get(n).Unit??"").ToArray();int h=Math.Max(190,(Height-8)/Math.Max(1,groups.Length));DateTime fromUtc,toUtc;GetRange(out fromUtc,out toUtc);double totalSeconds=Math.Max(0.001,(toUtc-fromUtc).TotalSeconds);
+            for(int axis=0;axis<groups.Length;axis++) {
+                string[] group=groups[axis].ToArray();int top=axis*h;int available=Math.Max(100,Width-200),legendX=10,legendY=top+4,legendHeight=24;
+                for(int i=0;i<group.Length;i++){string id=group[i];bool show;if(!visible.TryGetValue(id,out show)){show=true;visible[id]=true;}Color c=colors[Array.IndexOf(selected,id)%colors.Length];string text=PointCatalog.Get(id).Label+" "+id;Size measured=TextRenderer.MeasureText(text,Font,new Size(Math.Max(90,available-24),24),TextFormatFlags.NoPadding|TextFormatFlags.SingleLine);int itemWidth=Math.Min(available,measured.Width+24);if(legendX>10&&legendX+itemWidth>Width-175){legendX=10;legendY+=24;legendHeight+=24;}using(var pen=new Pen(c,2))g.DrawLine(pen,legendX,legendY+12,legendX+13,legendY+12);Rectangle hit=new Rectangle(legendX+17,legendY,itemWidth-17,22);TextRenderer.DrawText(g,text,Font,hit,show?UiTheme.Ink:Color.Gray,TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPadding);legendHits[id]=new Rectangle(legendX,legendY,itemWidth,22);legendX+=itemWidth+6;}
+                string unit=groups[axis].Key;TextRenderer.DrawText(g,"单位："+(String.IsNullOrWhiteSpace(unit)?"原始值":unit),Font,new Rectangle(Math.Max(Width-166,10),top+4,156,24),UiTheme.Muted,TextFormatFlags.Right|TextFormatFlags.VerticalCenter);
+                Rectangle rect=new Rectangle(62,top+legendHeight+14,Math.Max(60,Width-82),Math.Max(45,h-legendHeight-54));using(Pen grid=new Pen(UiTheme.Line))for(int l=0;l<=4;l++)g.DrawLine(grid,rect.Left,rect.Top+rect.Height*l/4,rect.Right,rect.Top+rect.Height*l/4);plotRects.Add(rect);axisUnits[rect]=unit;
+                var visibleNames=group.Where(id=>{bool v;return !visible.TryGetValue(id,out v)||v;}).ToArray();var valid=visibleNames.Where(data.ContainsKey).SelectMany(id=>data[id]).Where(s=>s.Value.HasValue&&s.Utc>=fromUtc&&s.Utc<=toUtc).ToArray();
+                if(valid.Length>0){double min=valid.Min(x=>x.Value.Value),max=valid.Max(x=>x.Value.Value);double span=max-min;if(span==0)span=Math.Max(Math.Abs(max)*.02,.01);double pad=span*.10;min-=pad;max+=pad;for(int i=0;i<=4;i++){double v=max-(max-min)*i/4;TextRenderer.DrawText(g,v.ToString("G5",CultureInfo.InvariantCulture),Font, new Rectangle(1,rect.Top+rect.Height*i/4-8,57,18),UiTheme.Muted,TextFormatFlags.Right|TextFormatFlags.VerticalCenter);}
+                    for(int index=0;index<group.Length;index++){string id=group[index];bool shown;if(visible.TryGetValue(id,out shown)&&!shown)continue;List<ChartSample> series;if(!data.TryGetValue(id,out series))continue;using(Pen pen=new Pen(colors[Array.IndexOf(selected,id)%colors.Length],2)){PointF? prev=null;DateTime prevTime=DateTime.MinValue;foreach(ChartSample s in series){if(s.Utc<fromUtc||s.Utc>toUtc)continue;if(!s.Value.HasValue||(prevTime!=DateTime.MinValue&&(s.Utc-prevTime).TotalSeconds>Math.Max(30,WindowMinutes*2))){prev=null;}if(s.Value.HasValue){float x=rect.Left+(float)((s.Utc-fromUtc).TotalSeconds/totalSeconds)*rect.Width;float y=rect.Bottom-(float)((s.Value.Value-min)/(max-min))*rect.Height;PointF now=new PointF(x,y);if(prev.HasValue)g.DrawLine(pen,prev.Value,now);else g.FillEllipse(pen.Brush,x-2,y-2,4,4);prev=now;}prevTime=s.Utc;}}}
+                }
+                TextRenderer.DrawText(g,fromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss",CultureInfo.InvariantCulture),Font,new Rectangle(rect.Left,rect.Bottom+4,190,18),UiTheme.Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter);
+                TextRenderer.DrawText(g,toUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss",CultureInfo.InvariantCulture),Font,new Rectangle(rect.Right-190,rect.Bottom+4,190,18),UiTheme.Muted,TextFormatFlags.Right|TextFormatFlags.VerticalCenter);
+            }
+        }
+        readonly Dictionary<string,Rectangle> legendHits=new Dictionary<string,Rectangle>();
+        protected override void OnMouseClick(MouseEventArgs e){if(e.Button==MouseButtons.Left){foreach(var hit in legendHits.ToArray())if(hit.Value.Contains(e.Location)){bool v;visible.TryGetValue(hit.Key,out v);visible[hit.Key]=!v;Invalidate();var h=LegendVisibilityChanged;if(h!=null)h(hit.Key,!v);break;}}base.OnMouseClick(e);}
+    }
+}
