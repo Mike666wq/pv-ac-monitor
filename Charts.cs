@@ -47,7 +47,16 @@ namespace ExperimentMonitor {
         void GetRange(out DateTime from,out DateTime to) { if(fixedRange){from=rangeStart;to=rangeEnd;return;}var all=selected.Where(data.ContainsKey).SelectMany(n=>data[n]).ToArray();if(all.Length==0){to=DateTime.UtcNow;from=to.AddMinutes(-WindowMinutes);return;}to=all.Max(x=>x.Utc);DateTime earliest=all.Min(x=>x.Utc);from=to.AddMinutes(-WindowMinutes);if(earliest>from)from=earliest;if(from==to)from=to.AddSeconds(-Math.Max(1,WindowMinutes*60)); }
         protected override void OnPaint(PaintEventArgs e) {
             base.OnPaint(e);legendHits.Clear();plotRects.Clear();axisUnits.Clear();Graphics g=e.Graphics;g.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;g.Clear(BackColor);
-            string[] names=selected.Where(data.ContainsKey).ToArray();if(names.Length==0){TextRenderer.DrawText(g,"选择测点后查看趋势；故障和缺失数据会保留断点。滚轮缩放，拖动平移，双击回到最新。",Font,ClientRectangle,UiTheme.Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.WordBreak);return;}
+            string[] names=selected.Where(data.ContainsKey).ToArray();
+            // 空态:网格 + 居中占位文本(对齐 BMS 的"等待采样"占位)。
+            // 控件总高可能超过一屏(按单位分组预留),空态只画在顶部可见区域。
+            if(names.Length==0){
+                int emptyHeight=Math.Max(120,Math.Min(Height-58,360));
+                Rectangle emptyRect=new Rectangle(62,14,Math.Max(60,Width-82),emptyHeight);
+                using(Pen gridPen=new Pen(UiTheme.Line))for(int l=0;l<=4;l++)g.DrawLine(gridPen,emptyRect.Left,emptyRect.Top+emptyRect.Height*l/4,emptyRect.Right,emptyRect.Top+emptyRect.Height*l/4);
+                TextRenderer.DrawText(g,"等待采样数据，或选择测点后查询历史数据\r\n故障和缺失数据会保留断点 · 滚轮缩放，拖动平移，双击回到最新",Font,emptyRect,UiTheme.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.WordBreak);
+                return;
+            }
             var groups=names.GroupBy(n=>PointCatalog.Get(n).Unit??"").ToArray();int h=Math.Max(190,(Height-8)/Math.Max(1,groups.Length));DateTime fromUtc,toUtc;GetRange(out fromUtc,out toUtc);double totalSeconds=Math.Max(0.001,(toUtc-fromUtc).TotalSeconds);
             for(int axis=0;axis<groups.Length;axis++) {
                 string[] group=groups[axis].ToArray();int top=axis*h;int available=Math.Max(100,Width-200),legendX=10,legendY=top+4,legendHeight=24;

@@ -105,11 +105,15 @@ namespace ExperimentMonitor {
             }
         }
         static async Task VerifyLifecycleAsync(DashboardForm form,List<Point> points,string output,int width,int height,string label,string title){
-            Button connect=Field<Button>(form,"connect"),start=Field<Button>(form,"start"),once=Field<Button>(form,"once"),stop=Field<Button>(form,"stop"),disconnect=Field<Button>(form,"disconnect");
+            // 连接/断开已合并为标题栏的 headerAction 切换按钮。
+            StyledActionButton headerAction=Field<StyledActionButton>(form,"headerAction");
+            Button start=Field<Button>(form,"start"),once=Field<Button>(form,"once"),stop=Field<Button>(form,"stop");
+            // 宽表默认只显示常用三组(温度/实验电表/市电)的列。
+            int expectedWideColumns=points.Count(p=>{string g=PointCatalog.Get(p.name).Group;return g=="温度"||g=="实验电表"||g=="市电";})+2;
             CheckBox simulation=Field<CheckBox>(form,"simulation");simulation.Checked=true;
             Field<NumericUpDown>(form,"period").Value=1;
             Trace("LIFECYCLE BEGIN "+title);
-            connect.PerformClick();
+            headerAction.PerformClick();
             await WaitAsync(()=>form.Engine.IsConnected,5000,"UI connection did not open");
             Check(!form.Engine.IsRunning,title+" connection does not acquire");
             start.PerformClick();
@@ -122,34 +126,34 @@ namespace ExperimentMonitor {
             await WaitAsync(()=>GetCounter(form,"good")==points.Count,5000,"UI did not display all points");
             Check(form.Engine.IsConnected,title+" one round keeps connection");
             Check(String.IsNullOrEmpty(form.Engine.LastStoreError),title+" real UI acquisition committed successfully");
-            disconnect.PerformClick();
+            headerAction.PerformClick();
             await WaitAsync(()=>!form.Engine.IsConnected,5000,"UI disconnect did not release");
-            await WaitAsync(()=>Field<Label>(form,"connectionState").Text.Contains("未连接")&&!disconnect.Enabled,5000,"UI connection state did not reflect disconnect");
+            await WaitAsync(()=>Field<Label>(form,"connectionState").Text.Contains("未连接")&&headerAction.Text=="连接",5000,"UI connection state did not reflect disconnect");
             TabPage page=form.MainNavigation.TabPages[2];
             form.MainNavigation.SelectedTab=page;
             HistoryPage history=Find<HistoryPage>(page);
             DataGridView grid=Field<DataGridView>(history,"grid");
             await WaitAsync(()=>!Field<bool>(history,"queryBusy")&&Field<int>(history,"appliedGeneration")==Field<int>(history,"generation")&&grid.Rows.Count>0&&!Field<bool>(history,"filterDirty"),10000,"UI auto-follow failed: "+DescribeHistoryState(page,grid));
-            Check(grid.Columns.Count==points.Count+2,title+" acquired wide preview includes every point");
+            Check(grid.Columns.Count==expectedWideColumns,title+" acquired wide preview includes the default column subset");
             CapturePage(form,output,width,height,label,"records-after-capture-wide");
             CheckBox wide=Find<CheckBox>(page,c=>c.Text.Contains("采集轮宽表"));
             wide.Checked=false;
             wide.Checked=true;
-            await WaitAsync(()=>!Field<bool>(history,"queryBusy")&&Field<int>(history,"appliedGeneration")==Field<int>(history,"generation")&&!Field<bool>(history,"pendingViewQuery")&&grid.Columns.Count==points.Count+2&&grid.Rows.Count>0,10000,"UI rapid view switch did not converge to the latest selection");
-            Check(grid.Columns.Count==points.Count+2,title+" rapid view changes preserve latest selection");
+            await WaitAsync(()=>!Field<bool>(history,"queryBusy")&&Field<int>(history,"appliedGeneration")==Field<int>(history,"generation")&&!Field<bool>(history,"pendingViewQuery")&&grid.Columns.Count==expectedWideColumns&&grid.Rows.Count>0,10000,"UI rapid view switch did not converge to the latest selection");
+            Check(grid.Columns.Count==expectedWideColumns,title+" rapid view changes preserve latest selection");
             wide.Checked=false;
             await WaitAsync(()=>!Field<bool>(history,"queryBusy")&&Field<int>(history,"appliedGeneration")==Field<int>(history,"generation")&&grid.Columns.Count==8&&grid.Rows.Count>=points.Count,10000,"UI detail query did not complete");
             Check(grid.Rows.Count>=points.Count,title+" UI details include committed observations");
             long beforeVisibleRound=grid.Rows.Count;
-            connect.PerformClick();
+            headerAction.PerformClick();
             await WaitAsync(()=>form.Engine.IsConnected,5000,"Reconnect from records page failed");
             once.PerformClick();
             await WaitAsync(()=>!form.Engine.IsRunning,15000,"Visible-page one round did not finish");
             await WaitAsync(()=>!Field<bool>(history,"queryBusy")&&Field<int>(history,"appliedGeneration")==Field<int>(history,"generation")&&grid.Rows.Count==beforeVisibleRound+points.Count,10000,"Auto-follow missed a completed short round while the records page stayed open");
             Check(grid.Rows.Count==beforeVisibleRound+points.Count,title+" visible record page follows a completed short round");
-            disconnect.PerformClick();
+            headerAction.PerformClick();
             await WaitAsync(()=>!form.Engine.IsConnected,5000,"Final UI disconnect failed");
-            await WaitAsync(()=>Field<Label>(form,"connectionState").Text.Contains("未连接")&&!disconnect.Enabled&&Field<Label>(form,"recordState").Text.Contains("已停止"),5000,"UI settled acquisition and recording states did not reflect disconnect");
+            await WaitAsync(()=>Field<Label>(form,"connectionState").Text.Contains("未连接")&&headerAction.Text=="连接"&&Field<Label>(form,"recordState").Text.Contains("已停止"),5000,"UI settled acquisition and recording states did not reflect disconnect");
             CapturePage(form,output,width,height,label,"records-after-capture-detail");
             long expected=grid.Rows.Count;
             HistoryFilter filter=(HistoryFilter)typeof(HistoryPage).GetMethod("MakeFilter",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(history,null);
@@ -160,10 +164,10 @@ namespace ExperimentMonitor {
             Trace("LIFECYCLE END "+title);
         }
         static void VerifyConnectionControls(DashboardForm form,string title){
-            foreach(string text in new[]{"连接","开始采集","采集一轮","停止","断开连接"}){
+            foreach(string text in new[]{"连接","开始采集","采集一轮","停止"}){
                 Control button=Find<Control>(form,c=>c is Button&&c.Text==text);Check(button!=null,title+" 有“"+text+"”控件");
                 Check(button.Width>45&&button.Height>=22,title+" “"+text+"”操作区尺寸可用");
-                Check(button!=null&&FullyVisible(button,form),title+" “"+text+"”完整位于可视区域内，未被父容器裁切");
+                Check(button!=null&&FullyVisible(button,form),title+" “"+text+"”完整位于可视区域内，未被父容器裁切 · "+DescribeBounds(button));
                 if(button!=null){Size measured=TextRenderer.MeasureText(button.Text,button.Font,new Size(Math.Max(1,button.ClientSize.Width-12),Math.Max(1,button.ClientSize.Height-4)),TextFormatFlags.NoPadding|TextFormatFlags.SingleLine);Check(measured.Width<=button.ClientSize.Width-8&&measured.Height<=button.ClientSize.Height-2,title+" “"+text+"”按钮文字完整容纳");}
             }
             foreach(string text in new[]{"串口","周期(s)","超时(s)"})Check(Find<Control>(form,c=>c is Label&&c.Text==text)!=null,title+" 有连接／采集参数 "+text);
@@ -225,10 +229,16 @@ namespace ExperimentMonitor {
             foreach(Point point in points)Check(map!=null&&map.ContainsKey(point.name),title+" "+point.name+" 卡片已纳入布局检查");
             foreach(var entry in map){
                 Label label=entry.Value[0],value=entry.Value[1],unit=entry.Value[2],quality=entry.Value[3];
-                Check(value.ClientSize.Width>=120,title+" "+entry.Key+" 数值区域不被挤窄");Check(value.ClientSize.Height>=30,title+" "+entry.Key+" 数值区域高度可显示完整字符");Check(unit.ClientSize.Width>=120,title+" "+entry.Key+" 单位区域可读");Check(label.ClientSize.Width>=120&&quality.ClientSize.Width>=120,title+" "+entry.Key+" 名称与质量文字完整可查看");
+                // 新卡片版式:数值/单位标签按内容自适应宽度,布局区域是它们的父容器。
+                Check(value.Parent.ClientSize.Width>=120,title+" "+entry.Key+" 数值区域不被挤窄");Check(value.Parent.ClientSize.Height>=30,title+" "+entry.Key+" 数值区域高度可显示完整字符");string rawUnit=(PointCatalog.Get(entry.Key).Unit??"").Replace(" · 倍率待核准","").Replace("· 倍率待核准","").Trim();bool unitless=rawUnit.Length==0||rawUnit=="原始值"||rawUnit=="原始码";Check(unitless?unit.Text.Length==0:unit.Text==rawUnit,title+" "+entry.Key+" 单位显示与点表一致");Check(label.ClientSize.Width>=120&&quality.ClientSize.Width>=120,title+" "+entry.Key+" 名称与质量文字完整可查看");
                 string[] roles={"名称", "数值", "单位", "状态"};Label[] contents={label,value,unit,quality};
-                for(int i=0;i<contents.Length;i++)Check(FitsOverviewContainers(contents[i],viewport),title+" "+entry.Key+" "+roles[i]+"完整位于卡片、流式布局和分组容器内，不被裁切 · "+DescribeBounds(contents[i]));
-                string[] lines=value.Text.Split(new[]{Environment.NewLine},StringSplitOptions.None);int maxWidth=0,lineHeight=0;foreach(string line in lines){Size measured=TextRenderer.MeasureText(String.IsNullOrEmpty(line)?" ":line,value.Font,new Size(Int32.MaxValue,Int32.MaxValue),TextFormatFlags.NoPadding|TextFormatFlags.SingleLine);maxWidth=Math.Max(maxWidth,measured.Width);lineHeight=Math.Max(lineHeight,measured.Height);}Check(maxWidth<=value.ClientSize.Width+2&&lineHeight*lines.Length<=value.ClientSize.Height+3,title+" "+entry.Key+" 数值绘制边界未裁切（"+value.Text.Replace(Environment.NewLine," / ")+"，测量"+maxWidth+"×"+(lineHeight*lines.Length)+"，区域"+value.ClientSize.Width+"×"+value.ClientSize.Height+"）");
+                for(int i=0;i<contents.Length;i++){if(i==2&&unitless)continue;Check(FitsOverviewContainers(contents[i],viewport),title+" "+entry.Key+" "+roles[i]+"完整位于卡片、流式布局和分组容器内，不被裁切 · "+DescribeBounds(contents[i]));}
+                string[] lines=value.Text.Split(new[]{Environment.NewLine},StringSplitOptions.None);int maxWidth=0,lineHeight=0;foreach(string line in lines){Size measured=TextRenderer.MeasureText(String.IsNullOrEmpty(line)?" ":line,value.Font,new Size(Int32.MaxValue,Int32.MaxValue),TextFormatFlags.NoPadding|TextFormatFlags.SingleLine);maxWidth=Math.Max(maxWidth,measured.Width);lineHeight=Math.Max(lineHeight,measured.Height);}
+                if(value.AutoSize) {
+                    // AutoSize 标签按内容自撑:校验不溢出父容器、行高不溢出所在行。
+                    Check(value.ClientSize.Width<=value.Parent.ClientSize.Width+2,title+" "+entry.Key+" 数值未溢出数值行容器（"+value.Text.Replace(Environment.NewLine," / ")+"）");
+                    Check(lineHeight*lines.Length<=value.Parent.ClientSize.Height+3,title+" "+entry.Key+" 数值行高未溢出数值行容器（"+(lineHeight*lines.Length)+" vs "+value.Parent.ClientSize.Height+"）");
+                } else Check(maxWidth<=value.ClientSize.Width+2&&lineHeight*lines.Length<=value.ClientSize.Height+3,title+" "+entry.Key+" 数值绘制边界未裁切（"+value.Text.Replace(Environment.NewLine," / ")+"，测量"+maxWidth+"×"+(lineHeight*lines.Length)+"，区域"+value.ClientSize.Width+"×"+value.ClientSize.Height+"） · "+DescribeBounds(value));
             }
             Label d3=map["D3"][1];Check(d3.Text.Contains("E-08")||d3.Text.Contains("e-08"),title+" 微小非零值没有显示为零");
             Point p=points.First(x=>x.name=="D3");string before=d3.Text;form.UpdateObservation(new Observation{Point=p.name,Description=PointCatalog.Get(p).Label,Device=p.binding.device,Source="simulation",Mode=PointCatalog.Get(p).Mode,Quality="timeout",Status="timeout",Value="timeout",Number=null,Utc=DateTime.UtcNow,Unit=PointCatalog.Get(p).Unit});Check(d3.Text==before&&map["D3"][3].Text.Contains("旧值"),title+" 通信故障时保留最后有效显示并标记旧值");

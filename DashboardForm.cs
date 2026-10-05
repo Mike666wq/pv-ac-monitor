@@ -27,7 +27,12 @@ namespace ExperimentMonitor {
         readonly CheckBox simulation=new CheckBox { Text="模拟数据",Checked=true,AutoSize=true };
         readonly NumericUpDown period=new NumericUpDown { Minimum=1,Maximum=3600,Value=2,Width=72 };
         readonly NumericUpDown timeout=new NumericUpDown { Minimum=1,Maximum=30,Value=8,Width=66 };
-        readonly Button refresh=new Button { Text="刷新",Width=62,Height=32 },connect=new Button { Text="连接",Width=82,Height=32 },start=new Button { Text="开始采集",Width=96,Height=32 },once=new Button { Text="采集一轮",Width=88,Height=32 },stop=new Button { Text="停止",Width=72,Height=32 },disconnect=new Button { Text="断开连接",Width=88,Height=32 };
+        readonly StyledActionButton refresh=new StyledActionButton { Text="刷新",Width=68 };
+        readonly StyledActionButton start=new StyledActionButton { Text="开始采集",Width=112,BackColor=UiTheme.Blue,IconGlyph="▶" };
+        readonly StyledActionButton once=new StyledActionButton { Text="采集一轮",Width=96 };
+        readonly StyledActionButton stop=new StyledActionButton { Text="停止",Width=80 };
+        readonly StyledActionButton headerAction=new StyledActionButton { Text="连接",Width=104,BackColor=UiTheme.Blue };
+        Label headerTitle;
         readonly Label connectionState=StatusLabel("未连接"),captureState=StatusLabel("未采集"),recordState=StatusLabel("本地记录待机"),cloudState=StatusLabel("云端未启用");
         readonly Label counts=new Label { AutoSize=true,Text="点表已载入 · 4 台设备 / 37 个测点" };
         readonly TextBox log=new TextBox { Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Both,WordWrap=false,Font=new Font("Consolas",9) };
@@ -48,9 +53,8 @@ namespace ExperimentMonitor {
             AutoScaleMode=AutoScaleMode.Dpi;AutoScaleDimensions=new SizeF(96,96);
             Text="实验监控 · 全实验数据工作台";ClientSize=new Size(1440,900);MinimumSize=new Size(960,640);Font=new Font("Microsoft YaHei UI",9);BackColor=UiTheme.Canvas;StartPosition=FormStartPosition.CenterScreen;
             BuildShell();BuildPages();WireEngine();
-            connect.Click+=(s,e)=>ConnectCaptureSource();
+            headerAction.Click+=(s,e)=>{if(Engine.IsConnected){try{Engine.Disconnect();}catch(Exception ex){ShowError("断开连接失败",ex);}}else ConnectCaptureSource();};
             refresh.Click+=(s,e)=>RefreshPorts();
-            disconnect.Click+=(s,e)=>{try{Engine.Disconnect();}catch(Exception ex){ShowError("断开连接失败",ex);}};
             start.Click+=(s,e)=>StartCapture(false);
             once.Click+=(s,e)=>StartCapture(true);
             stop.Click+=(s,e)=>StopCapture();
@@ -58,34 +62,37 @@ namespace ExperimentMonitor {
             freshness.Tick+=(s,e)=>RefreshFreshness();freshness.Start();
             FormClosing+=(s,e)=>{SaveSettings();try{if(Engine.IsRunning)Engine.Stop();Engine.Disconnect();closed=true;freshness.Stop();}catch(Exception ex){e.Cancel=true;MessageBox.Show(this,"正在等待采集线程和本地记录安全关闭，请稍后重试。\r\n"+ex.Message,"关闭程序",MessageBoxButtons.OK,MessageBoxIcon.Warning);}};
             FormClosed+=(s,e)=>{freshness.Dispose();tips.Dispose();Engine.Dispose();};
-            RefreshPorts();LoadSettings();UiTheme.Apply(this);RefreshControls();
+            RefreshPorts();LoadSettings();UiTheme.Apply(this);if(headerTitle!=null)headerTitle.ForeColor=Color.White;RefreshControls();
         }
 
         void BuildShell() {
-            var shell=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=4,Padding=new Padding(12,8,12,8),BackColor=UiTheme.Canvas };
+            var shell=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=4,Padding=Padding.Empty,BackColor=UiTheme.Canvas };
             shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
-            shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.Percent,100));shell.RowStyles.Add(new RowStyle(SizeType.Absolute,27));Controls.Add(shell);
-            var masthead=new Panel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(12,4,8,6),BackColor=UiTheme.Surface };
-            masthead.Controls.Add(new Label { Text="实验监控   /   全实验数据工作台",AutoSize=true,Location=new DrawingPoint(4,2),Font=new Font("Microsoft YaHei UI",16,FontStyle.Bold),ForeColor=UiTheme.Ink });
-            shell.Controls.Add(masthead,0,0);
-            var top=new TableLayoutPanel { Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=3,BackColor=Color.FromArgb(247,250,253),Padding=new Padding(6,4,6,2) };
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
-            top.RowStyles.Add(new RowStyle(SizeType.AutoSize));top.RowStyles.Add(new RowStyle(SizeType.AutoSize));top.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            // Keep source connection controls and capture controls on separate rows. At the
-            // minimum supported window width, a single wrapped FlowLayoutPanel clipped its
-            // final row beneath the navigation area and hid the single-round action.
-            var sourceActions=new FlowLayoutPanel { Dock=DockStyle.Top,AutoSize=true,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=Padding.Empty };
-            sourceActions.Controls.Add(simulation);sourceActions.Controls.Add(TextLabel("串口"));sourceActions.Controls.Add(port);sourceActions.Controls.Add(refresh);sourceActions.Controls.Add(TextLabel("9600 / 8N1"));sourceActions.Controls.Add(connect);
-            top.Controls.Add(sourceActions,0,0);
-            var captureActions=new FlowLayoutPanel { Dock=DockStyle.Top,AutoSize=true,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=Padding.Empty };
-            captureActions.Controls.Add(TextLabel("周期(s)"));captureActions.Controls.Add(period);captureActions.Controls.Add(TextLabel("超时(s)"));captureActions.Controls.Add(timeout);captureActions.Controls.Add(start);captureActions.Controls.Add(once);captureActions.Controls.Add(stop);captureActions.Controls.Add(disconnect);
-            top.Controls.Add(captureActions,0,1);
-            var states=new FlowLayoutPanel { Dock=DockStyle.Top,AutoSize=true,WrapContents=true,AutoScroll=false,Margin=Padding.Empty,Padding=new Padding(1,2,0,0) };
-            states.Controls.Add(connectionState);states.Controls.Add(captureState);states.Controls.Add(recordState);states.Controls.Add(cloudState);
-            top.Controls.Add(states,0,2);shell.Controls.Add(top,0,1);
+            shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.Percent,100));shell.RowStyles.Add(new RowStyle(SizeType.Absolute,30));Controls.Add(shell);
+            // 深蓝标题栏(对齐 BMS):左侧产品名,右侧 连接/断开 主按钮。
+            var header=new Panel { Dock=DockStyle.Fill,Height=56,BackColor=UiTheme.Ink,Padding=new Padding(16,10,12,10) };
+            headerTitle=new Label { Text="实验监控  /  全实验数据工作台",AutoSize=true,Location=new DrawingPoint(16,12),Font=new Font("Microsoft YaHei UI",13,FontStyle.Bold),ForeColor=Color.White,BackColor=Color.Transparent };
+            header.Controls.Add(headerTitle);
+            headerAction.Dock=DockStyle.Right;headerAction.Margin=new Padding(0,0,4,0);header.Controls.Add(headerAction);
+            shell.Controls.Add(header,0,0);
+            // 单行紧凑工具栏:连接/断开已移入标题栏;窗口过窄时允许折行。
+            var toolbar=new FlowLayoutPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,AutoScroll=false,Margin=Padding.Empty,BackColor=Color.FromArgb(247,250,253),Padding=new Padding(10,6,10,6) };
+            simulation.Margin=new Padding(4,10,8,0);
+            toolbar.Controls.Add(simulation);toolbar.Controls.Add(TextLabel("串口"));
+            toolbar.Controls.Add(new RoundedInputHost(port) { Width=112 });toolbar.Controls.Add(refresh);toolbar.Controls.Add(TextLabel("9600 / 8N1"));
+            toolbar.Controls.Add(TextLabel("周期(s)"));toolbar.Controls.Add(new RoundedInputHost(period) { Width=82 });
+            toolbar.Controls.Add(TextLabel("超时(s)"));toolbar.Controls.Add(new RoundedInputHost(timeout) { Width=76 });
+            toolbar.Controls.Add(start);toolbar.Controls.Add(once);toolbar.Controls.Add(stop);
+            shell.Controls.Add(toolbar,0,1);
             MainNavigation=new TabControl { Dock=DockStyle.Fill,DrawMode=TabDrawMode.OwnerDrawFixed,ItemSize=new Size(120,34),SizeMode=TabSizeMode.Fixed,Padding=new DrawingPoint(12,4) };
             MainNavigation.DrawItem+=(s,e)=>{bool selected=(e.State&DrawItemState.Selected)!=0;using(var b=new SolidBrush(selected?Color.White:Color.FromArgb(247,250,253)))e.Graphics.FillRectangle(b,e.Bounds);TextRenderer.DrawText(e.Graphics,MainNavigation.TabPages[e.Index].Text,MainNavigation.Font,e.Bounds,selected?UiTheme.Blue:UiTheme.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPrefix);if(selected)using(var p=new Pen(UiTheme.Blue,3))e.Graphics.DrawLine(p,e.Bounds.Left+17,e.Bounds.Bottom-2,e.Bounds.Right-17,e.Bounds.Bottom-2);};
-            shell.Controls.Add(MainNavigation,0,2);counts.Dock=DockStyle.Fill;counts.Padding=new Padding(8,4,0,0);counts.BackColor=Color.FromArgb(229,237,246);counts.ForeColor=UiTheme.Muted;shell.Controls.Add(counts,0,3);
+            shell.Controls.Add(MainNavigation,0,2);
+            // 底部状态栏:状态灯与点表/采集统计合并为一行。
+            var statusBar=new Panel { Dock=DockStyle.Fill,BackColor=Color.FromArgb(229,237,246),Padding=new Padding(10,0,10,0) };
+            var states=new FlowLayoutPanel { Dock=DockStyle.Left,AutoSize=true,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=new Padding(0,2,0,0),BackColor=Color.Transparent };
+            states.Controls.Add(connectionState);states.Controls.Add(captureState);states.Controls.Add(recordState);states.Controls.Add(cloudState);
+            counts.AutoSize=true;counts.Dock=DockStyle.Right;counts.TextAlign=ContentAlignment.MiddleLeft;counts.Padding=new Padding(8,6,4,0);counts.Margin=Padding.Empty;counts.ForeColor=UiTheme.Muted;counts.BackColor=Color.Transparent;
+            statusBar.Controls.Add(states);statusBar.Controls.Add(counts);shell.Controls.Add(statusBar,0,3);
         }
 
         void BuildPages() {
@@ -103,87 +110,39 @@ namespace ExperimentMonitor {
         }
         TabPage AddPage(string name){var p=new TabPage(name){BackColor=UiTheme.Canvas,Padding=new Padding(7)};MainNavigation.TabPages.Add(p);return p;}
 
-        void BuildOverview(TabPage page) {
-            var viewport=new Panel { Dock=DockStyle.Fill,AutoScroll=true,BackColor=UiTheme.Canvas };page.Controls.Add(viewport);
-            var stack=new TableLayoutPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=0,Padding=new Padding(2) };viewport.Controls.Add(stack);
-            string[] groupOrder={"温度","实验电表","市电","太阳能","运行状态","诊断"};
-            foreach(var group in points.GroupBy(p=>PointCatalog.Get(p).Group).OrderBy(g=>Array.IndexOf(groupOrder,g.Key)<0?99:Array.IndexOf(groupOrder,g.Key))) {
-                var section=new GroupBox { Text=group.Key,Dock=DockStyle.Top,Height=120,Padding=new Padding(8,16,8,6),BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Margin=new Padding(2,2,2,7) };
-                var flow=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=true,AutoScroll=false,Padding=new Padding(2),Margin=Padding.Empty };
-                section.Controls.Add(flow);stack.RowCount++;stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));stack.Controls.Add(section,0,stack.RowCount-1);
-                foreach(Point p in group) {
-                    PointInfo info=PointCatalog.Get(p);var card=new Panel { Width=190,Height=136,BackColor=UiTheme.Surface,Margin=new Padding(3),Padding=new Padding(8),BorderStyle=BorderStyle.FixedSingle };
-                    var grid=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=4,Margin=Padding.Empty,Padding=Padding.Empty,BackColor=UiTheme.Surface };
-                    grid.RowStyles.Add(new RowStyle(SizeType.Absolute,22));grid.RowStyles.Add(new RowStyle(SizeType.Percent,100));grid.RowStyles.Add(new RowStyle(SizeType.Absolute,19));grid.RowStyles.Add(new RowStyle(SizeType.Absolute,24));
-                    var label=new Label { Text=info.Label+"  "+p.name,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Muted,Font=new Font(Font.FontFamily,8.5f),AutoEllipsis=true };
-                    var value=new Label { Text="—",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Ink,Font=new Font(Font.FontFamily,info.Mode=="U16 / I16"?9.5f:17,FontStyle.Bold),AutoEllipsis=false,UseCompatibleTextRendering=true };
-                    var unit=new Label { Text=String.IsNullOrWhiteSpace(info.Unit)?"原始值":info.Unit,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Muted,Font=new Font(Font.FontFamily,8.5f),AutoEllipsis=false };
-                    var status=new Label { Text="尚未采集",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Muted,Font=new Font(Font.FontFamily,8),AutoEllipsis=true };
-                    grid.Controls.Add(label,0,0);grid.Controls.Add(value,0,1);grid.Controls.Add(unit,0,2);grid.Controls.Add(status,0,3);card.Controls.Add(grid);flow.Controls.Add(card);cards[p.name]=new[]{label,value,unit,status};
-                    tips.SetToolTip(card,p.binding.device+" · 站号 "+p.binding.slave+" · 地址 "+p.binding.address_zero_based+" · "+info.Label+(info.ScaleConfirmed?"":" · 倍率待核准")+(info.Mode=="U16 / I16"?" · U16/I16 原始值，不作状态映射":""));
-                }
-                bool resizePending=false,resizing=false;
-                Action resizeGroup=null;
-                resizeGroup=delegate {
-                    if(resizePending||viewport.IsDisposed||!viewport.IsHandleCreated)return;
-                    resizePending=true;
-                    viewport.BeginInvoke((MethodInvoker)delegate {
-                        resizePending=false;
-                        if(resizing||viewport.IsDisposed||flow.IsDisposed||section.IsDisposed)return;
-                        resizing=true;
-                        try {
-                            int innerWidth=flow.ClientSize.Width-flow.Padding.Horizontal;
-                            if(innerWidth<=0)return;
-                            int marginWidth=flow.Controls.Count==0?0:flow.Controls[0].Margin.Horizontal;
-                            int naturalWidth=flow.Controls.Count==0?190:flow.Controls[0].Width;
-                            int columns=Math.Max(1,(innerWidth+marginWidth)/Math.Max(1,naturalWidth+marginWidth));
-                            int cardWidth=Math.Max(1,(innerWidth-columns*marginWidth)/columns);
-                            foreach(Control card in flow.Controls)if(card.Width!=cardWidth)card.Width=cardWidth;
-                            flow.PerformLayout();
-
-                            // Use the layout panel's actual wrapped child positions. A row
-                            // count inferred from viewport width misses scaled margins,
-                            // section padding, and the width left after a vertical scrollbar.
-                            int laidOutBottom=flow.Padding.Top;
-                            foreach(Control card in flow.Controls)
-                                laidOutBottom=Math.Max(laidOutBottom,card.Bottom+card.Margin.Bottom);
-                            Size preferred=flow.GetPreferredSize(new Size(Math.Max(1,flow.ClientSize.Width),0));
-                            int contentHeight=Math.Max(laidOutBottom,preferred.Height)+flow.Padding.Bottom;
-                            int requiredHeight=flow.Top+contentHeight+section.Padding.Bottom+3;
-                            if(section.Height!=requiredHeight)section.Height=requiredHeight;
-                        } finally {resizing=false;}
-                    });
-                };
-                viewport.ClientSizeChanged+=(s,e)=>resizeGroup();
-                viewport.HandleCreated+=(s,e)=>resizeGroup();
-                page.SizeChanged+=(s,e)=>resizeGroup();
-                if(viewport.IsHandleCreated)resizeGroup();
-            }
-            overviewChart.SelectPoints(points.Where(p=>p.name.StartsWith("T",StringComparison.Ordinal)||p.name=="D2206").Select(p=>p.name));
-            overviewChart.Dock=DockStyle.Fill;overviewChart.MinimumSize=new Size(280,220);overviewChart.Height=Math.Max(230,overviewChart.RequiredHeight);
-            stack.RowCount++;stack.RowStyles.Add(new RowStyle(SizeType.Absolute,Math.Max(230,overviewChart.RequiredHeight)));stack.Controls.Add(overviewChart,0,stack.RowCount-1);
-            viewport.SizeChanged+=(s,e)=>{int width=Math.Max(320,viewport.ClientSize.Width-8);stack.Width=width;overviewChart.Width=width-8;};
-        }
+        void BuildOverview(TabPage page) { OverviewPageBuilder.Build(page,points,cards,tips,overviewChart,Font); }
 
         void BuildDetails(TabPage page) {
             foreach(string col in new[]{"测点","名称","设备","站号","零基地址","单位","实时值","质量","采样时间","耗时(ms)"})table.Columns.Add(col);
             foreach(Point p in points){PointInfo i=PointCatalog.Get(p);DataRow r=table.Rows.Add(p.name,i.Label,p.binding.device,p.binding.slave,p.binding.address_zero_based,i.Unit,"—","尚未采集","","");rows[p.name]=r;}
             var grid=new DataGridView { Dock=DockStyle.Fill,ReadOnly=true,AllowUserToAddRows=false,AllowUserToDeleteRows=false,RowHeadersVisible=false,AutoGenerateColumns=false,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill,SelectionMode=DataGridViewSelectionMode.FullRowSelect,ScrollBars=ScrollBars.Both };
-            string[] columns={"测点","名称","设备","站号","零基地址","单位","实时值","质量","采样时间","耗时(ms)"};float[] weights={55,110,90,45,75,90,145,105,155,65};for(int i=0;i<columns.Length;i++)grid.Columns.Add(new DataGridViewTextBoxColumn{Name="col"+i,HeaderText=columns[i],DataPropertyName=columns[i],FillWeight=weights[i],SortMode=DataGridViewColumnSortMode.NotSortable});grid.DataSource=table;page.Controls.Add(grid);
+            string[] columns={"测点","名称","设备","站号","零基地址","单位","实时值","质量","采样时间","耗时(ms)"};float[] weights={55,110,90,45,75,90,145,105,155,65};for(int i=0;i<columns.Length;i++)grid.Columns.Add(new DataGridViewTextBoxColumn{Name="col"+i,HeaderText=columns[i],DataPropertyName=columns[i],FillWeight=weights[i],SortMode=DataGridViewColumnSortMode.NotSortable});grid.DataSource=table;
+            grid.RowTemplate.Height=28;
+            // 质量列彩色徽章:正常绿 / 过期·旧值黄 / 超时·异常红,其余灰。
+            grid.CellFormatting+=(s,e)=>{
+                if(e.ColumnIndex<0||e.ColumnIndex>=grid.Columns.Count||grid.Columns[e.ColumnIndex].DataPropertyName!="质量"||e.Value==null)return;
+                string q=e.Value.ToString();Color fore=UiTheme.Muted,back=UiTheme.Surface;
+                if(q.StartsWith("正常")){fore=UiTheme.Green;back=Color.FromArgb(226,244,238);}
+                else if(q.StartsWith("过期")||q.Contains("旧值")){fore=UiTheme.Warning;back=Color.FromArgb(252,241,222);}
+                else if(q.Contains("超时")||q.Contains("异常")||q.Contains("错误")||q.Contains("失败")){fore=UiTheme.Danger;back=Color.FromArgb(251,231,232);}
+                e.CellStyle.ForeColor=fore;e.CellStyle.BackColor=back;e.CellStyle.SelectionBackColor=back;e.CellStyle.SelectionForeColor=fore;
+            };
+            page.Controls.Add(grid);
         }
 
         void BuildDiagnostics(TabPage page) {
-            var shell=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(4) };shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.Percent,100));page.Controls.Add(shell);
+            var shell=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(4) };shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.Absolute,110));shell.RowStyles.Add(new RowStyle(SizeType.Percent,100));page.Controls.Add(shell);
             var box=new GroupBox { Text="只读 Modbus 03 手动读取",Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(8),BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink };
             // Let the controls wrap into additional rows at narrow widths. A fixed-height
             // diagnostic strip clipped the parser and send buttons on 960px windows.
             var controls=new FlowLayoutPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,AutoScroll=false,Padding=new Padding(4) };
-            NumericUpDown slave=Number(1,247,60),address=Number(0,65535,90),count=Number(1,8,58),diagTimeout=Number(1,30,58);
+            NumericUpDown slave=Number(1,247,64),address=Number(0,65535,92),count=Number(1,8,64),diagTimeout=Number(1,30,64);
             ComboBox mode=new ComboBox { Width=145,DropDownStyle=ComboBoxStyle.DropDownList };mode.Items.AddRange(new object[]{"RAW 原始寄存器","UINT16","INT16","FLOAT ABCD","FLOAT CDAB"});mode.SelectedIndex=0;
-            Button read=new Button { Text="发送读取",Width=108,Height=31,BackColor=UiTheme.Blue,ForeColor=Color.White },clear=new Button { Text="清空日志",Width=92,Height=31 };
-            CheckBox raw=new CheckBox { Text="记录原始收发日志",AutoSize=true,Checked=true };
-            Label counters=new Label { AutoSize=true,Text="读取 0 次 · 成功 0 · 异常 0",Padding=new Padding(3,7,3,0),ForeColor=UiTheme.Muted };
-            controls.Controls.Add(TextLabel("站号"));controls.Controls.Add(slave);controls.Controls.Add(TextLabel("零基地址"));controls.Controls.Add(address);controls.Controls.Add(TextLabel("寄存器数"));controls.Controls.Add(count);controls.Controls.Add(TextLabel("超时(s)"));controls.Controls.Add(diagTimeout);controls.Controls.Add(TextLabel("解析方式"));controls.Controls.Add(mode);controls.Controls.Add(read);controls.Controls.Add(clear);controls.Controls.Add(raw);controls.Controls.Add(counters);box.Controls.Add(controls);box.AutoSize=false;shell.Controls.Add(box,0,0);
+            var read=new StyledActionButton { Text="发送读取",Width=128,BackColor=UiTheme.Blue };
+            var clear=new StyledActionButton { Text="清空日志",Width=100 };
+            CheckBox raw=new CheckBox { Text="记录原始收发日志",AutoSize=true,Checked=true,Margin=new Padding(6,10,3,0) };
+            Label counters=new Label { AutoSize=true,Text="读取 0 次 · 成功 0 · 异常 0",Padding=new Padding(3,10,3,0),ForeColor=UiTheme.Muted };
+            controls.Controls.Add(TextLabel("站号"));controls.Controls.Add(new RoundedInputHost(slave) { Width=76 });controls.Controls.Add(TextLabel("零基地址"));controls.Controls.Add(new RoundedInputHost(address) { Width=104 });controls.Controls.Add(TextLabel("寄存器数"));controls.Controls.Add(new RoundedInputHost(count) { Width=76 });controls.Controls.Add(TextLabel("超时(s)"));controls.Controls.Add(new RoundedInputHost(diagTimeout) { Width=76 });controls.Controls.Add(TextLabel("解析方式"));controls.Controls.Add(new RoundedInputHost(mode) { Width=160 });controls.Controls.Add(read);controls.Controls.Add(clear);controls.Controls.Add(raw);controls.Controls.Add(counters);box.Controls.Add(controls);box.AutoSize=false;shell.Controls.Add(box,0,0);
             bool sizingDiagnostics=false;
             Action fitDiagnostics=()=>{
                 if(sizingDiagnostics||controls.ClientSize.Width<=0)return;
@@ -197,8 +156,10 @@ namespace ExperimentMonitor {
             controls.SizeChanged+=(s,e)=>fitDiagnostics();
             controls.Layout+=(s,e)=>fitDiagnostics();
             fitDiagnostics();
-            Label result=new Label { Dock=DockStyle.Fill,Text="诊断只读且不写入正式历史记录。请先连接，再停止周期采集后发送读取。",Padding=new Padding(9),ForeColor=UiTheme.Muted,AutoEllipsis=true };
+            Label result=new Label { Dock=DockStyle.Fill,Text="尚未发送诊断读取，结果会显示在这里。",Padding=new Padding(9),ForeColor=UiTheme.Muted,AutoEllipsis=true };
             var resultBox=new GroupBox { Text="最近一次读取",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6) };resultBox.Controls.Add(result);shell.Controls.Add(resultBox,0,1);
+            // 提示语只留一处:作为通信日志的初始内容。
+            log.Text="诊断只读且不写入正式历史记录。请先连接，再停止周期采集后发送读取。\r\n";
             var logBox=new GroupBox { Text="通信日志",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6) };logBox.Controls.Add(log);shell.Controls.Add(logBox,0,2);
             raw.CheckedChanged+=(s,e)=>Engine.RecordRawLog=raw.Checked;clear.Click+=(s,e)=>{log.Clear();diagnosticRequests=diagnosticGood=diagnosticBad=0;counters.Text="读取 0 次 · 成功 0 · 异常 0";result.Text="日志已清空；正式历史记录与本地数据库不会受影响。";};
             read.Click+=async(s,e)=>{
@@ -232,16 +193,16 @@ namespace ExperimentMonitor {
             Engine.ConnectionChanged+=(connected,source)=>Dispatch(()=>SetConnection(connected,source));
             Engine.PolicyChanged+=p=>Dispatch(()=>AppendLog("策略更新 · "+p.Type+" · "+p.Detail));
         }
-        void ResetDisplay(){good=bad=0;lastGood.Clear();overviewChart.Clear();foreach(Label[] c in cards.Values){c[1].Text="—";c[3].Text="尚未采集";c[3].ForeColor=UiTheme.Muted;}foreach(DataRow r in table.Rows){r["实时值"]="—";r["质量"]="尚未采集";r["采样时间"]="";r["耗时(ms)"]="";}counts.Text="已切换数据来源 · 等待首轮采样";}
+        void ResetDisplay(){good=bad=0;lastGood.Clear();overviewChart.Clear();foreach(Label[] c in cards.Values){c[1].Text="—";c[3].Text="待机";c[3].ForeColor=UiTheme.Muted;}foreach(DataRow r in table.Rows){r["实时值"]="—";r["质量"]="尚未采集";r["采样时间"]="";r["耗时(ms)"]="";}counts.Text="已切换数据来源 · 等待首轮采样";}
         void Dispatch(Action action){if(closed||IsDisposed)return;try{if(IsHandleCreated)BeginInvoke(action);}catch(InvalidOperationException){} }
-        void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"○ 本地记录已停止":"○ 本地记录待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;connect.Enabled=!connected&&!running;disconnect.Enabled=connected;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;connectionState.Text=connected?(Engine.ConnectedSimulation?"● 模拟已连接":"● 串口已连接 · "+Engine.ConnectedPort):"○ 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"● 正在采集":"○ 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
+        void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"○ 本地记录已停止":"○ 本地记录待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;headerAction.Text=connected?"断开连接":"连接";headerAction.Enabled=connected||!running;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;connectionState.Text=connected?(Engine.ConnectedSimulation?"● 模拟已连接":"● 串口已连接 · "+Engine.ConnectedPort):"○ 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"● 正在采集":"○ 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
         void ConnectCaptureSource(){try{if(!simulation.Checked&&String.IsNullOrWhiteSpace(port.Text))throw new InvalidOperationException("没有可用串口。请接入 USB-RS485 转换器后点击刷新。");Engine.Connect(simulation.Checked,port.Text,9600);SaveSettings();RefreshControls();}catch(Exception ex){MessageBox.Show(this,"连接失败："+ex.Message,"连接",MessageBoxButtons.OK,MessageBoxIcon.Error);}}
         void SetConnection(bool connected,string source){string key=source??Engine.ActiveSource;if(connected){if(displayedSource!=null&&key!=displayedSource)ResetDisplay();displayedSource=key;connectionState.Text=key=="simulation"?"● 模拟设备已连接":"● 串口已连接 · "+Engine.ConnectedPort+" · 9600 8N1";connectionState.ForeColor=UiTheme.Green;AppendLog("连接状态："+connectionState.Text);if(historyPage!=null)historyPage.SetActiveSource(key);}else{connectionState.Text="○ 未连接";connectionState.ForeColor=UiTheme.Muted;MarkLastValuesStale("连接已断开");AppendLog("连接已断开 · 最后采样保留");}RefreshControls();}
         void MarkLastValuesStale(string label){foreach(var p in lastGood){Label[] c;if(cards.TryGetValue(p.Key,out c)){c[3].Text=label+" · "+p.Value.ToLocalTime().ToString("HH:mm:ss");c[3].ForeColor=UiTheme.Warning;}DataRow r;if(rows.TryGetValue(p.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期 · "+label;}}
         void StartCapture(bool single){try{if(!Engine.IsConnected)throw new InvalidOperationException("请先连接数据源");SaveSettings();shownStoreError=null;good=bad=0;Engine.SetPeriodSeconds((int)period.Value);if(single)Engine.StartOnce((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));else Engine.Start((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));RefreshControls();captureState.Text=single?"● 正在采集一轮":"● 正在采集";}catch(Exception ex){ShowError(single?"单轮采集失败":"开始采集失败",ex);}}
         void StopCapture(){try{Engine.Stop();captureState.Text="○ 已停止 · 连接保持 · 本地记录已排空";MarkLastValuesStale("采集已停止");RefreshControls();}catch(Exception ex){ShowError("停止采集失败",ex);}}
         void RefreshFreshness(){RefreshControls();string fatal=Engine.LastStoreError;if(!String.IsNullOrWhiteSpace(fatal)){recordState.Text="! 本地记录失败 · "+fatal;recordState.ForeColor=UiTheme.Danger;if(shownStoreError!=fatal){shownStoreError=fatal;AppendLog("本地记录失败："+fatal);MessageBox.Show(this,"本地记录出现错误，采集已停止或正在停止。请检查数据目录和磁盘空间。\r\n\r\n"+fatal,"本地记录失败",MessageBoxButtons.OK,MessageBoxIcon.Error);}}else if(Engine.Store!=null){var s=Engine.Store.Status;if(s!=null){recordState.Text=s.Recording?"● 本地记录正常 · "+s.Committed.ToString("N0")+" 条":"本地记录已停止";if(!String.IsNullOrEmpty(s.LastError))recordState.Text="! 本地记录错误 · "+s.LastError;recordState.ForeColor=String.IsNullOrEmpty(s.LastError)?(s.Recording?UiTheme.Green:UiTheme.Muted):UiTheme.Danger;}}else recordState.Text=Engine.CompletedCaptures>0?"○ 本地记录已停止":"○ 本地记录待机";
-            foreach(var pair in lastGood)if((DateTime.UtcNow-pair.Value).TotalSeconds>Math.Max(10,(double)period.Value*3)){Label[] c;if(cards.TryGetValue(pair.Key,out c)&&!c[3].Text.StartsWith("旧值")&&!c[3].Text.StartsWith("采集已停止")&&!c[3].Text.StartsWith("连接已断开")){c[3].Text="旧值 · "+pair.Value.ToLocalTime().ToString("HH:mm:ss");c[3].ForeColor=UiTheme.Warning;}DataRow r;if(rows.TryGetValue(pair.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期";}}
+            foreach(var pair in lastGood)if((DateTime.UtcNow-pair.Value).TotalSeconds>Math.Max(10,(double)period.Value*3)){Label[] c;if(cards.TryGetValue(pair.Key,out c)&&!c[3].Text.Contains("旧值")&&!c[3].Text.Contains("采集已停止")&&!c[3].Text.Contains("连接已断开")){c[3].Text="旧值 · "+pair.Value.ToLocalTime().ToString("HH:mm:ss");c[3].ForeColor=UiTheme.Warning;}DataRow r;if(rows.TryGetValue(pair.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期";}}
         public void UpdateObservation(Observation o){if(o==null)return;if(!String.IsNullOrEmpty(o.SessionId)&&countedSession!=o.SessionId){countedSession=o.SessionId;good=bad=0;}bool valid=o.Quality=="good";if(valid)good++;else bad++;DateTime previous;bool hasOld=lastGood.TryGetValue(o.Point,out previous);
             DataRow r;if(rows.TryGetValue(o.Point,out r)){if(valid){r["实时值"]=DisplayNumber(o);r["采样时间"]=o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture);}r["质量"]=valid?"正常":QualityLabel(o.Quality)+(hasOld?" · 保留旧值":" · 尚无有效值");r["耗时(ms)"]=o.Milliseconds.ToString(CultureInfo.InvariantCulture);}
             Label[] c;if(cards.TryGetValue(o.Point,out c)){if(valid){c[1].Text=DisplayCardValue(o);lastGood[o.Point]=o.Utc;}DateTime timestamp=valid?o.Utc:previous;c[3].Text=valid?"正常 · "+timestamp.ToLocalTime().ToString("HH:mm:ss"):QualityLabel(o.Quality)+(hasOld?" · 旧值 "+timestamp.ToLocalTime().ToString("HH:mm:ss"):" · 尚无有效值");c[3].ForeColor=valid?UiTheme.Green:UiTheme.Danger;tips.SetToolTip(c[1],valid?"实际值："+(o.Value??DisplayNumber(o))+"\r\n采样时间："+o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"):o.Value);}
@@ -253,7 +214,7 @@ namespace ExperimentMonitor {
         void AppendLog(string value){if(log.TextLength>300000)log.Text=log.Text.Substring(log.TextLength-150000);log.AppendText(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture)+"  "+value+Environment.NewLine);}
         void LoadSettings(){try{if(!File.Exists(settingsPath))return;SavedSettings s=new JavaScriptSerializer().Deserialize<SavedSettings>(File.ReadAllText(settingsPath));if(s==null)return;simulation.Checked=s.Simulation;period.Value=Math.Max(period.Minimum,Math.Min(period.Maximum,s.Period));timeout.Value=Math.Max(timeout.Minimum,Math.Min(timeout.Maximum,s.Timeout));if(!String.IsNullOrEmpty(s.Port)){if(!port.Items.Contains(s.Port))port.Items.Add(s.Port);port.SelectedItem=s.Port;}}catch(Exception ex){AppendLog("设置读取失败，使用默认值："+ex.Message);}}
         void SaveSettings(){try{string dir=Path.GetDirectoryName(settingsPath);Directory.CreateDirectory(dir);File.WriteAllText(settingsPath,new JavaScriptSerializer().Serialize(new SavedSettings{Simulation=simulation.Checked,Port=port.Text,Period=(int)period.Value,Timeout=(int)timeout.Value}),new System.Text.UTF8Encoding(false));}catch(Exception ex){AppendLog("设置保存失败："+ex.Message);}}
-        void RefreshPorts(){string old=port.Text;port.Items.Clear();port.Items.AddRange(SerialPort.GetPortNames().OrderBy(x=>x).ToArray());if(port.Items.Contains(old))port.SelectedItem=old;else if(port.Items.Count>0)port.SelectedIndex=0;}
+        void RefreshPorts(){string old=port.Text;port.Items.Clear();port.Items.AddRange(SerialPort.GetPortNames().OrderBy(x=>x.Length).ThenBy(x=>x,StringComparer.OrdinalIgnoreCase).ToArray());if(port.Items.Contains(old))port.SelectedItem=old;else if(port.Items.Count>0)port.SelectedIndex=0;}
         void ShowError(string title,Exception ex){MessageBox.Show(this,ex.Message,title,MessageBoxButtons.OK,MessageBoxIcon.Error);}
         static Label TextLabel(string value){return new Label{Text=value,AutoSize=true,Padding=new Padding(2,6,2,0),ForeColor=UiTheme.Muted};}
         static Label StatusLabel(string value){return new Label{Text=value,AutoSize=true,Padding=new Padding(0,4,16,0),ForeColor=UiTheme.Muted,MaximumSize=new Size(480,0)};}

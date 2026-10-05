@@ -21,7 +21,7 @@ namespace ExperimentMonitor {
         readonly ComboBox quick=new ComboBox { Width=130,DropDownStyle=ComboBoxStyle.DropDownList,Margin=new Padding(3,0,3,0) };
         readonly TextBox search=new TextBox { Width=160 };
         readonly Label status=new Label { AutoSize=true,Text="实时趋势等待采样；滚轮缩放、拖动平移、双击回到最新。" };
-        readonly Button query=new Button { Text="查询完整范围",Width=112,Margin=new Padding(3,0,3,0) },latest=new Button { Text="回到最新",Width=92,Margin=new Padding(3,0,3,0) },all=new Button { Text="全选",Width=65 },none=new Button { Text="清空",Width=65 };
+        readonly StyledActionButton query=new StyledActionButton { Text="查询完整范围",Width=128,BackColor=UiTheme.Blue,IconGlyph="⌕",Margin=new Padding(3,0,3,0) },latest=new StyledActionButton { Text="回到最新",Width=100,Margin=new Padding(3,0,3,0) },all=new StyledActionButton { Text="全选",Width=72 },none=new StyledActionButton { Text="清空",Width=72 };
         readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer { Interval=1000 };
         readonly Dictionary<string,List<ChartSample>> liveData=new Dictionary<string,List<ChartSample>>();
         readonly Dictionary<string,bool> pointChecked=new Dictionary<string,bool>();
@@ -44,18 +44,23 @@ namespace ExperimentMonitor {
 
         void BuildLayout(){
             var root=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(3) };root.RowStyles.Add(new RowStyle(SizeType.AutoSize));root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,26));Controls.Add(root);
-            var toolbar=new FlowLayoutPanel { Dock=DockStyle.Fill,FlowDirection=FlowDirection.TopDown,WrapContents=false,AutoScroll=false,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(4,3,2,2),BackColor=Color.White };
-            var viewRow=new FlowLayoutPanel { Width=840,Height=34,AutoSize=false,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=Padding.Empty };
-            viewRow.Controls.Add(TextLabel("视图"));viewRow.Controls.Add(mode);viewRow.Controls.Add(TextLabel("来源"));viewRow.Controls.Add(source);toolbar.Controls.Add(viewRow);
-            var timeRow=new FlowLayoutPanel { Width=840,Height=34,AutoSize=false,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=Padding.Empty };
-            timeRow.Controls.Add(TextLabel("时间从"));timeRow.Controls.Add(from);timeRow.Controls.Add(TextLabel("到"));timeRow.Controls.Add(to);toolbar.Controls.Add(timeRow);
-            var actionRow=new FlowLayoutPanel { Width=840,Height=34,AutoSize=false,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=Padding.Empty };
-            actionRow.Controls.Add(quick);actionRow.Controls.Add(query);actionRow.Controls.Add(latest);toolbar.Controls.Add(actionRow);
+            // 两行工具区:行内容自适应宽度,不再硬编码 840px(消除右侧 39% 留白)。
+            var toolbar=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(6,4,6,4),BackColor=Color.White };
+            toolbar.RowStyles.Add(new RowStyle(SizeType.AutoSize));toolbar.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var viewRow=new FlowLayoutPanel { Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,AutoScroll=false,Margin=Padding.Empty,Padding=Padding.Empty };
+            viewRow.Controls.Add(TextLabel("视图"));viewRow.Controls.Add(new RoundedInputHost(mode) { Width=142 });viewRow.Controls.Add(TextLabel("来源"));viewRow.Controls.Add(new RoundedInputHost(source) { Width=122 });
+            viewRow.Controls.Add(TextLabel("时间从"));viewRow.Controls.Add(from);viewRow.Controls.Add(TextLabel("到"));viewRow.Controls.Add(to);
+            viewRow.Controls.Add(new RoundedInputHost(quick) { Width=142 });toolbar.Controls.Add(viewRow,0,0);
+            var actionRow=new FlowLayoutPanel { Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=new Padding(0,2,0,0) };
+            actionRow.Controls.Add(query);actionRow.Controls.Add(latest);toolbar.Controls.Add(actionRow,0,1);
             root.Controls.Add(toolbar,0,0);
             var split=new SplitContainer { Size=new Size(700,500),Dock=DockStyle.Fill,Panel1MinSize=205,Panel2MinSize=350,SplitterWidth=6,SplitterDistance=265,BackColor=UiTheme.Canvas,BorderStyle=BorderStyle.None };
+            // 设备列表固定高度(4 台设备,去掉底部死空间),测点列表吃掉剩余高度;搜索框拉满整行。
             var left=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=6,Padding=new Padding(5),BackColor=Color.White };
-            left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Absolute,32));left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Percent,36));left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Percent,64));
-            search.Dock=DockStyle.Fill;var searchRow=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=false,AutoScroll=true,Margin=Padding.Empty };all.Width=58;none.Width=58;searchRow.Controls.Add(search);searchRow.Controls.Add(all);searchRow.Controls.Add(none);
+            left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Absolute,40));left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Absolute,100));left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+            var searchRow=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=Padding.Empty,Padding=Padding.Empty };
+            searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            searchRow.Controls.Add(new RoundedInputHost(search) { Dock=DockStyle.Fill },0,0);searchRow.Controls.Add(all,1,0);searchRow.Controls.Add(none,2,0);
             left.Controls.Add(TextLabel("搜索测点并按设备筛选"),0,0);left.Controls.Add(searchRow,0,1);left.Controls.Add(TextLabel("设备"),0,2);left.Controls.Add(devices,0,3);left.Controls.Add(TextLabel("测点"),0,4);left.Controls.Add(channels,0,5);split.Panel1.Controls.Add(left);
             var chartHost=new Panel { Dock=DockStyle.Fill,Padding=new Padding(6),BackColor=Color.White,AutoScroll=true };chart.Dock=DockStyle.Top;chartHost.Controls.Add(chart);chartHost.SizeChanged+=(s,e)=>{chart.Width=Math.Max(200,chartHost.ClientSize.Width-16);ResizeChart();};split.Panel2.Controls.Add(chartHost);root.Controls.Add(split,0,1);
             status.Dock=DockStyle.Fill;status.TextAlign=ContentAlignment.MiddleLeft;status.ForeColor=UiTheme.Muted;root.Controls.Add(status,0,2);
