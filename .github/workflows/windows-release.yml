@@ -58,8 +58,12 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $zip = '${{ steps.package.outputs.zip }}'
-          gh release view $tag 2>$null
-          if ($LASTEXITCODE -ne 0) {
+          $previousErrorActionPreference = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          gh release view $tag *> $null
+          $releaseExists = $LASTEXITCODE -eq 0
+          $ErrorActionPreference = $previousErrorActionPreference
+          if (-not $releaseExists) {
             gh release create $tag --title "PV AC Monitor $tag" --generate-notes
           }
           gh release upload $tag $zip --clobber
