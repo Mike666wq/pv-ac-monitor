@@ -131,7 +131,7 @@ namespace ExperimentMonitor {
         }
 
         void BuildDiagnostics(TabPage page) {
-            var shell=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(4) };shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.Absolute,110));shell.RowStyles.Add(new RowStyle(SizeType.Percent,100));page.Controls.Add(shell);
+            var shell=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(4),AutoScroll=true };shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.Absolute,110));shell.RowStyles.Add(new RowStyle(SizeType.Percent,100));page.Controls.Add(shell);
             var box=new GroupBox { Text="只读 Modbus 03 手动读取",Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(8),BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink };
             // Let the controls wrap into additional rows at narrow widths. A fixed-height
             // diagnostic strip clipped the parser and send buttons on 960px windows.
@@ -160,7 +160,7 @@ namespace ExperimentMonitor {
             var resultBox=new GroupBox { Text="最近一次读取",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6) };resultBox.Controls.Add(result);shell.Controls.Add(resultBox,0,1);
             // 提示语只留一处:作为通信日志的初始内容。
             log.Text="诊断只读且不写入正式历史记录。请先连接，再停止周期采集后发送读取。\r\n";
-            var logBox=new GroupBox { Text="通信日志",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6) };logBox.Controls.Add(log);shell.Controls.Add(logBox,0,2);
+            var logBox=new GroupBox { Text="通信日志",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6),MinimumSize=new Size(0,100) };logBox.Controls.Add(log);shell.Controls.Add(logBox,0,2);
             raw.CheckedChanged+=(s,e)=>Engine.RecordRawLog=raw.Checked;clear.Click+=(s,e)=>{log.Clear();diagnosticRequests=diagnosticGood=diagnosticBad=0;counters.Text="读取 0 次 · 成功 0 · 异常 0";result.Text="日志已清空；正式历史记录与本地数据库不会受影响。";};
             read.Click+=async(s,e)=>{
                 if(!Engine.IsConnected){MessageBox.Show(this,"请先连接数据源。","通信诊断",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
