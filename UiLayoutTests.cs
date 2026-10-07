@@ -219,7 +219,7 @@ namespace ExperimentMonitor {
                 Check(send!=null&&FullyVisible(send,form),title+" 手动读取按钮完整位于可视区域内，未被裁切"+(send==null?"":" · "+DescribeBounds(send)));
                 Control clear=Find<Control>(page,c=>c.Text=="清空日志");Check(clear!=null&&FullyVisible(clear,form),DescribeBounds(clear)+title+" 清空日志按钮完整位于可视区域内");
                 ComboBox parser=Find<ComboBox>(page,c=>c.Items.Contains("RAW 原始寄存器"));Check(parser!=null&&FullyVisible(parser,form),title+" 通信解析方式选择框完整可见"+(parser==null?"":" · "+DescribeBounds(parser)));
-                TextBox log=Find<TextBox>(page,c=>c.Multiline&&c.ReadOnly);Check(log!=null&&FullyVisible(log,form),title+" 通信日志显示区在页面内，内容可使用滚动条查看");
+                TextBox log=Find<TextBox>(page,c=>c.Multiline&&c.ReadOnly);Control logContainer=log==null?null:log.Parent;Check(log!=null&&log.Dock==DockStyle.Fill&&log.ScrollBars==ScrollBars.Both&&log.ClientSize.Width>=200&&log.ClientSize.Height>=50&&logContainer!=null&&FullyVisible(logContainer,form),title+" 通信日志容器完整位于页面内，日志区尺寸可用且内容可使用滚动条查看"+(log==null?"":" · "+DescribeBounds(log)));
             }
             if(page.Text=="云端连接")Check(Find<Control>(page,c=>c.Text.Contains("HTTPS"))!=null,title+" 云端连接信息存在");
         }
