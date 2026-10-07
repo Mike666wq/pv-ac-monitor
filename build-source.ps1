@@ -105,10 +105,10 @@ if ($Test) {
     foreach ($name in $resultNames) {
         $resultPath = Join-Path $testRoot $name
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw ('Self-test did not produce ' + $name + '. Evidence directory: ' + $testRoot) }
-        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($result.passed -ne $true) { throw ('Self-test evidence failed: ' + $name + '. Evidence directory: ' + $testRoot) }
     }
-    $uiResult = Get-Content -LiteralPath (Join-Path $testRoot 'ui-test-result.json') -Raw | ConvertFrom-Json
+    $uiResult = Get-Content -LiteralPath (Join-Path $testRoot 'ui-test-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($uiResult.cases.Count -ne 9 -or $uiResult.screenshots.Count -lt 49) { throw ('Self-test UI evidence is incomplete. Evidence directory: ' + $testRoot) }
     Write-Output ('Self-test passed. Isolated results: ' + $testRoot)
 }

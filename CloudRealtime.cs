@@ -64,6 +64,8 @@ namespace ExperimentMonitor
         [DataMember(Name="subscriptionId",IsRequired=true)]public string SubscriptionId{get;set;}
         [DataMember(Name="leaseSeconds",IsRequired=true)]public int LeaseSeconds{get;set;}
         [DataMember(Name="requestedDevices",IsRequired=true)]public string[] RequestedDevices{get;set;}
+        [DataMember(Name="requestedHistoryPoints",EmitDefaultValue=false)]public string[] RequestedHistoryPoints{get;set;}
+        [DataMember(Name="backfillSeconds",EmitDefaultValue=false)]public int BackfillSeconds{get;set;}
     }
     [DataContract]
     sealed class CloudHeartbeatRequest
@@ -78,6 +80,29 @@ namespace ExperimentMonitor
     {
         [DataMember(Name="subscriptionId")]public string SubscriptionId{get;set;}
         [DataMember(Name="snapshot")]public ExperimentCloudSnapshot Snapshot{get;set;}
+    }
+    [DataContract]
+    public sealed class ExperimentBackfillPoint
+    {
+        [DataMember(Name="source")]public string Source{get;set;}
+        [DataMember(Name="equipmentId")]public string EquipmentId{get;set;}
+        [DataMember(Name="id")]public string Id{get;set;}
+        [DataMember(Name="connectionSessionId")]public string ConnectionSessionId{get;set;}
+        [DataMember(Name="acquisitionSessionId")]public string AcquisitionSessionId{get;set;}
+        [DataMember(Name="observedUtc")]public string ObservedUtc{get;set;}
+        [DataMember(Name="value")]public double? Value{get;set;}
+        [DataMember(Name="quality")]public string Quality{get;set;}
+        [DataMember(Name="unit")]public string Unit{get;set;}
+        [DataMember(Name="configVersion")]public string ConfigVersion{get;set;}
+        [DataMember(Name="acquisitionRound")]public long AcquisitionRound{get;set;}
+    }
+    [DataContract]
+    public sealed class ExperimentBackfillPost
+    {
+        [DataMember(Name="subscriptionId")]public string SubscriptionId{get;set;}
+        [DataMember(Name="schemaVersion")]public int SchemaVersion{get;set;}
+        [DataMember(Name="module")]public string Module{get;set;}
+        [DataMember(Name="points")]public ExperimentBackfillPoint[] Points{get;set;}
     }
     [DataContract]
     sealed class CloudAcknowledgement{[DataMember(Name="accepted")]public bool Accepted{get;set;}}
@@ -149,6 +174,7 @@ namespace ExperimentMonitor
     {
         Task<CloudHeartbeatReply> HeartbeatAsync(CloudConfiguration configuration,CancellationToken token);
         Task SendSnapshotAsync(CloudConfiguration configuration,CloudSnapshotPost post,CancellationToken token);
+        Task SendBackfillAsync(CloudConfiguration configuration,ExperimentBackfillPost post,CancellationToken token);
     }
     public sealed class HttpsCloudTransport:ICloudTransport
     {
@@ -166,6 +192,8 @@ namespace ExperimentMonitor
         {CloudHeartbeatRequest request=new CloudHeartbeatRequest{DeviceId=configuration.DeviceId,Alias=configuration.Alias,Module="experiment",SchemaVersion=1};return SendAsync<CloudHeartbeatReply>(configuration,"/api/experiment/heartbeat",request,replySerializer,token);}
         public async Task SendSnapshotAsync(CloudConfiguration configuration,CloudSnapshotPost post,CancellationToken token)
         {CloudAcknowledgement a=await SendAsync<CloudAcknowledgement>(configuration,"/api/experiment/snapshots",post,acknowledgementSerializer,token).ConfigureAwait(false);if(a==null||!a.Accepted)throw new InvalidDataException("云端未确认快照");}
+        public async Task SendBackfillAsync(CloudConfiguration configuration,ExperimentBackfillPost post,CancellationToken token)
+        {CloudAcknowledgement a=await SendAsync<CloudAcknowledgement>(configuration,"/api/experiment/backfill",post,acknowledgementSerializer,token).ConfigureAwait(false);if(a==null||!a.Accepted)throw new InvalidDataException("云端未确认历史回填");}
         async Task<T> SendAsync<T>(CloudConfiguration c,string route,object payload,DataContractJsonSerializer responseSerializer,CancellationToken token)
         {
             Uri uri=BuildUri(c,route);HttpWebRequest req=requestFactory==null?(HttpWebRequest)WebRequest.Create(uri):requestFactory(uri);if(requestFactory!=null){IPAddress injectedIp;if(req==null||req.RequestUri==null||!IPAddress.TryParse(req.RequestUri.Host,out injectedIp)||!IPAddress.IsLoopback(injectedIp))throw new InvalidOperationException("测试传输仅允许 loopback 请求");}req.Method="POST";req.ContentType="application/json; charset=utf-8";req.Accept="application/json";req.Timeout=timeoutMilliseconds;req.ReadWriteTimeout=timeoutMilliseconds;req.AllowAutoRedirect=false;req.Proxy=requestFactory==null?WebRequest.DefaultWebProxy:null;req.Headers[HttpRequestHeader.Authorization]="Bearer "+(c.Token??"");

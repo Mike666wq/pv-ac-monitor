@@ -6,6 +6,10 @@
 !/README.md
 !/*.cs
 !/build-source.ps1
+!/package-ci.ps1
+!/.github/
+!/.github/workflows/
+!/.github/workflows/*.yml
 !/protocol.json
 !/ExperimentMonitorDemo.exe.config
 !/ExperimentMonitorDemo.manifest

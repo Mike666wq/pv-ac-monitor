@@ -1,0 +1,65 @@
+name: Windows build and release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and run isolated self-tests
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\build-source.ps1 -Test
+
+      - name: Package runtime folder
+        id: package
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          $exe = 'bin\ExperimentMonitorDemo.exe'
+          $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $exe)).FileVersion
+          $version = $fileVersion -replace '\.0$',''
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tagVersion = $env:GITHUB_REF_NAME -replace '^v',''
+            if ($tagVersion -ne $version) {
+              throw "Tag version $tagVersion does not match EXE file version $version"
+            }
+          }
+          .\package-ci.ps1 -Version $version -OutputDirectory $env:RUNNER_TEMP
+          $zip = (Resolve-Path (Join-Path $env:RUNNER_TEMP "PV-AC-Monitor-Windows-$version.zip")).Path
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: PV-AC-Monitor-Windows-${{ steps.package.outputs.version }}
+          path: ${{ steps.package.outputs.zip }}
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish GitHub Release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $zip = '${{ steps.package.outputs.zip }}'
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "PV AC Monitor $tag" --generate-notes
+          }
+          gh release upload $tag $zip --clobber

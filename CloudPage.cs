@@ -18,7 +18,7 @@ namespace ExperimentMonitor {
         public string CurrentStatusLabel { get {CloudPublisherStatus s=publisher.SnapshotStatus;return s.State+"；租约"+(s.LeaseValid?"有效":"无效")+"；已确认 "+s.Accepted+"，失败 "+s.Failed;} }
         public CloudPage(string root,MonitorEngine engine) {
             this.engine=engine;Dock=DockStyle.Fill;config=CloudConfiguration.Load(Path.Combine(root,"cloud-settings.json"));
-            publisher=new CloudPublisher(()=>Volatile.Read(ref config));engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
+            publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"));engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
             // 双栏分组布局(对齐 BMS 云端连接页):左 设备身份+连接设置,右 连接状态。
             // 左右两栏顶边平齐:不再单独放大标题(选项卡已标明页面);
             // 外边距 14、栏间距 12,左右框的边线严格对齐。
