@@ -160,7 +160,7 @@ namespace ExperimentMonitor {
             string storage=Path.Combine(Field<string>(form,"appRoot"),"data","storage");
             Check(ExperimentHistory.Count(storage,filter)==expected,title+" UI details match database for applied filter");
             var exported=await ExperimentExport.ExportAsync(Path.Combine(Field<string>(form,"appRoot"),"data","storage"),filter,Path.Combine(output,"exports-"+width),"xlsx",null,CancellationToken.None);
-            Check(exported.Rows==expected,title+" UI record count matches full-range export: UI="+expected+", exported="+exported.Rows);
+            long exportableExpected=ExperimentHistory.Query(storage,filter).Count(r=>ExperimentExport.ExportablePoint(r.Point));Check(exported.Rows==exportableExpected,title+" full-range export contains every exportable record: exportable="+exportableExpected+", exported="+exported.Rows);
             Trace("LIFECYCLE END "+title);
         }
         static void VerifyConnectionControls(DashboardForm form,string title){
@@ -230,7 +230,7 @@ namespace ExperimentMonitor {
             foreach(var entry in map){
                 Label label=entry.Value[0],value=entry.Value[1],unit=entry.Value[2],quality=entry.Value[3];
                 // 新卡片版式:数值/单位标签按内容自适应宽度,布局区域是它们的父容器。
-                Check(value.Parent.ClientSize.Width>=120,title+" "+entry.Key+" 数值区域不被挤窄");Check(value.Parent.ClientSize.Height>=30,title+" "+entry.Key+" 数值区域高度可显示完整字符");string rawUnit=(PointCatalog.Get(entry.Key).Unit??"").Replace(" · 倍率待核准","").Replace("· 倍率待核准","").Trim();bool unitless=rawUnit.Length==0||rawUnit=="原始值"||rawUnit=="原始码";Check(unitless?unit.Text.Length==0:unit.Text==rawUnit,title+" "+entry.Key+" 单位显示与点表一致");Check(label.ClientSize.Width>=120&&quality.ClientSize.Width>=120,title+" "+entry.Key+" 名称与质量文字完整可查看");
+                Check(value.Parent.ClientSize.Width>=120,title+" "+entry.Key+" 数值区域不被挤窄");Check(value.Parent.ClientSize.Height>=30,title+" "+entry.Key+" 数值区域高度可显示完整字符");string rawUnit=PointCatalog.Get(entry.Key).Unit??"";bool unitless=rawUnit.Length==0||rawUnit=="原始值"||rawUnit=="原始码";Check(unitless?unit.Text.Length==0:unit.Text==rawUnit,title+" "+entry.Key+" 单位显示与点表一致");Check(label.ClientSize.Width>=120&&quality.ClientSize.Width>=120,title+" "+entry.Key+" 名称与质量文字完整可查看");
                 string[] roles={"名称", "数值", "单位", "状态"};Label[] contents={label,value,unit,quality};
                 for(int i=0;i<contents.Length;i++){if(i==2&&unitless)continue;Check(FitsOverviewContainers(contents[i],viewport),title+" "+entry.Key+" "+roles[i]+"完整位于卡片、流式布局和分组容器内，不被裁切 · "+DescribeBounds(contents[i]));}
                 string[] lines=value.Text.Split(new[]{Environment.NewLine},StringSplitOptions.None);int maxWidth=0,lineHeight=0;foreach(string line in lines){Size measured=TextRenderer.MeasureText(String.IsNullOrEmpty(line)?" ":line,value.Font,new Size(Int32.MaxValue,Int32.MaxValue),TextFormatFlags.NoPadding|TextFormatFlags.SingleLine);maxWidth=Math.Max(maxWidth,measured.Width);lineHeight=Math.Max(lineHeight,measured.Height);}

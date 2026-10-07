@@ -68,9 +68,9 @@ namespace ExperimentMonitor {
             Check("CSV formula guard",Journal.Cell("=1+1").StartsWith("\"'="));
             string testRoot=Path.Combine(root,".testing",DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N").Substring(0,6));
             Directory.CreateDirectory(testRoot);
-            using(var form=new MonitorForm(points,testRoot)) form.TestSimulationRun(false);
+            using(var form=new MonitorForm(points,testRoot)) {form.SetSimulationForTest(true);form.TestSimulationRun(false);}
             Check("Hidden UI one round saves all37 points",true);
-            using(var form=new MonitorForm(points,testRoot)) form.TestSimulationRun(true);
+            using(var form=new MonitorForm(points,testRoot)) {form.SetSimulationForTest(true);form.TestSimulationRun(true);}
             Check("Hidden UI cancellation closes worker",true);
             File.WriteAllText(Path.Combine(root,"self-test-result.json"),new JavaScriptSerializer().Serialize(new {passed=true,count=passed.Count,checks=passed,hardware_tested=false}));
         }

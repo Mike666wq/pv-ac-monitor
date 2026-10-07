@@ -65,11 +65,9 @@ namespace ExperimentMonitor {
                     // 显式 Percent 列:缺省列样式在宽度收缩时可能让 Fill 子控件溢出容器。
                     grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
                     grid.RowStyles.Add(new RowStyle(SizeType.Absolute,22));grid.RowStyles.Add(new RowStyle(SizeType.Percent,100));grid.RowStyles.Add(new RowStyle(SizeType.Absolute,20));
-                    bool unconfirmed=!info.ScaleConfirmed;
-                    var label=new Label { Text=info.Label+"  "+p.name,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Muted,Font=new Font(baseFont.FontFamily,8.5f),AutoEllipsis=true,BackColor=UiTheme.Surface,Margin=Padding.Empty,Padding=new Padding(0,0,unconfirmed?86:0,0) };
+                    var label=new Label { Text=info.Label+"  "+p.name,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Muted,Font=new Font(baseFont.FontFamily,8.5f),AutoEllipsis=true,BackColor=UiTheme.Surface,Margin=Padding.Empty,Padding=Padding.Empty };
                     var value=new Label { Text="—",Dock=DockStyle.Fill,TextAlign=ContentAlignment.BottomLeft,ForeColor=UiTheme.Ink,Font=new Font(baseFont.FontFamily,info.Mode=="U16 / I16"?9.5f:17,FontStyle.Bold),AutoEllipsis=false,UseCompatibleTextRendering=true,BackColor=UiTheme.Surface };
                     string unitText=info.Unit??"";
-                    unitText=unitText.Replace(" · 倍率待核准","").Replace("· 倍率待核准","").Trim();
                     // “原始值/原始码”是无单位占位,不占用单位列,让大数值(含 E 记数法)用满整行。
                     if(unitText=="原始值"||unitText=="原始码")unitText="";
                     var unit=new Label { Text=unitText,AutoSize=false,Dock=DockStyle.Fill,TextAlign=ContentAlignment.BottomLeft,ForeColor=UiTheme.Muted,Font=new Font(baseFont.FontFamily,8.5f),BackColor=UiTheme.Surface,Margin=Padding.Empty,Padding=Padding.Empty };
@@ -83,14 +81,8 @@ namespace ExperimentMonitor {
                     if(unitWidth>0){valueRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,unitWidth));valueRow.Controls.Add(unit,1,0);}
                     valueRow.Controls.Add(value,0,0);
                     grid.Controls.Add(label,0,0);grid.Controls.Add(valueRow,0,1);grid.Controls.Add(status,0,2);card.Controls.Add(grid);
-                    if(unconfirmed) {
-                        var badge=new Label { Text="倍率待核准",AutoSize=true,ForeColor=UiTheme.Ink,BackColor=Color.FromArgb(245,197,66),Font=new Font(baseFont.FontFamily,7.5f),Padding=new Padding(3,1,3,1) };
-                        // AutoSize 的最终宽度在创建时还未确定,位置必须在布局事件里按实际宽度计算。
-                        card.Layout+=(s,e)=>{ badge.SetBounds(card.Width-badge.Width-card.Padding.Right-2,6,0,0,BoundsSpecified.Location); };
-                        card.Controls.Add(badge);badge.BringToFront();
-                    }
                     flow.Controls.Add(card);cards[p.name]=new[]{label,value,unit,status};
-                    tips.SetToolTip(card,p.binding.device+" · 站号 "+p.binding.slave+" · 地址 "+p.binding.address_zero_based+" · "+info.Label+(info.ScaleConfirmed?"":" · 倍率待核准")+(info.Mode=="U16 / I16"?" · U16/I16 原始值，不作状态映射":""));
+                    tips.SetToolTip(card,p.binding.device+" · 站号 "+p.binding.slave+" · 地址 "+p.binding.address_zero_based+" · "+info.Label+(info.Mode=="U16 / I16"?" · U16/I16 原始值，不作状态映射":""));
                 }
                 bool resizePending=false,resizing=false;
                 Action resizeGroup=null;

@@ -46,7 +46,7 @@ namespace ExperimentMonitor {
         readonly string root;
         readonly DataTable table=new DataTable();
         readonly DataGridView grid=new DataGridView();
-        readonly CheckBox simulation=new CheckBox { Text="模拟设备",Checked=true,AutoSize=true };
+        readonly CheckBox simulation=new CheckBox { Text="模拟设备",Checked=false,AutoSize=true };
         readonly ComboBox port=new ComboBox { Width=90,DropDownStyle=ComboBoxStyle.DropDownList };
         readonly NumericUpDown baud=Number(9600,300,115200,90), interval=Number(2,1,3600,65), timeout=Number(8,1,30,60);
         readonly Button start=ButtonOf("连接并采集"), once=ButtonOf("读取一轮"), stop=ButtonOf("停止 / 断开"), manual=ButtonOf("手动读取 03");
@@ -120,6 +120,7 @@ namespace ExperimentMonitor {
             var names=System.IO.Ports.SerialPort.GetPortNames().OrderBy(p=>p).ToList(); if(!names.Contains("COM9")) names.Add("COM9");
             port.Items.Clear(); port.Items.AddRange(names.ToArray()); port.SelectedItem=names.Contains(selected)?selected:"COM9";
         }
+        internal void SetSimulationForTest(bool value){simulation.Checked=value;}
         void BuildGrid() {
             table.Columns.Add("采集",typeof(bool));
             foreach(string c in new [] {"点名","说明","设备 / 站号","零基地址","长度","解码","当前值","状态","更新时间","数据HEX"}) table.Columns.Add(c);

@@ -81,7 +81,7 @@ namespace ExperimentMonitor {
         public static int Run(List<Point> points, string root) {
             if (points == null || points.Count == 0) throw new ArgumentException("点表不能为空", "points");
             if (String.IsNullOrWhiteSpace(root)) throw new ArgumentException("根目录不能为空", "root");
-            Point point = points[0];
+            Point point = points.First(p => ExperimentExport.ExportablePoint(p.name));
             string scratch = Path.Combine(Path.GetFullPath(root), ".export-failure-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(scratch);
             int checks = 0;

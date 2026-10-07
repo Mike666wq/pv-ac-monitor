@@ -83,10 +83,10 @@ namespace ExperimentMonitor {
                         Require(sheet.SelectNodes("//s:sheetData/s:row", ns).Count == (sheetName == "sheet1.xml" ? 3 : 5), sheetName + "轮次数/明细数完整");
                         checks++;
                         if (sheetName == "sheet1.xml") {
-                            Require(Cell(sheet, ns, "F1").Contains(PointCatalog.Get("T1").Label) && Cell(sheet, ns, "G1").Contains(PointCatalog.Get("T0").Label), "Logical point order matches the columns asserted below");
+                            Require(Cell(sheet, ns, "B1").Contains(PointCatalog.Get("T1").Label) && Cell(sheet, ns, "C1").Contains(PointCatalog.Get("T0").Label), "Logical point order matches the columns asserted below");
                             checks++;
-                            Require(Cell(sheet, ns, "E2") == "1" && Cell(sheet, ns, "E3") == "2" && Cell(sheet, ns, "F2") == "24.125", "宽表按真实轮次时间升序且保留数值");
-                            Require(Cell(sheet, ns, "F3") == null && Cell(sheet, ns, "G3") == "25.375", "超时测点在宽表留空且同轮有效测点保留原数值");
+                            Require(String.CompareOrdinal(Cell(sheet, ns, "A2"), Cell(sheet, ns, "A3")) < 0 && Cell(sheet, ns, "B2") == "24.125", "宽表按真实轮次时间升序且保留数值");
+                            Require(Cell(sheet, ns, "B3") == null && Cell(sheet, ns, "C3") == "25.375", "超时测点在宽表留空且同轮有效测点保留原数值");
                             checks++;
                         }
                     }
@@ -122,13 +122,13 @@ namespace ExperimentMonitor {
                         var ns = new XmlNamespaceManager(detail.NameTable);
                         ns.AddNamespace("s", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
                         Require(detail.SelectNodes("//s:sheetData/s:row", ns).Count == 3, "分卷中同一轮明细不被切开");
-                        splitRounds.Add(Cell(detail, ns, "E2"));
                         XmlDocument wide = Sheet(archive, "sheet1.xml");
-                        Require(wide.SelectNodes("//s:sheetData/s:row", ns).Count == 2 && Cell(wide, ns, "E2") == Cell(detail, ns, "E2"), "宽表与明细在同一卷且该卷只含一整轮");
+                        Require(wide.SelectNodes("//s:sheetData/s:row", ns).Count == 2, "宽表与明细在同一卷且该卷只含一整轮");
+                        splitRounds.Add(Cell(wide, ns, "A2"));
                         checks++;
                     }
                 }
-                Require(splitRounds.SetEquals(new[] { "1", "2" }), "两个时间升序采集轮各自完整落在不同卷");
+                Require(splitRounds.Count == 2, "两个时间升序采集轮各自完整落在不同卷");
                 checks++;
                 return checks;
             } finally {

@@ -20,7 +20,7 @@ namespace ExperimentMonitor {
         readonly DateTimePicker to=new DateTimePicker { Width=210,Format=DateTimePickerFormat.Custom,CustomFormat="yyyy-MM-dd HH:mm:ss",Margin=new Padding(3,0,3,0) };
         readonly ComboBox quick=new ComboBox { Width=130,DropDownStyle=ComboBoxStyle.DropDownList,Margin=new Padding(3,0,3,0) };
         readonly TextBox search=new TextBox { Width=160 };
-        readonly Label status=new Label { AutoSize=true,Text="实时趋势等待采样；滚轮缩放、拖动平移、双击回到最新。" };
+        readonly Label status=new Label { AutoSize=true,Text="实时趋势等待采样；普通滚轮滚动页面，Ctrl+滚轮缩放，双击恢复完整范围。" };
         readonly StyledActionButton query=new StyledActionButton { Text="查询完整范围",Width=128,BackColor=UiTheme.Blue,IconGlyph="⌕",Margin=new Padding(3,0,3,0) },latest=new StyledActionButton { Text="回到最新",Width=100,Margin=new Padding(3,0,3,0) },all=new StyledActionButton { Text="全选",Width=72 },none=new StyledActionButton { Text="清空",Width=72 };
         readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer { Interval=1000 };
         readonly Dictionary<string,List<ChartSample>> liveData=new Dictionary<string,List<ChartSample>>();
@@ -82,7 +82,7 @@ namespace ExperimentMonitor {
         void UpdateLiveSelection(){if(mode.SelectedIndex==0)chart.SelectPoints(SelectedPoints());else{InvalidateHistoryQuery();if(!queryBusy)status.Text="测点筛选已更改 · 点击查询加载完整历史趋势";}ResizeChart();}
         void ResizeChart(){if(chart.IsDisposed)return;chart.Height=Math.Max(210,chart.RequiredHeight);}
         void InvalidateHistoryQuery(){generation++;if(queryCancellation!=null)try{queryCancellation.Cancel();}catch{}}
-        void SwitchMode(){InvalidateHistoryQuery();bool hist=mode.SelectedIndex==1;chart.RequestExactSamples=hist;from.Enabled=to.Enabled=quick.Enabled=query.Enabled=hist;source.Enabled=hist;latest.Enabled=!hist;if(hist){chart.SetSeriesData(new Dictionary<string,IEnumerable<ChartSample>>());status.Text="选择时间范围及测点，查询整个范围的历史数据。";}else{ClearLive();status.Text="实时趋势等待采样；滚轮缩放、拖动平移、双击回到最新。";chart.SelectPoints(SelectedPoints());}}
+        void SwitchMode(){InvalidateHistoryQuery();bool hist=mode.SelectedIndex==1;chart.RequestExactSamples=hist;from.Enabled=to.Enabled=quick.Enabled=query.Enabled=hist;source.Enabled=hist;latest.Enabled=!hist;if(hist){chart.SetSeriesData(new Dictionary<string,IEnumerable<ChartSample>>());status.Text="选择时间范围及测点，查询整个范围的历史数据。";}else{ClearLive();status.Text="实时趋势等待采样；普通滚轮滚动页面，Ctrl+滚轮缩放，双击恢复完整范围。";chart.SelectPoints(SelectedPoints());}}
         void ClearLive(){liveData.Clear();chart.Clear();liveSource=engine.ActiveSource;UpdateLiveSelection();}
         void OnConnection(bool connected,string src){if(disposed)return;try{BeginInvoke((Action)(()=>{if(!connected||liveSource!=src)ClearLive();}));}catch{}}
         void OnObservation(Observation o){if(disposed||o==null)return;try{BeginInvoke((Action)(()=>{if(disposed||mode.SelectedIndex!=0)return;if(liveSource!=o.Source){liveData.Clear();chart.Clear();liveSource=o.Source;}List<ChartSample> list;if(!liveData.TryGetValue(o.Point,out list)){list=new List<ChartSample>();liveData[o.Point]=list;}list.Add(new ChartSample{Utc=o.Utc,Value=o.Quality=="good"?o.Number:null,Quality=o.Quality});if(list.Count>12000)list.RemoveRange(0,list.Count-12000);chart.Add(o);status.Text="实时趋势 · "+(o.Source=="serial"?"实机":"模拟")+" · "+(o.Quality=="good"?"最新 "+PointCatalog.Get(o.Point).Label+" = "+(o.Number.HasValue?o.Number.Value.ToString("G9",CultureInfo.InvariantCulture):o.Value):"异常点已保留断点");}));}catch{}}

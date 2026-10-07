@@ -51,8 +51,10 @@ namespace ExperimentMonitor {
             using(var restarted=new MonitorEngine(points,folder)) {
                 Check(!restarted.IsConnected&&!restarted.IsRunning&&ExperimentHistory.Count(storage,filter)==74,"重启只恢复配置且历史保持可读",checks);
             }
+            int exportableRows=rows.Count(r=>ExperimentExport.ExportablePoint(r.Point));
+            Check(exportableRows<rows.Count&&exportableRows>0,"导出过滤剔除0006H与运行状态点但保留温度等测点",checks);
             var excel=ExperimentExport.ExportAsync(storage,filter,folder,"xlsx",null,CancellationToken.None).GetAwaiter().GetResult();
-            Check(excel.Rows==74,"Excel导出包含完整74条样本",checks);
+            Check(excel.Rows==exportableRows,"Excel导出包含全部可导出样本",checks);
             using(var zip=ZipFile.OpenRead(Path.Combine(excel.OutputDirectory,excel.Files.First(f=>f.EndsWith(".xlsx"))))) {
                 var workbook=new XmlDocument();using(var stream=zip.GetEntry("xl/workbook.xml").Open())workbook.Load(stream);
                 var ns=new XmlNamespaceManager(workbook.NameTable);ns.AddNamespace("s","http://schemas.openxmlformats.org/spreadsheetml/2006/main");
@@ -60,12 +62,13 @@ namespace ExperimentMonitor {
                 var wide=new XmlDocument();using(var stream=zip.GetEntry("xl/worksheets/sheet1.xml").Open())wide.Load(stream);
                 Check(wide.SelectNodes("//s:sheetData/s:row",ns).Count==3,"宽表74点对应两轮不是74行",checks);
                 var detail=new XmlDocument();using(var stream=zip.GetEntry("xl/worksheets/sheet2.xml").Open())detail.Load(stream);
-                Check(detail.SelectNodes("//s:sheetData/s:row",ns).Count==75,"明细74样本完整保存",checks);
+                Check(detail.SelectNodes("//s:sheetData/s:row",ns).Count==exportableRows+1,"明细可导出样本完整保存",checks);
+                Check(!detail.OuterXml.Contains("0006H")&&!wide.OuterXml.Contains("0006H"),"宽表与明细不含已过滤的原寄存器点",checks);
                 var values=wide.SelectNodes("//s:row[@r='2']/s:c/s:v",ns).Cast<XmlNode>().Select(n=>n.InnerText).ToArray();
                 Check(values.Contains("24")&&values.Any(n=>n.StartsWith("-0.075",StringComparison.Ordinal)),"宽表温度及负无功值为数值单元格",checks);
             }
             var csv=ExperimentExport.ExportAsync(storage,filter,folder,"csv",null,CancellationToken.None).GetAwaiter().GetResult();
-            Check(csv.Rows==74&&csv.Files.Count(f=>f.EndsWith(".csv"))>=3,"CSV包含宽表明细质量记录",checks);
+            Check(csv.Rows==exportableRows&&csv.Files.Count(f=>f.EndsWith(".csv"))>=3,"CSV包含宽表明细质量记录",checks);
             string wideCsv=csv.Files.First(f=>f.Contains("宽表")&&f.EndsWith(".csv"));
             Check(File.ReadAllLines(Path.Combine(csv.OutputDirectory,wideCsv)).Length==3,"CSV宽表与Excel轮次数一致",checks);
             Check(Directory.Exists(excel.OutputDirectory)&&csv.OutputDirectory!=excel.OutputDirectory,"重复导出保留既有结果",checks);

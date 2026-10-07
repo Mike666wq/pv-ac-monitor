@@ -24,7 +24,7 @@ namespace ExperimentMonitor {
         internal TabControl MainNavigation { get; private set; }
 
         readonly ComboBox port=new ComboBox { Width=100,DropDownStyle=ComboBoxStyle.DropDownList };
-        readonly CheckBox simulation=new CheckBox { Text="模拟数据",Checked=true,AutoSize=true };
+        readonly CheckBox simulation=new CheckBox { Text="模拟数据",Checked=false,AutoSize=true };
         readonly NumericUpDown period=new NumericUpDown { Minimum=1,Maximum=3600,Value=2,Width=72 };
         readonly NumericUpDown timeout=new NumericUpDown { Minimum=1,Maximum=30,Value=8,Width=66 };
         readonly StyledActionButton refresh=new StyledActionButton { Text="刷新",Width=68 };
@@ -212,7 +212,7 @@ namespace ExperimentMonitor {
         static string DisplayCardValue(Observation o){if(o.Mode=="U16 / I16"&&o.Value!=null){int split=o.Value.IndexOf(" / I16=",StringComparison.Ordinal);if(split>0){string a=o.Value.Substring(0,split),b=o.Value.Substring(split+3);int annotation=b.IndexOf('（');if(annotation>=0)b=b.Substring(0,annotation);return a+Environment.NewLine+b;}}return DisplayNumber(o);}
         static string QualityLabel(string q){if(q=="timeout")return "超时";if(q=="protocol_exception")return "协议异常";if(q=="decode_error")return "解码异常";if(q=="error")return "通信异常";return String.IsNullOrEmpty(q)?"质量未知":q;}
         void AppendLog(string value){if(log.TextLength>300000)log.Text=log.Text.Substring(log.TextLength-150000);log.AppendText(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture)+"  "+value+Environment.NewLine);}
-        void LoadSettings(){try{if(!File.Exists(settingsPath))return;SavedSettings s=new JavaScriptSerializer().Deserialize<SavedSettings>(File.ReadAllText(settingsPath));if(s==null)return;simulation.Checked=s.Simulation;period.Value=Math.Max(period.Minimum,Math.Min(period.Maximum,s.Period));timeout.Value=Math.Max(timeout.Minimum,Math.Min(timeout.Maximum,s.Timeout));if(!String.IsNullOrEmpty(s.Port)){if(!port.Items.Contains(s.Port))port.Items.Add(s.Port);port.SelectedItem=s.Port;}}catch(Exception ex){AppendLog("设置读取失败，使用默认值："+ex.Message);}}
+        void LoadSettings(){try{if(!File.Exists(settingsPath))return;SavedSettings s=new JavaScriptSerializer().Deserialize<SavedSettings>(File.ReadAllText(settingsPath));if(s==null)return;simulation.Checked=false;period.Value=Math.Max(period.Minimum,Math.Min(period.Maximum,s.Period));timeout.Value=Math.Max(timeout.Minimum,Math.Min(timeout.Maximum,s.Timeout));if(!String.IsNullOrEmpty(s.Port)){if(!port.Items.Contains(s.Port))port.Items.Add(s.Port);port.SelectedItem=s.Port;}}catch(Exception ex){AppendLog("设置读取失败，使用默认值："+ex.Message);}}
         void SaveSettings(){try{string dir=Path.GetDirectoryName(settingsPath);Directory.CreateDirectory(dir);File.WriteAllText(settingsPath,new JavaScriptSerializer().Serialize(new SavedSettings{Simulation=simulation.Checked,Port=port.Text,Period=(int)period.Value,Timeout=(int)timeout.Value}),new System.Text.UTF8Encoding(false));}catch(Exception ex){AppendLog("设置保存失败："+ex.Message);}}
         void RefreshPorts(){string old=port.Text;port.Items.Clear();port.Items.AddRange(SerialPort.GetPortNames().OrderBy(x=>x.Length).ThenBy(x=>x,StringComparer.OrdinalIgnoreCase).ToArray());if(port.Items.Contains(old))port.SelectedItem=old;else if(port.Items.Count>0)port.SelectedIndex=0;}
         void ShowError(string title,Exception ex){MessageBox.Show(this,ex.Message,title,MessageBoxButtons.OK,MessageBoxIcon.Error);}
