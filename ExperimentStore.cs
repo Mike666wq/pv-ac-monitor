@@ -100,7 +100,14 @@ namespace ExperimentMonitor {
  }
  public static class ExperimentHistory {
   public static IEnumerable<string> Databases(string root,string source){if(source!="serial"&&source!="simulation")throw new ArgumentException("来源无效");if(!Directory.Exists(root))return new string[0];var files=Directory.GetFiles(root,source+"-*.db").ToList();string nested=Path.Combine(root,source);if(Directory.Exists(nested))files.AddRange(Directory.GetFiles(nested,"*.db",SearchOption.TopDirectoryOnly));return files.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x=>x,StringComparer.OrdinalIgnoreCase).ToArray();}
-  internal static SQLiteConnection OpenRead(string path){var b=new SQLiteConnectionStringBuilder{DataSource=path,Version=3,ReadOnly=true};var c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;");c.Open();return c;}
+  internal static SQLiteConnection OpenRead(string path){var b=new SQLiteConnectionStringBuilder{DataSource=path,Version=3,ReadOnly=true};var c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;");
+   try{c.Open();
+    // 大范围 GROUP BY(轮次分组)需要 SQLite 临时 B 树;系统临时目录对该进程不可用时SQLite 抛 SQLITE_CANTOPEN("unable to open database file"),而导出的 spool 因带 (session,round) 索引不受影响。
+    // 连接级把查询排序/分组临时存储放进内存:不写库、不改 schema、不依赖系统 TEMP,对旧迁移库同样生效。
+    using(SQLiteCommand q=new SQLiteCommand("PRAGMA temp_store=MEMORY",c))q.ExecuteNonQuery();
+    return c;
+   }catch{c.Dispose();throw;}
+  }
   internal static SQLiteCommand Command(SQLiteConnection c,HistoryFilter f,string select,long upper){if(f.ToUtc<=f.FromUtc)throw new ArgumentException("结束时间必须晚于开始时间");string sql=select+" FROM observations WHERE utc_ticks>=@f AND utc_ticks<@t AND id<=@u";var q=new SQLiteCommand(c);q.Parameters.AddWithValue("@f",f.FromUtc.ToUniversalTime().Ticks);q.Parameters.AddWithValue("@t",f.ToUtc.ToUniversalTime().Ticks);q.Parameters.AddWithValue("@u",upper);if(!string.IsNullOrEmpty(f.ExperimentId)){sql+=" AND experiment=@e";q.Parameters.AddWithValue("@e",f.ExperimentId);}string[][] filters={f.Devices,f.Points};string[] columns={"device","point"};for(int a=0;a<2;a++)if(filters[a]!=null&&filters[a].Length>0){var n=new List<string>();for(int i=0;i<filters[a].Length;i++){string p="@k"+a+"_"+i;n.Add(p);q.Parameters.AddWithValue(p,filters[a][i]);}sql+=" AND "+columns[a]+" IN ("+string.Join(",",n.ToArray())+")";}q.CommandText=sql;return q;}
   static string Text(SQLiteDataReader r,int n){return r.IsDBNull(n)?"":r.GetString(n);}
   static int Ordinal(SQLiteDataReader r,string name){try{return r.GetOrdinal(name);}catch(IndexOutOfRangeException){return -1;}}
