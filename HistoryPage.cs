@@ -146,7 +146,25 @@ namespace ExperimentMonitor {
         void SavePartitionSetting(){string path=Path.Combine(appRoot,"partition-days.json"),tmp=path+".partial";Directory.CreateDirectory(appRoot);File.WriteAllText(tmp,new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new PartitionSetting{Days=partitionDays,SerialDays=serialPartitionDays,SimulationDays=simulationPartitionDays}));if(File.Exists(path))File.Replace(tmp,path,null);else File.Move(tmp,path);}
         void RefreshStorageStatus(){var st=engine.Store;string label="来源："+(source.SelectedItem as string=="serial"?"实机":"模拟")+"　·　分库："+partitionDays+" 天";if(st!=null&&st.Status!=null&&(string)source.SelectedItem==engine.ActiveSource){var s=st.Status;label+="　·　"+(s.Recording?"正在记录":"已停止")+"　·　已写入 "+s.Committed.ToString("N0")+" 条　·　队列 "+s.Pending+" 条 / "+(s.QueuedBytes/1024).ToString("N0")+" KiB　·　可用空间 "+(s.AvailableDiskBytes/1024/1024).ToString("N0")+" MiB";if(s.DiskWarning)label+="（磁盘空间偏低）";if(!String.IsNullOrEmpty(s.LastError))label+="　·　记录错误："+s.LastError;}storageStatus.Text=label+"　·　路径："+dataRoot;}
         sealed class InventoryEntry{public string Source,Path;}
-        void RefreshInventory(bool force){if(inventoryBusy||disposed||(!force&&DateTime.Now-lastInventory<TimeSpan.FromSeconds(15)))return;inventoryBusy=true;lastInventory=DateTime.Now;string writingPath=null;bool writing=false;ExperimentStore active=engine.Store;if(active!=null){ExperimentStoreStatus s=active.Status;writingPath=s.DatabasePath;writing=s.Recording;}Task<List<InventoryEntry>> load=Task.Run<List<InventoryEntry>>(()=>ExperimentHistory.Databases(dataRoot,"serial").Select(x=>new InventoryEntry{Source="serial",Path=x}).Concat(ExperimentHistory.Databases(dataRoot,"simulation").Select(x=>new InventoryEntry{Source="simulation",Path=x})).OrderBy(x=>x.Source).ThenBy(x=>x.Path).ToList());load.ContinueWith((Task<List<InventoryEntry>> t)=>{if(disposed)return;try{if(IsHandleCreated)BeginInvoke((Action)(()=>{try{inventory.Rows.Clear();if(t.IsFaulted)throw t.Exception;foreach(InventoryEntry entry in t.Result){FileInfo i=new FileInfo(entry.Path);bool isCurrent=!String.IsNullOrEmpty(writingPath)&&String.Equals(i.FullName,writingPath,StringComparison.OrdinalIgnoreCase);inventory.Rows.Add(entry.Source=="serial"?"实机":"模拟",i.Name,(i.Length/1048576.0).ToString("N2"),isCurrent?(writing?"当前周期 · 正在写入":"当前周期 · 未在写入"):"历史/未在写入");}inventory.Rows.Add("",dataRoot,"","");}catch(Exception ex){feedback.Text="数据库清单读取失败："+ex.Message;}finally{inventoryBusy=false;}}));}catch{inventoryBusy=false;}});}
+        async void RefreshInventory(bool force){
+            // A source change can occur on the live tab before the history page has a handle.
+            // Defer that load to EnterPage; never leave a busy flag waiting for a missing UI callback.
+            if(disposed||!IsHandleCreated||inventoryBusy||(!force&&DateTime.Now-lastInventory<TimeSpan.FromSeconds(15)))return;
+            inventoryBusy=true;lastInventory=DateTime.Now;
+            try{
+                var entries=await Task.Run(()=>ExperimentHistory.Databases(dataRoot,"serial").Select(x=>new InventoryEntry{Source="serial",Path=x})
+                    .Concat(ExperimentHistory.Databases(dataRoot,"simulation").Select(x=>new InventoryEntry{Source="simulation",Path=x}))
+                    .OrderBy(x=>x.Source).ThenBy(x=>x.Path).ToList());
+                if(disposed||!IsHandleCreated)return;
+                string writingPath=null;bool writing=false;ExperimentStore active=engine.Store;
+                if(active!=null){ExperimentStoreStatus status=active.Status;if(status!=null){writingPath=status.DatabasePath;writing=status.Recording;}}
+                inventory.Rows.Clear();
+                foreach(InventoryEntry entry in entries){FileInfo i=new FileInfo(entry.Path);bool isCurrent=!String.IsNullOrEmpty(writingPath)&&String.Equals(i.FullName,writingPath,StringComparison.OrdinalIgnoreCase);
+                    inventory.Rows.Add(entry.Source=="serial"?"实机":"模拟",i.Name,(i.Length/1048576.0).ToString("N2"),isCurrent?(writing?"当前周期 · 正在写入":"当前周期 · 未在写入"):"历史/未在写入");}
+                inventory.Rows.Add("",dataRoot,"","");
+            }catch(Exception ex){if(!disposed&&IsHandleCreated)feedback.Text="数据库清单读取失败："+ex.Message;}
+            finally{inventoryBusy=false;}
+        }
         public sealed class PartitionSetting{public int Days{get;set;}public int SerialDays{get;set;}public int SimulationDays{get;set;}}
         void DisposePage(){if(disposed)return;disposed=true;generation++;timer.Stop();timer.Dispose();if(exportCancel!=null)try{exportCancel.Cancel();}catch{} }
     }

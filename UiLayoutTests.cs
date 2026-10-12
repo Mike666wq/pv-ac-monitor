@@ -21,6 +21,7 @@ namespace ExperimentMonitor {
         internal static int Run(List<Point> points,string appRoot){
             checks=0;string output=Path.Combine(appRoot,"ui-validation");Directory.CreateDirectory(output);tracePath=Path.Combine(output,"ui-test-trace.log");File.WriteAllText(tracePath,"UI layout trace"+Environment.NewLine);
             var report=new Dictionary<string,object>();var cases=new List<Dictionary<string,object>>();
+            VerifyHiddenInventoryLifecycle(points,output);
             foreach(var size in new[]{new[]{960,640},new[]{1440,900},new[]{2560,1600}})
                 foreach(float scale in new[]{1f,1.25f,1.5f})
                     RunSize(points,output,size[0],size[1],scale,scale==1f?"100%":(scale==1.25f?"125% simulatedDPI":"150% simulatedDPI"),cases);
@@ -28,6 +29,35 @@ namespace ExperimentMonitor {
             report["screenshots"]=Directory.GetFiles(output,"*.png").Select(Path.GetFileName).ToArray();
             string json=new JavaScriptSerializer().Serialize(report);File.WriteAllText(Path.Combine(output,"ui-test-result.json"),json,new System.Text.UTF8Encoding(false));File.WriteAllText(Path.Combine(appRoot,"ui-test-result.json"),json,new System.Text.UTF8Encoding(false));
             return checks;
+        }
+
+        static void VerifyHiddenInventoryLifecycle(List<Point> points,string output){
+            string isolated=Path.Combine(output,"inventory-lifecycle-"+Guid.NewGuid().ToString("N"));
+            string serial=Path.Combine(isolated,"data","storage","serial");Directory.CreateDirectory(serial);
+            // Inventory discovery reads names/metadata only; these four empty files never represent field data.
+            for(int i=0;i<4;i++)File.WriteAllBytes(Path.Combine(serial,"serial_cycle_fixture_"+i+".db"),new byte[0]);
+            Exception failure=null;
+            using(var form=new DashboardForm(points,isolated)){
+                var history=new HistoryPage(points,isolated,form.Engine);form.AttachHistoryPage(history);
+                form.ShowInTaskbar=false;form.Opacity=0;
+                form.Shown+=async(s,e)=>{
+                    try{
+                        Check(!history.IsHandleCreated,"hidden history page has no native handle before first visit");
+                        // Connecting to real hardware changes the source while the records tab is still hidden.
+                        history.SetActiveSource("serial");await Task.Delay(350);
+                        form.MainNavigation.SelectedTab=form.MainNavigation.TabPages.Cast<TabPage>().Single(p=>p.Text=="数据记录");
+                        var inventory=Field<DataGridView>(history,"inventory");
+                        await WaitAsync(()=>!Field<bool>(history,"inventoryBusy")&&inventory.Rows.Count==5,3000,"hidden source change must not permanently block inventory refresh");
+                        Check(inventory.Rows.Count==5,"first records visit lists four databases plus path after hidden source change");
+                        typeof(HistoryPage).GetMethod("RefreshInventory",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(history,new object[]{true});
+                        await WaitAsync(()=>!Field<bool>(history,"inventoryBusy"),3000,"manual inventory refresh completes after first visit");
+                        Check(inventory.Rows.Count==5,"manual refresh retains all four discovered databases");
+                    }catch(Exception ex){failure=ex;}
+                    finally{form.Close();}
+                };
+                Application.Run(form);
+            }
+            if(failure!=null)throw failure;
         }
 
         static void RunSize(List<Point> points,string output,int width,int height,float scale,string label,List<Dictionary<string,object>> cases){
