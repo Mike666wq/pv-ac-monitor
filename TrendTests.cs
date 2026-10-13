@@ -12,10 +12,10 @@ namespace ExperimentMonitor {
         static DateTime At(DateTime start,int seconds) { return start.AddSeconds(seconds); }
         static ChartSample Good(DateTime utc,double value) { return new ChartSample{Utc=utc,Value=value,Quality="good"}; }
         static ChartSample Missing(DateTime utc,string quality) { return new ChartSample{Utc=utc,Value=null,Quality=quality}; }
-        static TrendsPage.TrendAccumulator Acc(DateTime start,int seconds,int buckets,int period) {
-            return new TrendsPage.TrendAccumulator("D6",start,start.AddSeconds(seconds),buckets,period);
+        static TrendSeriesLoader.Accumulator Acc(DateTime start,int seconds,int buckets,int period) {
+            return new TrendSeriesLoader.Accumulator("D6",start,start.AddSeconds(seconds),buckets,period);
         }
-        static void Add(TrendsPage.TrendAccumulator acc,params ChartSample[] samples) { foreach(ChartSample sample in samples)acc.Add(sample); }
+        static void Add(TrendSeriesLoader.Accumulator acc,params ChartSample[] samples) { foreach(ChartSample sample in samples)acc.Add(sample); }
         static bool HasValueAt(IEnumerable<ChartSample> samples,DateTime utc,double value) {
             return samples.Any(x=>x.Value.HasValue&&x.Utc.ToUniversalTime()==utc.ToUniversalTime()&&x.Value.Value==value);
         }

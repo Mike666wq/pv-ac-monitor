@@ -165,7 +165,7 @@ namespace ExperimentMonitor {
             read.Click+=async(s,e)=>{
                 if(!Engine.IsConnected){MessageBox.Show(this,"请先连接数据源。","通信诊断",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
                 if(Engine.IsRunning){MessageBox.Show(this,"请先停止周期采集，再执行手动读取。","通信诊断",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
-                read.Enabled=false;string selectedMode=((string)mode.SelectedItem).Split(' ')[0];if(selectedMode=="RAW")selectedMode="RAW";
+                read.Enabled=false;string selectedMode=(string)mode.SelectedItem;if(selectedMode=="RAW 原始寄存器")selectedMode="RAW";
                 result.Text="读取中…";
                 diagnosticRequests++;
                 try {DiagnosticResult r=await Engine.ReadDiagnosticAsync((int)slave.Value,(int)address.Value,(int)count.Value,selectedMode,(int)diagTimeout.Value);string status=r.Success?"正常":r.Status;if(r.Success)diagnosticGood++;else diagnosticBad++;counters.Text="读取 "+diagnosticRequests+" 次 · 成功 "+diagnosticGood+" · 异常 "+diagnosticBad;result.Text="最近收发时间："+r.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff")+"\r\n站号："+r.Slave+"　地址："+r.Address+"　数量："+r.Count+"　解析："+selectedMode+"\r\n结果："+status+" · "+r.Value+"\r\nTX："+r.TxHex+"\r\nRX："+r.RxHex+(String.IsNullOrEmpty(r.PayloadHex)?"":"\r\n数据："+r.PayloadHex)+"\r\n耗时："+r.Milliseconds+" ms";AppendLog("诊断读取 "+status+" · "+r.TxHex+" → "+r.RxHex);}

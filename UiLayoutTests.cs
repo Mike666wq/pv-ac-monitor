@@ -22,6 +22,9 @@ namespace ExperimentMonitor {
             checks=0;string output=Path.Combine(appRoot,"ui-validation");Directory.CreateDirectory(output);tracePath=Path.Combine(output,"ui-test-trace.log");File.WriteAllText(tracePath,"UI layout trace"+Environment.NewLine);
             var report=new Dictionary<string,object>();var cases=new List<Dictionary<string,object>>();
             VerifyHiddenInventoryLifecycle(points,output);
+            checks+=TrendTimeWindowTests.Run();
+            checks+=TrendWorkflowTests.Run(points,output);
+            checks+=PageWorkflowTests.Run(points,output);
             foreach(var size in new[]{new[]{960,640},new[]{1440,900},new[]{2560,1600}})
                 foreach(float scale in new[]{1f,1.25f,1.5f})
                     RunSize(points,output,size[0],size[1],scale,scale==1f?"100%":(scale==1.25f?"125% simulatedDPI":"150% simulatedDPI"),cases);
@@ -229,7 +232,7 @@ namespace ExperimentMonitor {
             if(page.Text=="趋势分析"){
                 ExperimentChart chart=Find<ExperimentChart>(page);Check(chart!=null&&chart.ClientSize.Width>=250&&chart.ClientSize.Height>=170,title+" 趋势图保留绘图区");Panel chartScroll=chart==null?null:chart.Parent as Panel;Check(chartScroll!=null&&chartScroll.AutoScroll,title+" 多单位纵轴在可滚动区域完整查看");Check(chart==null||chart.Height>=chart.RequiredHeight,title+" 全选测点时图表高度覆盖所有单位轴");
                 TrendsPage trends=Find<TrendsPage>(page);Check(trends!=null,title+" 趋势工作区存在");
-                foreach(string field in new[]{"mode","source","from","to","quick","query","latest"}){
+                foreach(string field in new[]{"followLatest","source","from","to","quick","query","latest"}){
                     FieldInfo info=typeof(TrendsPage).GetField(field,BindingFlags.Instance|BindingFlags.NonPublic);Control control=info==null?null:info.GetValue(trends) as Control;
                     Check(control!=null,title+" 趋势筛选控件保留："+field);
                     Check(control!=null&&FullyVisible(control,form),title+" 趋势筛选控件完整可见："+field+(control==null?"":" · "+DescribeBounds(control)));
