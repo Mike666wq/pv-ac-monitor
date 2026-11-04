@@ -17,7 +17,7 @@ namespace ExperimentMonitor {
             var bounds=window.Resolve(DateTime.UtcNow,latest==null?(DateTime?)null:latest.Utc);
             var filter=new HistoryFilter{Source=source,FromUtc=bounds.FromUtc,ToUtc=bounds.ToUtc,Points=selected,Devices=points.Where(p=>selected.Contains(p.name)).Select(p=>p.binding.device).Distinct().ToArray()};
             var acc=selected.ToDictionary(id=>id,id=>new Accumulator(id,bounds.FromUtc,bounds.ToUtc,buckets,period));long rows=0;
-            ExperimentHistory.Stream(root,filter,row=>{rows++;Accumulator target;if(!acc.TryGetValue(row.Point,out target))return;double? value=row.Number;if(!value.HasValue&&row.RawNumber.HasValue&&PointCatalog.Get(row.Point).Mode!="U16 / I16")value=row.RawNumber;target.Add(new ChartSample{Utc=row.Utc,Value=value,Quality=row.Quality});},true,token);
+            ExperimentHistory.StreamLight(root,filter,row=>{rows++;Accumulator target;if(!acc.TryGetValue(row.Point,out target))return;double? value=row.Number;if(!value.HasValue&&row.RawNumber.HasValue&&PointCatalog.Get(row.Point).Mode!="U16 / I16")value=row.RawNumber;target.Add(new ChartSample{Utc=row.Utc,Value=value,Quality=row.Quality});},true,token);
             return new TrendSeriesResult{Bounds=bounds,LatestUtc=latest==null?(DateTime?)null:latest.Utc,Rows=rows,Source=source,Series=acc.ToDictionary(x=>x.Key,x=>(IEnumerable<ChartSample>)x.Value.Finish())};
         }
         internal sealed class Accumulator {

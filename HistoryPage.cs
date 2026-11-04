@@ -39,7 +39,10 @@ namespace ExperimentMonitor {
         readonly Panel storageBody=new Panel{Dock=DockStyle.Fill,Visible=false,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink};
         readonly LinkLabel storageToggle=new LinkLabel{Text="本地存储状态与分库设置  ▸",AutoSize=true,LinkColor=Color.FromArgb(45,108,175)};
         readonly ProgressBar progress=new ProgressBar{Width=120,Height=16,Visible=false};
-        TableLayoutPanel outerLayout;
+        TableLayoutPanel outerLayout;TabControl recordTabs;Label trendStatus;
+        readonly StyledActionButton oldest=new StyledActionButton{Text="最早记录",Width=100},stopQuery=new StyledActionButton{Text="取消查询",Width=96,Visible=false};
+        readonly CheckBox hideTimeout=new CheckBox{Text="隐藏仅超时的轮次",Checked=false,AutoSize=true,Margin=new Padding(8,7,8,0)};
+        ExperimentHistory.RoundCursor pageCursor;bool pageDescending=true,countBusy,trendBusy,hideTimeoutRounds;string countSignature="";long countTotal=-1;long lastQueryMs;CancellationTokenSource queryToken,trendToken;HistoryFilter summaryFilter;int summaryUnits,summaryValid,summaryTimeout;bool summaryRoundView;HistoryLoad lastLoad;
         readonly HashSet<string> selectedDevices=new HashSet<string>(StringComparer.Ordinal),selectedPoints=new HashSet<string>(StringComparer.Ordinal);
         CancellationTokenSource exportCancel; bool following=true,explicitSource,queryBusy,pendingViewQuery,pendingFollowQuery,disposed,entered,inventoryBusy,filterDirty=true,wideView=true,rebuildingLists,settingSource,updatingFollowTime; int offset,generation,appliedGeneration,partitionDays=30,serialPartitionDays=30,simulationPartitionDays=30; long lastCommitted=-1,lastCompletedCaptures=-1; string activeSource="simulation",previewSignature=""; DateTime lastInventory=DateTime.MinValue;
 
@@ -68,13 +71,16 @@ namespace ExperimentMonitor {
             var records=new TabPage("数据记录"){BackColor=Color.White};var trend=new TabPage("历史趋势"){BackColor=Color.White};tabs.TabPages.Add(records);tabs.TabPages.Add(trend);records.Controls.Add(grid);
             emptyHint=new Label{Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=UiTheme.Muted,BackColor=Color.White,Text="当前筛选范围没有记录。",Visible=false};
             records.Controls.Add(emptyHint);emptyHint.BringToFront();
-            var chartScroll=new Panel{Dock=DockStyle.Fill,AutoScroll=true};chart.Dock=DockStyle.Top;chartScroll.Controls.Add(chart);trend.Controls.Add(chartScroll);split.Panel2.Controls.Add(tabs);
-            var pager=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false,BackColor=Color.White,Padding=new Padding(4,0,2,0)};pager.Controls.Add(next);pager.Controls.Add(feedback);outer.Controls.Add(pager,0,4);
+            var chartScroll=new Panel{Dock=DockStyle.Fill,AutoScroll=true};chart.Dock=DockStyle.Top;chartScroll.Controls.Add(chart);
+            trendStatus=new Label{Dock=DockStyle.Fill,AutoSize=true,ForeColor=UiTheme.Muted,Padding=new Padding(6,4,6,4),Text="按整个筛选范围绘制趋势；与“趋势分析”页使用同一套读取逻辑。"};
+            var trendHost=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,BackColor=Color.White};trendHost.RowStyles.Add(new RowStyle(SizeType.AutoSize));trendHost.RowStyles.Add(new RowStyle(SizeType.Percent,100));trendHost.Controls.Add(trendStatus,0,0);trendHost.Controls.Add(chartScroll,0,1);trend.Controls.Add(trendHost);split.Panel2.Controls.Add(tabs);
+            recordTabs=tabs;tabs.SelectedIndexChanged+=(s,e)=>{if(tabs.SelectedIndex==1)RefreshTrend();else RenderRows();};
+            var pager=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false,BackColor=Color.White,Padding=new Padding(4,0,2,0)};pager.Controls.Add(next);pager.Controls.Add(oldest);pager.Controls.Add(stopQuery);pager.Controls.Add(feedback);outer.Controls.Add(pager,0,4);
             storageToggle.Margin=new Padding(8,4,0,2);outer.Controls.Add(storageToggle,0,5);
             BuildStorageBody();
             // Fold-out storage controls are placed beneath the record panel without introducing another tab.
             outer.Controls.Add(storageBody,0,6);
-            var view=new CheckBox{Text="按采集轮宽表显示",Checked=true,AutoSize=true,Margin=new Padding(8,7,8,0)};var viewRow=(FlowLayoutPanel)summaryRow;viewRow.Controls.Add(view);columnPick.Enabled=view.Checked;view.CheckedChanged+=async(s,e)=>{wideView=view.Checked;columnPick.Enabled=view.Checked;generation++;if(!filterDirty){if(queryBusy)pendingViewQuery=true;else await ApplyAndQuery();}};
+            var view=new CheckBox{Text="按采集轮宽表显示",Checked=true,AutoSize=true,Margin=new Padding(8,7,8,0)};var viewRow=(FlowLayoutPanel)summaryRow;viewRow.Controls.Add(view);viewRow.Controls.Add(hideTimeout);columnPick.Enabled=view.Checked;view.CheckedChanged+=async(s,e)=>{wideView=view.Checked;columnPick.Enabled=view.Checked;generation++;if(!filterDirty){if(queryBusy)pendingViewQuery=true;else await ApplyAndQuery();}};hideTimeout.CheckedChanged+=(s,e)=>{hideTimeoutRounds=hideTimeout.Checked;RenderRows();};
             grid.ScrollBars=ScrollBars.Both;grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;grid.RowTemplate.Height=28;grid.ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.AutoSize;grid.ColumnHeadersDefaultCellStyle.WrapMode=DataGridViewTriState.True;
         }
         void BuildStorageBody(){
@@ -85,7 +91,7 @@ namespace ExperimentMonitor {
             storageToggle.LinkClicked+=(s,e)=>{bool show=!storageBody.Visible;storageBody.Visible=show;RowStyle rs=outerLayout.RowStyles[6];if(show)rs.SizeType=SizeType.AutoSize;else{rs.SizeType=SizeType.Absolute;rs.Height=0;}storageToggle.Text=show?"本地存储状态与分库设置  ▾":"本地存储状态与分库设置  ▸";Control vp=outerLayout.Parent;if(vp!=null){outerLayout.Width=vp.ClientSize.Width;outerLayout.Height=Math.Max(vp.ClientSize.Height,680+(show?storageBody.GetPreferredSize(new Size(Math.Max(200,vp.ClientSize.Width-8),0)).Height+8:0));}};
         }
         void WireEvents(){
-            query.Click+=async(s,e)=>{following=false;offset=0;await ApplyAndQuery();};follow.Click+=async(s,e)=>{offset=0;SetToNow();MarkDirty();following=true;await ApplyAndQuery();};next.Click+=async(s,e)=>{if(next.Enabled){offset+=PageSize;await RunQuery(false);}};
+            query.Click+=async(s,e)=>{following=false;ResetPaging();await ApplyAndQuery();};follow.Click+=async(s,e)=>{ResetPaging();SetToNow();MarkDirty();following=true;await ApplyAndQuery();};next.Click+=async(s,e)=>{if(next.Enabled){if(!wideView)offset+=PageSize;await RunQuery();}};oldest.Click+=async(s,e)=>{following=false;pageDescending=false;pageCursor=null;await RunQuery();};stopQuery.Click+=(s,e)=>{if(queryToken!=null)try{queryToken.Cancel();}catch{}if(trendToken!=null)try{trendToken.Cancel();}catch{}};
             source.SelectedIndexChanged+=(s,e)=>{if(source.SelectedItem==null)return;if(!settingSource){explicitSource=true;following=false;offset=0;MarkDirty();}LoadSourcePartitionSetting();RefreshStorageStatus();RefreshInventory(false);};
             devices.ItemCheck+=(s,e)=>{if(rebuildingLists)return;string item=devices.Items[e.Index] as string;bool check=e.NewValue==CheckState.Checked;BeginInvoke((Action)(()=>{if(check)selectedDevices.Add(item);else selectedDevices.Remove(item);offset=0;following=false;MarkDirty();RebuildVisibleDevices();RebuildVisiblePoints();}));};channels.ItemCheck+=(s,e)=>{if(rebuildingLists)return;string item=channels.Items[e.Index] as string;string point=item.Split(new[]{" · "},StringSplitOptions.None)[0];bool check=e.NewValue==CheckState.Checked;BeginInvoke((Action)(()=>{if(check)selectedPoints.Add(point);else selectedPoints.Remove(point);offset=0;following=false;MarkDirty();RebuildVisiblePoints();}));};
             from.ValueChanged+=(s,e)=>{if(!updatingFollowTime){following=false;MarkDirty();}};to.ValueChanged+=(s,e)=>{if(!updatingFollowTime){following=false;MarkDirty();}};deviceSearch.TextChanged+=(s,e)=>RebuildVisibleDevices();pointSearch.TextChanged+=(s,e)=>RebuildVisiblePoints();
@@ -114,23 +120,111 @@ namespace ExperimentMonitor {
         internal static DateTime LocalDisplaySecondToUtc(DateTime value){return TruncateToDisplayedSecond(value).ToUniversalTime();}
         internal static DateTime NextLocalSecond(DateTime value){DateTime second=TruncateToDisplayedSecond(value);return second.AddSeconds(1);}
         void SetToNow(){DateTime upper=NextLocalSecond(DateTime.Now);if(upper>to.MaxDate)upper=TruncateToDisplayedSecond(to.MaxDate);updatingFollowTime=true;try{to.Value=upper;}finally{updatingFollowTime=false;}}
-        void StartQuery(){if(queryBusy){if(following&&Visible)pendingFollowQuery=true;return;}Task<bool> ignored=RunQuery(true);}
+        void StartQuery(){if(queryBusy){if(following&&Visible)pendingFollowQuery=true;return;}Task<bool> ignored=RunQuery();}
         void MarkDirty(){if(disposed)return;generation++;filterDirty=true;feedback.Text="筛选条件已更改；点击“查询记录”后应用。";}
         string Signature(HistoryFilter f){return f.Source+"|"+f.FromUtc.Ticks+"|"+f.ToUtc.Ticks+"|"+String.Join(",",f.Devices.OrderBy(x=>x))+"|"+String.Join(",",f.Points.OrderBy(x=>x));}
         HistoryFilter MakeFilter(){DateTime a=TruncateToDisplayedSecond(from.Value),b=TruncateToDisplayedSecond(to.Value);if(b<=a)throw new InvalidOperationException("结束时间必须晚于开始时间（结束时刻不包含）。");string[] ds=selectedDevices.ToArray();string[] ps=allPoints.Where(p=>selectedDevices.Contains(p.binding.device)&&selectedPoints.Contains(p.name)).Select(p=>p.name).ToArray();if(ds.Length==0||ps.Length==0)throw new InvalidOperationException("请至少选择一台设备和一个测点。");return new HistoryFilter{FromUtc=a.ToUniversalTime(),ToUtc=b.ToUniversalTime(),Source=(string)source.SelectedItem,Devices=ds,Points=ps};}
-        async Task<bool> ApplyAndQuery(){return await RunQuery(true);}
-        sealed class HistoryLoad{public List<StoredObservation> Rows;public long Total;public int Units;}
-        HistoryLoad LoadPreview(HistoryFilter f,int page,bool roundView){if(roundView){long total;List<List<StoredObservation>> rounds=ExperimentHistory.QueryRoundPage(dataRoot,f,page,PageSize,out total,false);return new HistoryLoad{Rows=rounds.SelectMany(x=>x).ToList(),Total=total,Units=rounds.Count};}return new HistoryLoad{Rows=ExperimentHistory.QueryPage(dataRoot,f,page,PageSize),Total=ExperimentHistory.Count(dataRoot,f),Units=0};}
-        async Task<bool> RunQuery(bool latest){if(queryBusy||disposed)return false;if(!Visible)return false;queryBusy=true;int token=++generation;query.Enabled=false;feedback.Text="正在查询记录…";try{HistoryFilter f=MakeFilter();string signature=Signature(f);int page=latest?0:offset;bool roundView=wideView;HistoryLoad data=await Task.Run(()=>LoadPreview(f,page,roundView));if(disposed||token!=generation||(string)source.SelectedItem!=f.Source||roundView!=wideView)return false;ShowRows(data.Rows,f);appliedGeneration=token;offset=page;previewSignature=signature;filterDirty=false;next.Enabled=page+data.Units<data.Total&&(wideView?data.Units==PageSize:data.Rows.Count==PageSize);summary.Text=(following?"● 跟随最新":"○ 历史查询")+"　·　"+(f.Source=="serial"?"实机":"模拟")+"　·　筛选共 "+data.Total.ToString("N0")+(wideView?" 轮":" 条")+"　·　第 "+(page/PageSize+1)+" 页，显示 "+(wideView?data.Units.ToString("N0")+" 轮":data.Rows.Count.ToString("N0")+" 条");feedback.Text=data.Total==0?"当前筛选范围没有记录。":(wideView?"当前页显示完整采集轮；":"当前页显示逐测点明细；")+"（本地时间；结束时刻不包含）";return true;}
-            catch(Exception ex){if(!disposed&&token==generation){grid.Rows.Clear();chart.Clear();feedback.Text="查询失败："+ex.Message+"；请重试。当前筛选条件已保留。";summary.Text="记录查询不可用";}return false;}
-            finally{queryBusy=false;bool rerun=(pendingFollowQuery&&following)||(pendingViewQuery&&!filterDirty);pendingFollowQuery=pendingViewQuery=false;if(!disposed){query.Enabled=true;if(rerun&&Visible)try{BeginInvoke((Action)StartQuery);}catch{StartQuery();}}}}
-        void ShowRows(List<StoredObservation> rows,HistoryFilter filter){grid.Rows.Clear();chart.Clear();if(emptyHint!=null)emptyHint.Visible=rows.Count==0;if(wideView)BuildWidePreview(rows,filter);else BuildDetailPreview(rows);foreach(StoredObservation r in rows)chart.Add(new Observation{Point=r.Point,Utc=r.Utc,Number=r.Number,Quality=r.Quality});chart.SelectPoints(filter.Points);chart.Height=chart.RequiredHeight;}
+        async Task<bool> ApplyAndQuery(){return await RunQuery();}
+        sealed class HistoryLoad{public List<List<StoredObservation>> Rounds;public List<StoredObservation> Rows;public int Units;public bool HasMore;public ExperimentHistory.RoundCursor Next;public DateTime FromUtc,ToUtc;}
+        void ResetPaging(){offset=0;pageCursor=null;pageDescending=true;}
+        HistoryLoad LoadPreview(HistoryFilter f,bool roundView,CancellationToken token){
+         if(roundView){
+          ExperimentHistory.RoundPage page=ExperimentHistory.QueryRoundWindow(dataRoot,f,pageCursor,PageSize,pageDescending,token);
+          return new HistoryLoad{Rounds=page.Rounds,Rows=page.Rounds.SelectMany(x=>x).ToList(),Units=page.Rounds.Count,HasMore=page.HasMore,Next=page.Next,FromUtc=page.FromUtc,ToUtc=page.ToUtc};
+         }
+         List<StoredObservation> rows=ExperimentHistory.QueryPage(dataRoot,f,offset,PageSize+1);
+         bool more=rows.Count>PageSize;if(more)rows.RemoveRange(PageSize,rows.Count-PageSize);
+         return new HistoryLoad{Rows=rows,Units=rows.Count,HasMore=more};
+        }
+        async Task<bool> RunQuery(){
+         if(queryBusy||disposed)return false;if(!Visible)return false;
+         queryBusy=true;int token=++generation;query.Enabled=false;feedback.Text="正在查询记录…";stopQuery.Visible=true;
+         var watch=System.Diagnostics.Stopwatch.StartNew();
+         queryToken=new CancellationTokenSource();CancellationTokenSource cts=queryToken;CancellationToken cancel=cts.Token;
+         try{
+          HistoryFilter f=MakeFilter();string signature=Signature(f);bool roundView=wideView;
+          HistoryLoad data=await Task.Run(()=>LoadPreview(f,roundView,cancel));
+          if(disposed||token!=generation||(string)source.SelectedItem!=f.Source||roundView!=wideView)return false;
+          watch.Stop();lastQueryMs=watch.ElapsedMilliseconds;
+          lastLoad=data;summaryFilter=f;summaryRoundView=roundView;summaryUnits=data.Units;
+          summaryValid=0;summaryTimeout=0;
+          if(roundView)foreach(List<StoredObservation> group in data.Rounds){bool good=false;foreach(StoredObservation r in group)if(r.Quality=="good"){good=true;break;}if(good)summaryValid++;else summaryTimeout++;}
+          RenderRows();
+          appliedGeneration=token;previewSignature=signature;filterDirty=false;
+          if(roundView)pageCursor=data.Next;
+          next.Enabled=data.HasMore;
+          next.Text=roundView&&!pageDescending?"较新 200 条":"更早 200 条";
+          oldest.Enabled=roundView&&pageDescending;
+          RenderSummary();RenderFeedback(data);
+          StartCount(f,signature,roundView);
+          return true;}
+         catch(OperationCanceledException){if(!disposed&&token==generation)feedback.Text="查询已取消；筛选条件已保留。";return false;}
+         catch(Exception ex){if(!disposed&&token==generation){grid.Rows.Clear();chart.Clear();feedback.Text="查询失败："+ex.Message+"；请重试。当前筛选条件已保留。";summary.Text="记录查询不可用";}return false;}
+         finally{queryBusy=false;if(queryToken==cts)queryToken=null;try{cts.Dispose();}catch{}stopQuery.Visible=false;bool rerun=(pendingFollowQuery&&following)||(pendingViewQuery&&!filterDirty);pendingFollowQuery=pendingViewQuery=false;if(!disposed){query.Enabled=true;if(rerun&&Visible)try{BeginInvoke((Action)StartQuery);}catch{StartQuery();}}}}
+        void RenderRows(){
+         if(lastLoad==null||summaryFilter==null)return;
+         HistoryLoad data=lastLoad;HistoryFilter filter=summaryFilter;
+         grid.Rows.Clear();chart.Clear();
+         List<StoredObservation> rows=data.Rows??new List<StoredObservation>();
+         if(wideView)BuildWidePreview(data.Rounds??new List<List<StoredObservation>>(),filter);else BuildDetailPreview(rows);
+         if(emptyHint!=null)emptyHint.Visible=rows.Count==0;
+         foreach(StoredObservation r in rows)chart.Add(new Observation{Point=r.Point,Utc=r.Utc,Number=r.Number,Quality=r.Quality});
+         chart.SelectPoints(filter.Points);chart.Height=chart.RequiredHeight;
+        }
+        void RenderSummary(){
+         if(summaryFilter==null)return;
+         string src=summaryFilter.Source=="serial"?"实机":"模拟";
+         string total=countTotal>=0?countTotal.ToString("N0"):(following?"范围跟随中":"统计中…");
+         string text=(following?"● 跟随最新":"○ 历史查询")+"　·　"+src+"　·　筛选共 "+total+(summaryRoundView?" 轮":" 条")+"　·　本页 "+summaryUnits.ToString("N0")+(summaryRoundView?" 轮":" 条");
+         if(summaryRoundView)text+="　·　有效轮 "+summaryValid+" / 超时轮 "+summaryTimeout;
+         summary.Text=text;
+        }
+        void RenderFeedback(HistoryLoad data){
+         if(summaryUnits==0){feedback.Text="当前筛选范围没有记录。";return;}
+         string span=data!=null&&data.FromUtc<=data.ToUtc?data.FromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")+" ~ "+data.ToUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"):"";
+         string hidden=hideTimeoutRounds&&summaryRoundView?"　·　已隐藏仅超时的轮次":"";
+         feedback.Text=(wideView?"当前页显示完整采集轮；":"当前页显示逐测点明细；")+"本页时间 "+span+"　·　耗时 "+lastQueryMs+" ms"+hidden+"　·　（本地时间；结束时刻不包含）";
+        }
+        /// <summary>范围总量在后台统计,不阻塞记录出数;跟随模式下范围持续滑动,不做全量统计。</summary>
+        async void StartCount(HistoryFilter f,string signature,bool roundView){
+         if(disposed||following||countBusy)return;
+         if(signature==countSignature&&countTotal>=0)return;
+         countBusy=true;countTotal=-1;countSignature=signature;
+         try{long total=await Task.Run(()=>roundView?ExperimentHistory.CountRounds(dataRoot,f):ExperimentHistory.Count(dataRoot,f));if(disposed)return;countTotal=total;RenderSummary();}
+         catch{}finally{countBusy=false;}
+        }
+        /// <summary>历史趋势子标签:复用趋势分析的读取逻辑,覆盖整个筛选范围而不是当前一页。</summary>
+        async void RefreshTrend(){
+         if(disposed||trendBusy)return;
+         HistoryFilter f=summaryFilter;if(f==null)return;
+         trendBusy=true;
+         trendToken=new CancellationTokenSource();CancellationTokenSource trendCts=trendToken;CancellationToken trendCancel=trendCts.Token;
+         stopQuery.Visible=true;
+         double spanDays=Math.Max(0,(f.ToUtc-f.FromUtc).TotalDays);
+         string estimate=spanDays<=0.5?"通常 1–2 秒":spanDays<=2?"通常几秒":spanDays<=7?"可能需要十几秒":spanDays<=30?"可能需要约 1 分钟":"可能需要数分钟";
+         if(trendStatus!=null)trendStatus.Text="正在按整个筛选范围读取趋势（"+estimate+"）…可点“取消查询”中止";
+         try{
+          TrendTimeWindow window=new TrendTimeWindow();window.Fix(f.FromUtc,f.ToUtc);
+          int buckets=Math.Max(300,Math.Min(2000,chart.ClientSize.Width*2));
+          int period=engine.CurrentPeriodSeconds;
+          TrendSeriesResult result=await Task.Run(()=>TrendSeriesLoader.Read(dataRoot,f.Source,f.Points,allPoints,window,buckets,period,trendCancel));
+          if(disposed)return;
+          chart.Clear();
+          string[] drawable=f.Points.Where(id=>result.Series.ContainsKey(id)&&result.Series[id].Any(s=>s.Value.HasValue)).ToArray();
+          if(drawable.Length==0)drawable=f.Points.Where(id=>result.Series.ContainsKey(id)&&result.Series[id].Any()).ToArray();
+          chart.SelectPoints(drawable);chart.SetSeriesData(result.Series);chart.SetTimeRange(result.Bounds.FromUtc,result.Bounds.ToUtc,false);
+          chart.Height=Math.Max(210,chart.RequiredHeight);
+          if(trendStatus!=null)trendStatus.Text="全范围趋势："+result.Rows.ToString("N0")+" 条原始记录 · "+result.Bounds.FromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")+" ~ "+result.Bounds.ToUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")+" · 与“趋势分析”页同一读取逻辑";
+         }catch(OperationCanceledException){if(!disposed&&trendStatus!=null)trendStatus.Text="趋势读取已取消。";}
+         catch(Exception ex){if(!disposed&&trendStatus!=null)trendStatus.Text="趋势读取失败："+ex.Message;}
+         finally{trendBusy=false;if(trendToken==trendCts)trendToken=null;try{trendCts.Dispose();}catch{}if(!disposed)stopQuery.Visible=false;}
+        }
         void BuildDetailPreview(List<StoredObservation> rows){grid.Columns.Clear();string[] headers={"采样时间（本地）","测点","名称","设备","工程值","原始值 HEX","单位","质量"};int[] widths={165,130,170,100,160,150,100,110};for(int i=0;i<headers.Length;i++)grid.Columns.Add(headers[i],headers[i]);for(int i=0;i<widths.Length;i++)grid.Columns[i].Width=widths[i];foreach(StoredObservation r in rows){PointInfo rinfo=PointCatalog.Get(r.Point);string runit=String.IsNullOrEmpty(rinfo.Unit)?r.Unit:rinfo.Unit;string engineering=r.Number.HasValue?r.Number.Value.ToString("G17",System.Globalization.CultureInfo.InvariantCulture):r.Value;string raw=r.RawNumber.HasValue?r.RawNumber.Value.ToString("G17",System.Globalization.CultureInfo.InvariantCulture):r.Payload;grid.Rows.Add(r.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"),r.Point,rinfo.Label,r.Device,engineering,raw,runit,QualityLabel(r.Quality));}}
-        void BuildWidePreview(List<StoredObservation> rows,HistoryFilter filter){grid.Columns.Clear();grid.Columns.Add("time","轮次开始时间（本地）");grid.Columns.Add("round","采集轮");var points=allPoints.Select((p,index)=>new{Point=p,Index=index}).Where(x=>filter.Points.Contains(x.Point.name)&&ColumnVisible(x.Point.name)).OrderBy(x=>DeviceRank(x.Point.binding.device)).ThenBy(x=>x.Index).Select(x=>x.Point).ToList();
+        void BuildWidePreview(List<List<StoredObservation>> rounds,HistoryFilter filter){grid.Columns.Clear();grid.Columns.Add("time","轮次开始时间（本地）");grid.Columns.Add("round","采集轮");var points=allPoints.Select((p,index)=>new{Point=p,Index=index}).Where(x=>filter.Points.Contains(x.Point.name)&&ColumnVisible(x.Point.name)).OrderBy(x=>DeviceRank(x.Point.binding.device)).ThenBy(x=>x.Index).Select(x=>x.Point).ToList();
             // 列选择把全部测点都关掉时回退为显示全部筛选测点,避免空表困惑。
             if(points.Count==0)points=allPoints.Select((p,index)=>new{Point=p,Index=index}).Where(x=>filter.Points.Contains(x.Point.name)).OrderBy(x=>DeviceRank(x.Point.binding.device)).ThenBy(x=>x.Index).Select(x=>x.Point).ToList();
             foreach(Point p in points){PointInfo info=PointCatalog.Get(p.name);string unit=info.Unit??"";grid.Columns.Add(p.name,info.Label+(String.IsNullOrEmpty(unit)?"":"（"+unit+"）"));}foreach(DataGridViewColumn c in grid.Columns)c.Width=150;
-            foreach(var group in rows.GroupBy(r=>r.Session+"|"+r.Round).OrderByDescending(g=>g.Min(r=>r.RoundStartedUtc??r.Utc))){var byPoint=group.GroupBy(x=>x.Point).ToDictionary(g=>g.Key,g=>g.OrderBy(x=>x.Utc).First());StoredObservation sample=group.First();DateTime start=sample.RoundStartedUtc??group.Min(x=>x.Utc);var cells=new List<object>{start.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"),sample.Round};foreach(Point p in points){StoredObservation o;if(!byPoint.TryGetValue(p.name,out o)){cells.Add("");continue;}cells.Add(o.Number.HasValue?((object)o.Number.Value.ToString("G17",System.Globalization.CultureInfo.InvariantCulture)):((o.Quality=="good"?"":QualityLabel(o.Quality)+"：")+o.Value));}grid.Rows.Add(cells.ToArray());}}
+            foreach(var group in rounds.OrderByDescending(g=>g.Min(r=>r.RoundStartedUtc??r.Utc))){if(hideTimeoutRounds&&!group.Any(r=>r.Quality=="good"))continue;var byPoint=group.GroupBy(x=>x.Point).ToDictionary(g=>g.Key,g=>g.OrderBy(x=>x.Utc).First());StoredObservation sample=group.First();DateTime start=sample.RoundStartedUtc??group.Min(x=>x.Utc);var cells=new List<object>{start.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"),sample.Round};foreach(Point p in points){StoredObservation o;if(!byPoint.TryGetValue(p.name,out o)){cells.Add("");continue;}cells.Add(o.Number.HasValue?((object)o.Number.Value.ToString("G17",System.Globalization.CultureInfo.InvariantCulture)):((o.Quality=="good"?"":QualityLabel(o.Quality)+"：")+o.Value));}grid.Rows.Add(cells.ToArray());}}
         static int DeviceRank(string device){string[] order={"DS666","PLC","DDSU666","DJSF6682"};int i=Array.IndexOf(order,device);return i<0?Int32.MaxValue:i;}
         static string QualityLabel(string q){return q=="good"?"正常":q=="timeout"?"超时":q=="error"?"异常":q=="protocol_exception"?"协议异常":q=="decode_error"?"解码异常":String.IsNullOrEmpty(q)?"未知":q;}
         async Task ExportAsync(string format){if(exportCancel!=null)return;try{HistoryFilter f=MakeFilter();string sig=Signature(f);if(filterDirty||sig!=previewSignature){if(MessageBox.Show(this,"筛选条件尚未应用，是否先按当前条件查询并确认预览后导出？","确认导出范围",MessageBoxButtons.YesNo,MessageBoxIcon.Question)!=DialogResult.Yes)return;if(!await ApplyAndQuery())return;f=MakeFilter();sig=Signature(f);}if(sig!=previewSignature){throw new InvalidOperationException("当前预览与筛选条件不一致，请重新查询后导出。");}
@@ -138,7 +232,7 @@ namespace ExperimentMonitor {
           exportCancel=new CancellationTokenSource();SetExporting(true);var progressReport=new Progress<ExportProgress>(p=>{if(!disposed){exportStatus.Visible=true;exportStatus.Text=p.Phase+" · "+p.CompletedRows.ToString("N0")+(p.TotalRows>0?" / "+p.TotalRows.ToString("N0"):"");}});ExportResult r=await ExperimentExport.ExportAsync(dataRoot,f,destination,format,progressReport,exportCancel.Token);if(!disposed){exportStatus.Visible=true;exportStatus.Text=(format=="xlsx"?"Excel":"CSV")+" · "+r.Rows.ToString("N0")+" 条完成";MessageBox.Show(this,"导出完成：\r\n"+r.OutputDirectory+"\r\n记录 "+r.Rows.ToString("N0")+" 条。","导出完成",MessageBoxButtons.OK,MessageBoxIcon.Information);}}
           catch(OperationCanceledException){if(!disposed){exportStatus.Visible=true;exportStatus.Text="导出已取消";}}catch(Exception ex){if(!disposed)MessageBox.Show(this,"导出未完成，数据库和既有文件未覆盖。\r\n"+ex.Message,"导出失败",MessageBoxButtons.OK,MessageBoxIcon.Warning);}finally{if(exportCancel!=null){exportCancel.Dispose();exportCancel=null;}if(!disposed)SetExporting(false);}}
         void SetExporting(bool busy){export.Enabled=!busy;query.Enabled=!busy;follow.Enabled=!busy;next.Enabled=!busy&&next.Enabled;cancel.Visible=busy;cancel.Enabled=busy;progress.Visible=busy;progress.Style=ProgressBarStyle.Marquee;}
-        async void FollowTick(){if(disposed||!Visible)return;if(following)SetToNow();RefreshStorageStatus();if(DateTime.Now-lastInventory>TimeSpan.FromSeconds(15))RefreshInventory(false);if(!following)return;ExperimentStore st=engine.Store;long committed=st!=null&&st.Status!=null&&st.Status.Recording&&engine.ActiveSource==(string)source.SelectedItem?st.Committed:-1;if(filterDirty&&!queryBusy){lastCommitted=committed;await RunQuery(true);return;}long completed=engine.CompletedCaptures;if(committed!=lastCommitted||completed!=lastCompletedCaptures){lastCompletedCaptures=completed;lastCommitted=committed;await RunQuery(true);}}
+        async void FollowTick(){if(disposed||!Visible)return;if(following)SetToNow();RefreshStorageStatus();if(DateTime.Now-lastInventory>TimeSpan.FromSeconds(15))RefreshInventory(false);if(!following)return;ExperimentStore st=engine.Store;long committed=st!=null&&st.Status!=null&&st.Status.Recording&&engine.ActiveSource==(string)source.SelectedItem?st.Committed:-1;if(filterDirty&&!queryBusy){lastCommitted=committed;await RunQuery();return;}long completed=engine.CompletedCaptures;if(committed!=lastCommitted||completed!=lastCompletedCaptures){lastCompletedCaptures=completed;lastCommitted=committed;await RunQuery();}}
         void LoadPartitionSetting(){string path=Path.Combine(appRoot,"partition-days.json");try{var s=new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<PartitionSetting>(File.ReadAllText(path));if(s.SerialDays>=1&&s.SerialDays<=3650)serialPartitionDays=s.SerialDays;if(s.SimulationDays>=1&&s.SimulationDays<=3650)simulationPartitionDays=s.SimulationDays;if(s.Days>=1&&s.Days<=3650){if(serialPartitionDays==30)serialPartitionDays=s.Days;if(simulationPartitionDays==30)simulationPartitionDays=s.Days;}}catch{}LoadSourcePartitionSetting();partitionPreset.SelectedIndexChanged+=(s,e)=>partitionCustom.Enabled=partitionPreset.SelectedIndex==3;}
         void LoadSourcePartitionSetting(){partitionDays=(string)source.SelectedItem=="serial"?serialPartitionDays:simulationPartitionDays;partitionCustom.Value=partitionDays;partitionPreset.SelectedIndex=partitionDays==7?0:partitionDays==15?1:partitionDays==30?2:3;partitionCustom.Enabled=partitionPreset.SelectedIndex==3;}
         int SelectedDays(){return partitionPreset.SelectedIndex==0?7:partitionPreset.SelectedIndex==1?15:partitionPreset.SelectedIndex==2?30:(int)partitionCustom.Value;}

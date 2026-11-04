@@ -55,7 +55,7 @@ namespace ExperimentMonitor {
   public void EndExperiment(){if(experiment.Length==0)return;Add(new Work{Event="end",Experiment=experiment});experiment="";}
   string FileFor(DateTime utc){if(pathResolver!=null)return pathResolver(utc.ToUniversalTime());long day=(long)(utc.Date-new DateTime(2020,1,1,0,0,0,DateTimeKind.Utc)).TotalDays;long bucket=(long)Math.Floor(day/(double)days);DateTime start=new DateTime(2020,1,1).AddDays(bucket*days);return Path.Combine(root,source+"-"+start.ToString("yyyyMMdd")+"-"+days+"d.db");}
   static void Execute(SQLiteConnection c,SQLiteTransaction t,string sql,params object[] a){using(var q=new SQLiteCommand(sql,c,t)){for(int i=0;i<a.Length;i++)q.Parameters.AddWithValue("@p"+i,a[i]??DBNull.Value);q.ExecuteNonQuery();}}
-  SQLiteConnection Open(DateTime utc){string file=FileFor(utc);Directory.CreateDirectory(Path.GetDirectoryName(file));var b=new SQLiteConnectionStringBuilder{DataSource=file,Version=3};var c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;Synchronous=Full;");c.Open();using(var t=c.BeginTransaction()){Execute(c,t,"CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,source TEXT,started_utc TEXT,config_json TEXT);CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY,name TEXT,note TEXT,started_utc TEXT,ended_utc TEXT);CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY AUTOINCREMENT,utc_ticks INTEGER NOT NULL,source TEXT,session TEXT,experiment TEXT,round INTEGER,point TEXT,description TEXT,device TEXT,slave INTEGER,address INTEGER,count INTEGER,unit TEXT,mode TEXT,status TEXT,value TEXT,number REAL,elapsed_ms INTEGER,tx TEXT,rx TEXT,payload TEXT,raw_number REAL,quality TEXT,config_version TEXT,round_started_utc_ticks INTEGER);CREATE INDEX IF NOT EXISTS ix_obs_time ON observations(utc_ticks,id);CREATE INDEX IF NOT EXISTS ix_obs_point_time ON observations(point,utc_ticks);CREATE INDEX IF NOT EXISTS ix_obs_experiment ON observations(experiment,utc_ticks)");
+  SQLiteConnection Open(DateTime utc){string file=FileFor(utc);Directory.CreateDirectory(Path.GetDirectoryName(file));var b=new SQLiteConnectionStringBuilder{DataSource=file,Version=3};var c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;Synchronous=Full;");c.Open();using(var t=c.BeginTransaction()){Execute(c,t,"CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,source TEXT,started_utc TEXT,config_json TEXT);CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY,name TEXT,note TEXT,started_utc TEXT,ended_utc TEXT);CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY AUTOINCREMENT,utc_ticks INTEGER NOT NULL,source TEXT,session TEXT,experiment TEXT,round INTEGER,point TEXT,description TEXT,device TEXT,slave INTEGER,address INTEGER,count INTEGER,unit TEXT,mode TEXT,status TEXT,value TEXT,number REAL,elapsed_ms INTEGER,tx TEXT,rx TEXT,payload TEXT,raw_number REAL,quality TEXT,config_version TEXT,round_started_utc_ticks INTEGER);CREATE INDEX IF NOT EXISTS ix_obs_time ON observations(utc_ticks,id);CREATE INDEX IF NOT EXISTS ix_obs_point_time ON observations(point,utc_ticks);CREATE INDEX IF NOT EXISTS ix_obs_experiment ON observations(experiment,utc_ticks);CREATE INDEX IF NOT EXISTS ix_obs_round ON observations(session,round,utc_ticks)");
     using(var q=new SQLiteCommand("PRAGMA table_info(observations)",c,t))using(var r=q.ExecuteReader()){bool found=false;while(r.Read())if(String.Equals(Convert.ToString(r["name"]),"round_started_utc_ticks",StringComparison.OrdinalIgnoreCase))found=true;if(!found)Execute(c,t,"ALTER TABLE observations ADD COLUMN round_started_utc_ticks INTEGER");}
     Execute(c,t,"INSERT OR IGNORE INTO sessions VALUES(@p0,@p1,@p2,@p3)",SessionId,source,DateTime.UtcNow.ToString("o"),config);t.Commit();}path=file;return c;}
   void CheckDisk(){var d=new DriveInfo(Path.GetPathRoot(root));long free=d.AvailableFreeSpace;Interlocked.Exchange(ref diskBytes,free);diskWarning=free<1024L*1024*1024;if(free<100L*1024*1024)throw new IOException("记录磁盘可用空间低于100 MiB，停止记录");}
@@ -108,22 +108,45 @@ namespace ExperimentMonitor {
     return c;
    }catch{c.Dispose();throw;}
   }
-  internal static SQLiteCommand Command(SQLiteConnection c,HistoryFilter f,string select,long upper){if(f.ToUtc<=f.FromUtc)throw new ArgumentException("结束时间必须晚于开始时间");string sql=select+" FROM observations WHERE utc_ticks>=@f AND utc_ticks<@t AND id<=@u";var q=new SQLiteCommand(c);q.Parameters.AddWithValue("@f",f.FromUtc.ToUniversalTime().Ticks);q.Parameters.AddWithValue("@t",f.ToUtc.ToUniversalTime().Ticks);q.Parameters.AddWithValue("@u",upper);if(!string.IsNullOrEmpty(f.ExperimentId)){sql+=" AND experiment=@e";q.Parameters.AddWithValue("@e",f.ExperimentId);}string[][] filters={f.Devices,f.Points};string[] columns={"device","point"};for(int a=0;a<2;a++)if(filters[a]!=null&&filters[a].Length>0){var n=new List<string>();for(int i=0;i<filters[a].Length;i++){string p="@k"+a+"_"+i;n.Add(p);q.Parameters.AddWithValue(p,filters[a][i]);}sql+=" AND "+columns[a]+" IN ("+string.Join(",",n.ToArray())+")";}q.CommandText=sql;return q;}
+  internal static SQLiteCommand Command(SQLiteConnection c,HistoryFilter f,string select,long upper){if(f.ToUtc<=f.FromUtc)throw new ArgumentException("结束时间必须晚于开始时间");string sql=select+" FROM observations WHERE utc_ticks>=@f AND utc_ticks<@t AND id<=@u";var q=new SQLiteCommand(c);q.Parameters.AddWithValue("@f",f.FromUtc.ToUniversalTime().Ticks);q.Parameters.AddWithValue("@t",f.ToUtc.ToUniversalTime().Ticks);q.Parameters.AddWithValue("@u",upper);if(!string.IsNullOrEmpty(f.ExperimentId)){sql+=" AND experiment=@e";q.Parameters.AddWithValue("@e",f.ExperimentId);}q.CommandText=AppendFilters(q,f,sql);return q;}
+   /// <summary>设备与测点过滤条件。命令构造与范围统计共用同一段逻辑,避免两处漂移。</summary>
+   static string AppendFilters(SQLiteCommand q,HistoryFilter f,string sql){string[][] filters={f.Devices,f.Points};string[] columns={"device","point"};for(int a=0;a<2;a++)if(filters[a]!=null&&filters[a].Length>0){var n=new List<string>();for(int i=0;i<filters[a].Length;i++){string p="@k"+a+"_"+i;n.Add(p);q.Parameters.AddWithValue(p,filters[a][i]);}sql+=" AND "+columns[a]+" IN ("+string.Join(",",n.ToArray())+")";}return sql;}
   static string Text(SQLiteDataReader r,int n){return r.IsDBNull(n)?"":r.GetString(n);}
   static int Ordinal(SQLiteDataReader r,string name){try{return r.GetOrdinal(name);}catch(IndexOutOfRangeException){return -1;}}
-  internal static StoredObservation Read(SQLiteDataReader r,string file){int roundStart=Ordinal(r,"round_started_utc_ticks");return new StoredObservation{Database=file,Id=r.GetInt64(0),Utc=new DateTime(r.GetInt64(1),DateTimeKind.Utc),Source=Text(r,2),Session=Text(r,3),ExperimentId=Text(r,4),Round=r.GetInt64(5),Point=Text(r,6),Description=Text(r,7),Device=Text(r,8),Slave=r.GetInt32(9),Address=r.GetInt32(10),Count=r.GetInt32(11),Unit=Text(r,12),Mode=Text(r,13),Status=Text(r,14),Value=Text(r,15),Number=r.IsDBNull(16)?(double?)null:r.GetDouble(16),Milliseconds=r.GetInt64(17),Tx=Text(r,18),Rx=Text(r,19),Payload=Text(r,20),RawNumber=r.IsDBNull(21)?(double?)null:r.GetDouble(21),Quality=Text(r,22),ConfigVersion=Text(r,23),RoundStartedUtc=roundStart<0||r.IsDBNull(roundStart)?(DateTime?)null:new DateTime(Convert.ToInt64(r.GetValue(roundStart)),DateTimeKind.Utc)};}
+  internal static StoredObservation Read(SQLiteDataReader r,string file){return Read(r,file,Ordinal(r,"round_started_utc_ticks"));}
+   /// <summary>逐行读取时复用已解析的列序:按列名查序是线性扫描,放在循环内会成为大范围扫描的主要开销。</summary>
+   internal static StoredObservation Read(SQLiteDataReader r,string file,int roundStart){return new StoredObservation{Database=file,Id=r.GetInt64(0),Utc=new DateTime(r.GetInt64(1),DateTimeKind.Utc),Source=Text(r,2),Session=Text(r,3),ExperimentId=Text(r,4),Round=r.GetInt64(5),Point=Text(r,6),Description=Text(r,7),Device=Text(r,8),Slave=r.GetInt32(9),Address=r.GetInt32(10),Count=r.GetInt32(11),Unit=Text(r,12),Mode=Text(r,13),Status=Text(r,14),Value=Text(r,15),Number=r.IsDBNull(16)?(double?)null:r.GetDouble(16),Milliseconds=r.GetInt64(17),Tx=Text(r,18),Rx=Text(r,19),Payload=Text(r,20),RawNumber=r.IsDBNull(21)?(double?)null:r.GetDouble(21),Quality=Text(r,22),ConfigVersion=Text(r,23),RoundStartedUtc=roundStart<0||r.IsDBNull(roundStart)?(DateTime?)null:new DateTime(Convert.ToInt64(r.GetValue(roundStart)),DateTimeKind.Utc)};}
+  /// <summary>轻量投影:趋势只需要时间、测点与数值。SELECT * 会把 tx/rx/payload 三个 hex 大列一起读,大范围时是主要开销。</summary>
+  const string LightColumns="SELECT id,utc_ticks,point,number,raw_number,quality";
+  internal static StoredObservation ReadLight(SQLiteDataReader r,string file){return new StoredObservation{Database=file,Id=r.GetInt64(0),Utc=new DateTime(r.GetInt64(1),DateTimeKind.Utc),Point=Text(r,2),Number=r.IsDBNull(3)?(double?)null:r.GetDouble(3),RawNumber=r.IsDBNull(4)?(double?)null:r.GetDouble(4),Quality=Text(r,5)};}
   sealed class Cursor {
    public string File;readonly HistoryFilter filter;readonly long upper;readonly bool ascending;
    List<StoredObservation> batch=new List<StoredObservation>();int index;bool ended;long time,id;
-   public Cursor(string file,HistoryFilter f,bool ascending=false){File=file;filter=f;this.ascending=ascending;time=ascending?long.MinValue:long.MaxValue;id=ascending?long.MinValue:long.MaxValue;using(var c=OpenRead(file))using(var q=new SQLiteCommand("SELECT COALESCE(MAX(id),0) FROM observations",c))upper=Convert.ToInt64(q.ExecuteScalar());}
+   // 游标起点:0=从头 1=严格(时间+id) 2=仅时间。翻页只按时间续读,同一库内再用 id 兜底去重。
+   int seedMode;
+   // 单批取行数。批量过小会让每个批次都重开一次只读连接,大范围扫描时连接建立次数成为主要开销。
+   const int BatchSize=2048;
+   readonly bool light;
+   public Cursor(string file,HistoryFilter f,bool ascending=false):this(file,f,ascending,0,0,0,false){}
+   public Cursor(string file,HistoryFilter f,bool ascending,long seedTime,long seedId,int seedMode):this(file,f,ascending,seedTime,seedId,seedMode,false){}
+   public Cursor(string file,HistoryFilter f,bool ascending,long seedTime,long seedId,int seedMode,bool light){
+    File=file;filter=f;this.ascending=ascending;this.seedMode=seedMode;this.light=light;
+    time=ascending?long.MinValue:long.MaxValue;id=ascending?long.MinValue:long.MaxValue;
+    using(var c=OpenRead(file))using(var q=new SQLiteCommand("SELECT COALESCE(MAX(id),0) FROM observations",c))upper=Convert.ToInt64(q.ExecuteScalar());
+    if(seedMode==1){time=seedTime;id=seedId;}
+    else if(seedMode==2){time=seedTime;id=ascending?long.MinValue:long.MaxValue;}
+   }
    public StoredObservation Peek(){
     if(index<batch.Count)return batch[index];if(ended)return null;
     batch.Clear();index=0;
-    using(var c=OpenRead(File))using(var q=Command(c,filter,"SELECT *",upper)){
-     q.CommandText+=ascending?" AND (utc_ticks>@cursorTime OR (utc_ticks=@cursorTime AND id>@cursorId)) ORDER BY utc_ticks ASC,id ASC LIMIT 128":" AND (utc_ticks<@cursorTime OR (utc_ticks=@cursorTime AND id<@cursorId)) ORDER BY utc_ticks DESC,id DESC LIMIT 128";
+    using(var c=OpenRead(File))using(var q=Command(c,filter,light?LightColumns:"SELECT *",upper)){
+     if(seedMode==2)q.CommandText+=ascending?" AND (utc_ticks>@cursorTime)":" AND (utc_ticks<@cursorTime)";
+     else q.CommandText+=ascending?" AND (utc_ticks>@cursorTime OR (utc_ticks=@cursorTime AND id>@cursorId))":" AND (utc_ticks<@cursorTime OR (utc_ticks=@cursorTime AND id<@cursorId))";
+     q.CommandText+=ascending?" ORDER BY utc_ticks ASC,id ASC LIMIT "+BatchSize.ToString(CultureInfo.InvariantCulture):" ORDER BY utc_ticks DESC,id DESC LIMIT "+BatchSize.ToString(CultureInfo.InvariantCulture);
      q.Parameters.AddWithValue("@cursorTime",time);q.Parameters.AddWithValue("@cursorId",id);
-     using(var r=q.ExecuteReader())while(r.Read())batch.Add(Read(r,File));
+     using(var r=q.ExecuteReader()){if(light){while(r.Read())batch.Add(ReadLight(r,File));}else{int roundStart=Ordinal(r,"round_started_utc_ticks");while(r.Read())batch.Add(Read(r,File,roundStart));}}
     }
+    seedMode=0;// 首批取完后统一按严格(时间+id)游标继续推进。
     if(batch.Count==0){ended=true;return null;}return batch[0];
    }
    public void Advance(){var o=Peek();if(o!=null){time=o.Utc.Ticks;id=o.Id;index++;}}
@@ -131,7 +154,7 @@ namespace ExperimentMonitor {
   public static List<StoredObservation> Query(string root,HistoryFilter filter,int limit=500){return QueryPage(root,filter,0,limit);}
   public static List<StoredObservation> QueryPage(string root,HistoryFilter filter,int offset,int limit=500){
    if(offset<0)throw new ArgumentOutOfRangeException("offset");if(limit<1||limit>10000)throw new ArgumentOutOfRangeException("limit");
-   var result=new List<StoredObservation>();long skipped=0;Merge(root,filter,false,CancellationToken.None,o=>{if(skipped++<offset)return true;result.Add(o);return result.Count<limit;});
+   var result=new List<StoredObservation>();long skipped=0;Merge(root,filter,false,CancellationToken.None,o=>{if(skipped++<offset)return true;result.Add(o);return result.Count<limit;},false);
    return result;
   }
   sealed class RoundPart { public string File,Session; public long Round,Upper; }
@@ -154,14 +177,97 @@ namespace ExperimentMonitor {
    var ordered=roundsByKey.Values.OrderBy(x=>x.StartedUtc).ThenBy(x=>x.FirstSampleUtc).ThenBy(x=>x.Session,StringComparer.Ordinal).ThenBy(x=>x.Round).ToList();if(!ascending)ordered.Reverse();totalRounds=ordered.Count;
    var selected=ordered.Skip(offset).Take(limit).ToList();var rowsByKey=selected.ToDictionary(x=>x.Key,x=>new List<StoredObservation>(),StringComparer.Ordinal);
    // Fetch only the visible page, in bounded parameter chunks per database.
-   foreach(string file in files){var parts=selected.SelectMany(x=>x.Parts).Where(x=>String.Equals(x.File,file,StringComparison.OrdinalIgnoreCase)).ToList();if(parts.Count==0)continue;using(var c=OpenRead(file))for(int at=0;at<parts.Count;at+=200){var chunk=parts.Skip(at).Take(200).ToList();using(var q=Command(c,f,"SELECT *",chunk.Max(x=>x.Upper))){var clauses=new List<string>();for(int i=0;i<chunk.Count;i++){string s="@rs"+i,r="@rr"+i;clauses.Add("(session="+s+" AND round="+r+")");q.Parameters.AddWithValue(s,chunk[i].Session??"");q.Parameters.AddWithValue(r,chunk[i].Round);}q.CommandText+=" AND ("+String.Join(" OR ",clauses.ToArray())+") ORDER BY utc_ticks "+(ascending?"ASC":"DESC")+",id "+(ascending?"ASC":"DESC");using(var reader=q.ExecuteReader())while(reader.Read()){var o=Read(reader,file);string key=RoundKey(file,o.Session,o.Round);List<StoredObservation> list;if(rowsByKey.TryGetValue(key,out list))list.Add(o);}}}}
+   foreach(string file in files){var parts=selected.SelectMany(x=>x.Parts).Where(x=>String.Equals(x.File,file,StringComparison.OrdinalIgnoreCase)).ToList();if(parts.Count==0)continue;using(var c=OpenRead(file))for(int at=0;at<parts.Count;at+=200){var chunk=parts.Skip(at).Take(200).ToList();using(var q=Command(c,f,"SELECT *",chunk.Max(x=>x.Upper))){var clauses=new List<string>();for(int i=0;i<chunk.Count;i++){string s="@rs"+i,r="@rr"+i;clauses.Add("(session="+s+" AND round="+r+")");q.Parameters.AddWithValue(s,chunk[i].Session??"");q.Parameters.AddWithValue(r,chunk[i].Round);}q.CommandText+=" AND ("+String.Join(" OR ",clauses.ToArray())+") ORDER BY utc_ticks "+(ascending?"ASC":"DESC")+",id "+(ascending?"ASC":"DESC");using(var reader=q.ExecuteReader()){int readRoundStart=Ordinal(reader,"round_started_utc_ticks");while(reader.Read()){var o=Read(reader,file,readRoundStart);string key=RoundKey(file,o.Session,o.Round);List<StoredObservation> list;if(rowsByKey.TryGetValue(key,out list))list.Add(o);}}}}}
    return selected.Select(x=>rowsByKey[x.Key]).ToList();
   }
-  public static long Stream(string root,HistoryFilter filter,Action<StoredObservation> visitor,bool ascending=true,CancellationToken cancellationToken=default(CancellationToken)){
-   if(visitor==null)throw new ArgumentNullException("visitor");long count=0;Merge(root,filter,ascending,cancellationToken,o=>{visitor(o);count++;return true;});return count;
+  /// <summary>采集轮分页的键集位置:本页已消费到的最后一条记录。</summary>
+  public sealed class RoundCursor {
+   public long UtcTicks;public long Id;public string Database;
   }
-  static void Merge(string root,HistoryFilter filter,bool ascending,CancellationToken cancellationToken,Func<StoredObservation,bool> visit){
-   if(filter==null)throw new ArgumentNullException("filter");var f=filter.Copy();var cursors=Databases(root,f.Source).Select(file=>new Cursor(file,f,ascending)).ToList();
+  /// <summary>一页完整采集轮。每轮含该轮全部测点记录,并给出继续翻页的键集。</summary>
+  public sealed class RoundPage {
+   public List<List<StoredObservation>> Rounds=new List<List<StoredObservation>>();
+   public bool HasMore;public RoundCursor Next;public DateTime FromUtc,ToUtc;
+  }
+  /// <summary>采集轮分组键:同一会话内同一轮号只算一轮,跨分期库的同轮记录归入同一组;无会话的旧记录按库区分。</summary>
+  struct RoundIdentity:IEquatable<RoundIdentity> {
+   public readonly string Group;public readonly long Round;public readonly bool Legacy;
+   public RoundIdentity(string file,string session,long round){Legacy=String.IsNullOrEmpty(session);Group=Legacy?(file??""):session;Round=round;}
+   public bool Equals(RoundIdentity other){return Round==other.Round&&Legacy==other.Legacy&&String.Equals(Group,other.Group,StringComparison.Ordinal);}
+   public override bool Equals(object obj){return obj is RoundIdentity&&Equals((RoundIdentity)obj);}
+   public override int GetHashCode(){unchecked{return (Group==null?0:Group.GetHashCode())*397^(Legacy?1:0)^Round.GetHashCode();}}
+  }
+  static RoundIdentity RoundGroupKey(StoredObservation o){return new RoundIdentity(o.Database,o.Session,o.Round);}
+  /// <summary>按采集轮翻页:从最新(或最早)一端沿索引顺序读取,凑够 limit 轮即停,不做全范围 GROUP BY。</summary>
+  public static RoundPage QueryRoundWindow(string root,HistoryFilter filter,RoundCursor cursor,int limit,bool descending,CancellationToken cancellationToken=default(CancellationToken)){
+   if(filter==null)throw new ArgumentNullException("filter");
+   if(limit<1||limit>10000)throw new ArgumentOutOfRangeException("limit");
+   var page=new RoundPage();
+   var files=Databases(root,filter.Source).ToArray();
+   if(files.Length==0)return page;
+   var cursors=new List<Cursor>();
+   foreach(string file in files){
+    long seedTime=0,seedId=0;int mode=0;
+    if(cursor!=null&&!String.IsNullOrEmpty(cursor.Database)){
+     if(String.Equals(file,cursor.Database,StringComparison.Ordinal)){seedTime=cursor.UtcTicks;seedId=cursor.Id;mode=1;}
+     else{seedTime=cursor.UtcTicks;mode=2;}
+    }
+    cursors.Add(new Cursor(file,filter,!descending,seedTime,seedId,mode));
+   }
+   var groups=new List<List<StoredObservation>>();var seen=new Dictionary<RoundIdentity,int>();
+   long lastTicks=0,lastId=0;string lastFile=null;DateTime minUtc=DateTime.MaxValue,maxUtc=DateTime.MinValue;
+   while(true){
+    cancellationToken.ThrowIfCancellationRequested();
+    Cursor chosen=null;StoredObservation best=null;
+    foreach(Cursor c in cursors){
+     StoredObservation o=c.Peek();if(o==null)continue;
+     bool before=best==null||(descending?o.Utc>best.Utc:o.Utc<best.Utc);
+     if(!before&&best!=null&&o.Utc==best.Utc){int db=String.CompareOrdinal(o.Database,best.Database);before=descending?(db>0||(db==0&&o.Id>best.Id)):(db<0||(db==0&&o.Id<best.Id));}
+     if(before){chosen=c;best=o;}
+    }
+    if(chosen==null)break;
+    RoundIdentity key=RoundGroupKey(best);int gi;
+    if(!seen.TryGetValue(key,out gi)){
+     if(groups.Count>=limit){page.HasMore=true;break;}
+     gi=groups.Count;groups.Add(new List<StoredObservation>());seen.Add(key,gi);
+    }
+    groups[gi].Add(best);
+    if(best.Utc<minUtc)minUtc=best.Utc;
+    if(best.Utc>maxUtc)maxUtc=best.Utc;
+    lastTicks=best.Utc.Ticks;lastId=best.Id;lastFile=best.Database;
+    chosen.Advance();
+   }
+   page.Rounds=groups;
+   if(lastFile!=null)page.Next=new RoundCursor{UtcTicks=lastTicks,Id=lastId,Database=lastFile};
+   if(minUtc<=maxUtc){page.FromUtc=minUtc;page.ToUtc=maxUtc;}
+   return page;
+  }
+  /// <summary>范围内采集轮总数(精确值)。跨分期库的同一轮只算一次。用于摘要展示,应放在后台线程执行。</summary>
+  public static long CountRounds(string root,HistoryFilter f){
+   if(f==null)throw new ArgumentNullException("filter");
+   var keys=new HashSet<RoundIdentity>();
+   foreach(string file in Databases(root,f.Source)){
+    using(var c=OpenRead(file)){
+     var q=new SQLiteCommand(c);
+     string sql="SELECT session,round FROM observations WHERE utc_ticks>=@f AND utc_ticks<@t";
+     q.Parameters.AddWithValue("@f",f.FromUtc.ToUniversalTime().Ticks);
+     q.Parameters.AddWithValue("@t",f.ToUtc.ToUniversalTime().Ticks);
+     if(!string.IsNullOrEmpty(f.ExperimentId)){sql+=" AND experiment=@e";q.Parameters.AddWithValue("@e",f.ExperimentId);}
+     q.CommandText=AppendFilters(q,f,sql)+" GROUP BY session,round";
+     using(var r=q.ExecuteReader())while(r.Read())keys.Add(new RoundIdentity(file,Text(r,0),r.GetInt64(1)));
+    }
+   }
+   return keys.Count;
+  }
+  public static long Stream(string root,HistoryFilter filter,Action<StoredObservation> visitor,bool ascending=true,CancellationToken cancellationToken=default(CancellationToken)){
+   if(visitor==null)throw new ArgumentNullException("visitor");long count=0;Merge(root,filter,ascending,cancellationToken,o=>{visitor(o);count++;return true;},false);return count;
+  }
+  /// <summary>只读取趋势所需列的流式读取:避免把 tx/rx/payload 三个 hex 大列一并读出。</summary>
+  public static long StreamLight(string root,HistoryFilter filter,Action<StoredObservation> visitor,bool ascending=true,CancellationToken cancellationToken=default(CancellationToken)){
+   if(visitor==null)throw new ArgumentNullException("visitor");long count=0;Merge(root,filter,ascending,cancellationToken,o=>{visitor(o);count++;return true;},true);return count;
+  }
+  static void Merge(string root,HistoryFilter filter,bool ascending,CancellationToken cancellationToken,Func<StoredObservation,bool> visit,bool light){
+   if(filter==null)throw new ArgumentNullException("filter");var f=filter.Copy();var cursors=Databases(root,f.Source).Select(file=>new Cursor(file,f,ascending,0,0,0,light)).ToList();
    while(true){cancellationToken.ThrowIfCancellationRequested();Cursor chosen=null;StoredObservation best=null;foreach(var cursor in cursors){var o=cursor.Peek();if(o==null)continue;bool before=best==null||(ascending?o.Utc<best.Utc:o.Utc>best.Utc);if(!before&&best!=null&&o.Utc==best.Utc){int db=String.CompareOrdinal(o.Database,best.Database);before=ascending?(db<0||(db==0&&o.Id<best.Id)):(db>0||(db==0&&o.Id>best.Id));}if(before){chosen=cursor;best=o;}}
     if(chosen==null)break;if(!visit(best))break;chosen.Advance();
    }

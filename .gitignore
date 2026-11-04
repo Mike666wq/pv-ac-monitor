@@ -4,6 +4,7 @@
 !/.gitignore
 !/.gitattributes
 !/README.md
+!/CHANGELOG.md
 !/*.cs
 !/build-source.ps1
 !/package-ci.ps1
