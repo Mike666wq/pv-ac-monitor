@@ -88,8 +88,11 @@ namespace ExperimentMonitor {
                     Field<Button>(history,"limitsSave").PerformClick();
                     await Wait(()=>File.Exists(Path.Combine(isolated,"limits.json")),"阈值文件未写入");
                     check(LimitStore.Load(isolated).ContainsKey("T1"),"阈值保存后可重新读回");
-                    inner.SelectedIndex=0;
-                    check(inner.SelectedIndex==0,"切回数据记录子标签");
+                    // 回归：在别的子标签下触发查询，不能把数据表永久留在隐藏状态。
+                    inner.SelectedIndex=1;
+                    Field<Button>(history,"query").PerformClick();await Wait(()=>!Field<bool>(history,"queryBusy"),"子标签下的查询未完成");
+                    inner.SelectedIndex=0;Application.DoEvents();
+                    check(grid.Visible&&grid.Rows.Count>0,"在实验段子标签下查询后，回到数据记录仍显示表格数据");
                 }catch(Exception ex){failure=ex;}finally{form.Close();}};
                 Application.Run(form);
             }
@@ -139,5 +142,6 @@ namespace ExperimentMonitor {
         }
     }
 }
+
 
 

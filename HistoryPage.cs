@@ -504,14 +504,14 @@ namespace ExperimentMonitor {
         void RenderRows(){
          if(lastLoad==null||summaryFilter==null)return;
          HistoryLoad data=lastLoad;HistoryFilter filter=summaryFilter;
-         // 填表期间挂起布局:200 轮 × 30 多列每次重建都要几百毫秒,不挂起会把界面拖住。
-         bool gridWasVisible=grid.Visible;grid.Visible=false;grid.SuspendLayout();
+         // 填表期间只挂起布局,不去动 Visible:Visible 读的是“父容器可见性”,在别的子标签里渲染时会被误判成隐藏并永久留在隐藏状态。
+         grid.SuspendLayout();
          try{
           grid.Rows.Clear();
           List<StoredObservation> rows=data.Rows??new List<StoredObservation>();
           if(wideView)BuildWidePreview(data.Rounds??new List<List<StoredObservation>>(),filter);else BuildDetailPreview(rows);
           if(emptyHint!=null)emptyHint.Visible=rows.Count==0;
-         }finally{grid.ResumeLayout(false);if(gridWasVisible)grid.Visible=true;}
+         }finally{grid.ResumeLayout(false);if(!grid.Visible)grid.Visible=true;}
         }
         void RenderSummary(){
          if(summaryFilter==null)return;
@@ -610,6 +610,7 @@ namespace ExperimentMonitor {
         void DisposePage(){if(disposed)return;disposed=true;generation++;timer.Stop();timer.Dispose();countTimer.Stop();countTimer.Dispose();if(exportCancel!=null)try{exportCancel.Cancel();}catch{} }
     }
 }
+
 
 
 
