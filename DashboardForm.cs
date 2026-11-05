@@ -131,7 +131,6 @@ namespace ExperimentMonitor {
             page.Controls.Add(grid);
         }
 
-        sealed class SessionLogEntry { public FileInfo File; public SessionLogEntry(FileInfo file) { File=file; } public override string ToString() { return File.Name+" · "+Math.Max(1,File.Length/1024)+" KB · "+File.LastWriteTime.ToString("MM-dd HH:mm:ss"); } }
         void BuildDiagnostics(TabPage page) {
             var shell=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(4),AutoScroll=true };shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));shell.RowStyles.Add(new RowStyle(SizeType.Absolute,110));shell.RowStyles.Add(new RowStyle(SizeType.Percent,100));page.Controls.Add(shell);
             var box=new GroupBox { Text="只读 Modbus 03 手动读取",Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(8),BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink };
@@ -159,53 +158,16 @@ namespace ExperimentMonitor {
             controls.Layout+=(s,e)=>fitDiagnostics();
             fitDiagnostics();
             Label result=new Label { Dock=DockStyle.Fill,Text="尚未发送诊断读取，结果会显示在这里。",Padding=new Padding(9),ForeColor=UiTheme.Muted,AutoEllipsis=true };
-            var resultBox=new GroupBox { Text="最近一次读取",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6) };resultBox.Controls.Add(result);shell.Controls.Add(resultBox,0,1);
+            var resultBox=new GroupBox { Text="最近一次读取",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6) };resultBox.Controls.Add(result);
+            // 历史会话日志放在独立只读窗口里:不占用诊断页的布局高度,也不影响通信日志的可视高度。
+            var openSessionLogs=new StyledActionButton { Text="历史会话日志…",Width=132,Anchor=AnchorStyles.Top|AnchorStyles.Right,Margin=Padding.Empty,Location=new System.Drawing.Point(8,26) };
+            openSessionLogs.Click+=(s,e)=>Dispatch(()=>{using(var dialog=new SessionLogForm(appRoot))dialog.ShowDialog(this);});
+            resultBox.Controls.Add(openSessionLogs);
+            resultBox.Resize+=(s,e)=>{openSessionLogs.Location=new System.Drawing.Point(Math.Max(8,resultBox.ClientSize.Width-openSessionLogs.Width-12),26);openSessionLogs.BringToFront();};
+            shell.Controls.Add(resultBox,0,1);
             // 提示语只留一处:作为通信日志的初始内容。
             log.Text="诊断只读且不写入正式历史记录。请先连接，再停止周期采集后发送读取。\r\n";
-            var logBox=new GroupBox { Text="通信日志 / 历史会话日志",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6),MinimumSize=new Size(0,100) };
-            var diagnosticSplit=new SplitContainer { Dock=DockStyle.Fill,Orientation=Orientation.Vertical,BackColor=UiTheme.Surface };bool splitPlaced=false;diagnosticSplit.ClientSizeChanged+=(s,e)=>{if(splitPlaced)return;int width=diagnosticSplit.ClientSize.Width;if(width<600)return;try{diagnosticSplit.Panel1MinSize=280;diagnosticSplit.Panel2MinSize=240;diagnosticSplit.SplitterDistance=Math.Max(300,width-340);splitPlaced=true;}catch{}};
-            diagnosticSplit.Panel1.Controls.Add(log);logBox.Controls.Add(diagnosticSplit);shell.Controls.Add(logBox,0,2);
-            // 历史会话日志:排查“这一段为什么没有数据/为什么超时”时对照数据库看原始收发记录。
-            var historyLogsBox=new GroupBox { Text="历史会话日志（logs\\session-*.log，只读）",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6) };
-            var logsHost=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=2,RowCount=2,Padding=new Padding(2) };
-            logsHost.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,300));logsHost.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
-            logsHost.RowStyles.Add(new RowStyle(SizeType.Absolute,32));logsHost.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-            var logsBar=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=Padding.Empty };
-            var logsRefresh=new StyledActionButton { Text="刷新日志列表",Width=124,Margin=Padding.Empty,MinimumSize=new Size(40,30) };
-            var logsSummary=new Label { AutoSize=true,Text="尚未读取",Padding=new Padding(8,10,3,0),ForeColor=UiTheme.Muted };
-            logsBar.Controls.Add(logsRefresh);logsBar.Controls.Add(logsSummary);
-            var logList=new ListBox { Dock=DockStyle.Fill,IntegralHeight=false };
-            var logContent=new ListBox { Dock=DockStyle.Fill,IntegralHeight=false,HorizontalScrollbar=true,Font=new Font("Consolas",9) };
-            logsHost.Controls.Add(logsBar,0,0);logsHost.SetColumnSpan(logsBar,2);
-            logsHost.Controls.Add(logList,0,1);logsHost.Controls.Add(logContent,1,1);
-            historyLogsBox.Controls.Add(logsHost);
-            diagnosticSplit.Panel2.Controls.Add(historyLogsBox);
-            Action loadLogFiles=()=>{
-                logList.BeginUpdate();
-                try{
-                    logList.Items.Clear();
-                    string logsRoot=Path.Combine(appRoot,"logs");
-                    if(Directory.Exists(logsRoot))foreach(var file in new DirectoryInfo(logsRoot).GetFiles("session-*.log").OrderByDescending(x=>x.LastWriteTimeUtc).Take(200))logList.Items.Add(new SessionLogEntry(file));
-                }catch(Exception ex){logsSummary.Text="读取日志目录失败："+ex.Message;logList.EndUpdate();return;}
-                logList.EndUpdate();
-                logsSummary.Text="共 "+logList.Items.Count+" 个会话日志";
-            };
-            logsRefresh.Click+=(s,e)=>loadLogFiles();
-            logList.SelectedIndexChanged+=(s,e)=>{
-                SessionLogEntry entry=logList.SelectedItem as SessionLogEntry;
-                if(entry==null)return;
-                if(entry.File.Length>8L*1024*1024){logContent.Items.Clear();logContent.Items.Add("日志过大（"+(entry.File.Length/1024/1024)+" MB），请在文件管理器里打开查看。");return;}
-                try{
-                    string[] lines=File.ReadAllLines(entry.File.FullName);
-                    int samples=lines.Count(x=>x.Contains("SAMPLE "));
-                    int timeouts=lines.Count(x=>x.Contains("quality=timeout"));
-                    int errors=lines.Count(x=>x.Contains("quality=error")||x.Contains("失败"));
-                    string[] tail=lines.Skip(Math.Max(0,lines.Length-200)).ToArray();
-                    logContent.Items.Clear();logContent.Items.Add("文件："+entry.File.Name+" · "+entry.File.Length+" 字节 · 样本 "+samples+" 行 · 超时 "+timeouts+" · 异常/失败 "+errors+"（下方为最后 "+tail.Length+" 行）");logContent.Items.AddRange(tail);
-                    logsSummary.Text=entry.File.Name+" · 样本 "+samples+" · 超时 "+timeouts;
-                }catch(Exception ex){logContent.Items.Clear();logContent.Items.Add("读取日志失败："+ex.Message);}
-            };
-            loadLogFiles();
+            var logBox=new GroupBox { Text="通信日志",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6),MinimumSize=new Size(0,100) };logBox.Controls.Add(log);shell.Controls.Add(logBox,0,2);
             raw.CheckedChanged+=(s,e)=>Engine.RecordRawLog=raw.Checked;clear.Click+=(s,e)=>{log.Clear();diagnosticRequests=diagnosticGood=diagnosticBad=0;counters.Text="读取 0 次 · 成功 0 · 异常 0";result.Text="日志已清空；正式历史记录与本地数据库不会受影响。";};
             read.Click+=async(s,e)=>{
                 if(!Engine.IsConnected){MessageBox.Show(this,"请先连接数据源。","通信诊断",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
@@ -268,6 +230,9 @@ namespace ExperimentMonitor {
         static NumericUpDown Number(int min,int max,int width){return new NumericUpDown{Minimum=min,Maximum=max,Width=width};}
     }
 }
+
+
+
 
 
 
