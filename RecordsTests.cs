@@ -75,7 +75,7 @@ namespace ExperimentMonitor {
                     using (var stream = archive.GetEntry("xl/workbook.xml").Open()) workbook.Load(stream);
                     var ns = new XmlNamespaceManager(workbook.NameTable);
                     ns.AddNamespace("s", "http://schemas.openxmlformats.org/spreadsheetml/2006/main");
-                    Require(workbook.SelectNodes("//s:sheet", ns).Count == 4, "四张业务工作表");
+                    Require(workbook.SelectNodes("//s:sheet", ns).Count == 5, "五张工作表（含统计摘要）");
                     checks++;
 
                     foreach (string sheetName in new[] { "sheet1.xml", "sheet2.xml", "sheet3.xml" }) {
@@ -90,6 +90,12 @@ namespace ExperimentMonitor {
                             checks++;
                         }
                     }
+
+                    XmlDocument summary = Sheet(archive, "sheet5.xml");
+                    Require(summary.OuterXml.Contains("实验段"), "统计摘要表存在实验段小节");
+                    checks++;
+                    Require(summary.OuterXml.Contains("未统计"), "未先统计时摘要表标明未统计，不伪造数字");
+                    checks++;
 
                     XmlDocument quality = Sheet(archive, "sheet3.xml");
                     Require(quality.OuterXml.Contains("timeout") && quality.OuterXml.Contains("超时"), "质量表保留超时质量和状态说明");

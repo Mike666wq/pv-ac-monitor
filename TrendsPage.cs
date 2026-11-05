@@ -22,10 +22,13 @@ namespace ExperimentMonitor {
         readonly TextBox search=new TextBox{Width=160};
         readonly Label status=new Label{AutoSize=true,Text="读取最近已保存记录…"};
         readonly StyledActionButton query=new StyledActionButton{Text="应用范围",Width=112,BackColor=UiTheme.Blue,IconGlyph="⌕",Margin=new Padding(3,0,3,0)},latest=new StyledActionButton{Text="回到最新",Width=100,Margin=new Padding(3,0,3,0)},all=new StyledActionButton{Text="全选",Width=72},none=new StyledActionButton{Text="清空",Width=72};
+        readonly StyledActionButton openRecords=new StyledActionButton{Text="看原始记录 ▸",Width=136},exportImage=new StyledActionButton{Text="导出图片 ▸",Width=112};
+        public event Action<HistorySelection> OpenRecordsRequested;
         readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer{Interval=1000};
         readonly TrendTimeWindow window=new TrendTimeWindow();
         readonly Dictionary<string,bool> pointChecked=new Dictionary<string,bool>();
         readonly Dictionary<string,int> exactRequestIds=new Dictionary<string,int>();
+        Dictionary<string,Limit> chartLimits;
         bool disposed,queryBusy,filtering,initializing=true,updatingControls,sourceChosen,rangeDirty,pendingRefresh;
         int generation,loadedGeneration=-1;DateTime loadedFrom,loadedTo,lastRevisionCheck=DateTime.MinValue;string loadedSource,lastRevision="";long lastCommitted=-2,lastCompleted=-1;
         CancellationTokenSource queryCancellation;
@@ -35,11 +38,63 @@ namespace ExperimentMonitor {
             source.Items.AddRange(new object[]{"实机","模拟"});source.SelectedIndex=InitialSource()=="simulation"?1:0;
             quick.Items.AddRange(new object[]{"最近15分钟","最近1小时","最近2小时","今天（固定）","自定义"});quick.SelectedIndex=1;
             SetBounds(window.Resolve(DateTime.UtcNow,null));BuildLayout();Wire();PopulateFilters();initializing=false;
+            chartLimits=LimitStore.Load(appRoot);chart.SetLimits(chartLimits);
             engine.ConnectionChanged+=OnConnection;timer.Tick+=(s,e)=>Tick();
-            HandleCreated+=(s,e)=>RequestRefresh();VisibleChanged+=(s,e)=>{if(Visible){timer.Start();RequestRefresh();}else timer.Stop();};
+            HandleCreated+=(s,e)=>RequestRefresh();VisibleChanged+=(s,e)=>{if(Visible){chartLimits=LimitStore.Load(appRoot);chart.SetLimits(chartLimits);timer.Start();RequestRefresh();}else timer.Stop();};
             Disposed+=(s,e)=>DisposePage();UpdateActions();
         }
         public void AttachTo(Control parent){if(parent==null)throw new ArgumentNullException("parent");parent.Controls.Add(this);}
+        /// <summary>当前图表可见区间 + 已选测点，用于跳到记录页看原始值。没有可绘制数据时返回 null。</summary>
+        public HistorySelection CurrentSelection(){
+            if(disposed||loadedSource==null||loadedTo<=loadedFrom)return null;
+            string[] selected=SelectedPoints();
+            if(selected.Length==0)return null;
+            return new HistorySelection{Source=loadedSource,FromUtc=loadedFrom.ToUniversalTime(),ToUtc=loadedTo.ToUniversalTime(),Points=selected};
+        }
+        /// <summary>应用记录页交接过来的条件:固定范围、退出跟随、按交接的测点勾选。</summary>
+        public void ApplySelection(HistorySelection selection){
+            if(selection==null||disposed)return;
+            updatingControls=true;
+            try{
+                int index=selection.Source=="simulation"?1:0;
+                if(source.SelectedIndex!=index)source.SelectedIndex=index;
+                DateTime fromLocal=selection.FromUtc.ToLocalTime(),toLocal=selection.ToUtc.ToLocalTime();
+                if(fromLocal<from.MinDate)fromLocal=from.MinDate;
+                if(toLocal>to.MaxDate)toLocal=to.MaxDate;
+                if(toLocal<=fromLocal)toLocal=fromLocal.AddSeconds(1);
+                from.Value=fromLocal;to.Value=toLocal;
+                window.Fix(selection.FromUtc.ToUniversalTime(),selection.ToUtc.ToUniversalTime());
+                rangeDirty=false;SetQuick(4);SetFollowing(false);
+                if(selection.Points!=null&&selection.Points.Length>0){
+                    foreach(Point point in points)pointChecked[point.name]=false;
+                    foreach(string id in selection.Points)pointChecked[id]=true;
+                    for(int i=0;i<devices.Items.Count;i++)devices.SetItemChecked(i,true);
+                    FilterPoints();
+                }
+            }finally{updatingControls=false;}
+            InvalidateQuery();RequestRefresh();
+            status.Text="已按记录页的筛选范围显示（固定范围，已退出跟随）。";
+        }
+        /// <summary>把当前可见区间导出为 PNG（无对话框版本，供按钮与测试共用）。</summary>
+        public bool ExportImage(string path){
+            if(String.IsNullOrEmpty(path)||disposed)return false;
+            try{
+                int width=Math.Max(320,chart.Width),height=Math.Max(240,chart.Height);
+                using(var bitmap=new Bitmap(width,height)){
+                    chart.DrawToBitmap(bitmap,new Rectangle(0,0,width,height));
+                    bitmap.Save(path,System.Drawing.Imaging.ImageFormat.Png);
+                }
+                return true;
+            }catch{return false;}
+        }
+        void ChooseExportImage(){
+            if(CurrentSelection()==null){status.Text="当前没有可导出的趋势数据。";return;}
+            string stamp=loadedFrom.ToLocalTime().ToString("yyyyMMdd-HHmm")+"_"+loadedTo.ToLocalTime().ToString("HHmm");
+            using(var dialog=new SaveFileDialog{Filter="PNG 图片|*.png",DefaultExt="png",AddExtension=true,FileName="趋势_"+(loadedSource=="simulation"?"模拟":"实机")+"_"+stamp+".png"}){
+                if(dialog.ShowDialog(this)!=DialogResult.OK)return;
+                status.Text=ExportImage(dialog.FileName)?"趋势图已导出："+dialog.FileName:"导出失败：无法写入 "+dialog.FileName;
+            }
+        }
         void BuildLayout(){
             var root=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(3) };root.RowStyles.Add(new RowStyle(SizeType.AutoSize));root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,26));Controls.Add(root);
             // 两行工具区:行内容自适应宽度,不再硬编码 840px(消除右侧 39% 留白)。
@@ -50,7 +105,7 @@ namespace ExperimentMonitor {
             viewRow.Controls.Add(TextLabel("开始"));viewRow.Controls.Add(from);viewRow.Controls.Add(TextLabel("结束（不含）"));viewRow.Controls.Add(to);
             viewRow.Controls.Add(new RoundedInputHost(quick) { Width=142 });toolbar.Controls.Add(viewRow,0,0);
             var actionRow=new FlowLayoutPanel { Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=new Padding(0,2,0,0) };
-            actionRow.Controls.Add(followLatest);actionRow.Controls.Add(query);actionRow.Controls.Add(latest);toolbar.Controls.Add(actionRow,0,1);
+            actionRow.Controls.Add(followLatest);actionRow.Controls.Add(query);actionRow.Controls.Add(latest);actionRow.Controls.Add(openRecords);actionRow.Controls.Add(exportImage);toolbar.Controls.Add(actionRow,0,1);
             root.Controls.Add(toolbar,0,0);
             var split=new SplitContainer { Size=new Size(700,500),Dock=DockStyle.Fill,Panel1MinSize=205,Panel2MinSize=350,SplitterWidth=6,SplitterDistance=265,BackColor=UiTheme.Canvas,BorderStyle=BorderStyle.None };
             // 设备列表固定高度(4 台设备,去掉底部死空间),测点列表吃掉剩余高度;搜索框拉满整行。
@@ -67,6 +122,10 @@ namespace ExperimentMonitor {
             chart.LegendVisibilityChanged+=(id,visible)=>status.Text=PointCatalog.Get(id).Label+" · "+(visible?"已显示":"已隐藏");chart.ExactSampleRequested+=OnExactSampleRequested;
             chart.UserNavigated+=()=>{if(!followLatest.Checked||loadedGeneration!=generation)return;window.Fix(loadedFrom,loadedTo);SetFollowing(false);SetQuick(4);rangeDirty=false;pendingRefresh=false;InvalidateQuery();loadedGeneration=generation;status.Text="已暂停跟随以查看图表；双击恢复已应用范围，或点击“回到最新”。";UpdateActions();};
             latest.Click+=(s,e)=>ResumeFollowing();query.Click+=(s,e)=>ApplyRange();
+            openRecords.Margin=Padding.Empty;exportImage.Margin=Padding.Empty;
+            openRecords.MinimumSize=new Size(40,30);exportImage.MinimumSize=new Size(40,30);
+            openRecords.Click+=(s,e)=>{HistorySelection selection=CurrentSelection();if(selection==null){status.Text="先选中测点并显示出数据，再跳到记录页。";return;}Action<HistorySelection> handler=OpenRecordsRequested;if(handler==null){status.Text="当前窗口不支持跳转到记录页。";return;}handler(selection);};
+            exportImage.Click+=(s,e)=>ChooseExportImage();
             followLatest.CheckedChanged+=(s,e)=>{if(initializing||updatingControls)return;if(followLatest.Checked)ResumeFollowing();else FreezeDisplayed();};
             quick.SelectedIndexChanged+=(s,e)=>{if(initializing||updatingControls)return;int i=quick.SelectedIndex;
                 if(i<3){window.Follow(TimeSpan.FromMinutes(i==0?15:i==1?60:120));SetFollowing(true);rangeDirty=false;}
@@ -138,3 +197,4 @@ namespace ExperimentMonitor {
         void DisposePage(){if(disposed)return;disposed=true;InvalidateQuery();timer.Stop();timer.Dispose();engine.ConnectionChanged-=OnConnection;}
     }
 }
+

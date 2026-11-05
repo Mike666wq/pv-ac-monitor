@@ -58,7 +58,7 @@ namespace ExperimentMonitor {
             using(var zip=ZipFile.OpenRead(Path.Combine(excel.OutputDirectory,excel.Files.First(f=>f.EndsWith(".xlsx"))))) {
                 var workbook=new XmlDocument();using(var stream=zip.GetEntry("xl/workbook.xml").Open())workbook.Load(stream);
                 var ns=new XmlNamespaceManager(workbook.NameTable);ns.AddNamespace("s","http://schemas.openxmlformats.org/spreadsheetml/2006/main");
-                Check(workbook.SelectNodes("//s:sheet",ns).Count==4,"工作簿包含宽表明细质量说明四表",checks);
+                Check(workbook.SelectNodes("//s:sheet",ns).Count==5,"工作簿包含宽表明细质量说明与统计摘要五表",checks);
                 var wide=new XmlDocument();using(var stream=zip.GetEntry("xl/worksheets/sheet1.xml").Open())wide.Load(stream);
                 Check(wide.SelectNodes("//s:sheetData/s:row",ns).Count==3,"宽表74点对应两轮不是74行",checks);
                 var detail=new XmlDocument();using(var stream=zip.GetEntry("xl/worksheets/sheet2.xml").Open())detail.Load(stream);
@@ -77,3 +77,4 @@ namespace ExperimentMonitor {
         }
     }
 }
+

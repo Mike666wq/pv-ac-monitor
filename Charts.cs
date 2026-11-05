@@ -27,6 +27,9 @@ namespace ExperimentMonitor {
         // Compressed history already contains explicit null markers for missing/failed runs.
         // Retained extrema can be far apart in time without representing an acquisition outage.
         public bool UseExplicitGaps { get; set; }
+        Dictionary<string,Limit> limits;
+        /// <summary>阈值线来源。只在该单位分栏仅显示 1 个测点且该测点有阈值时画线,避免多测点同栏歧义。</summary>
+        public void SetLimits(IDictionary<string,Limit> values) { limits=values==null?null:new Dictionary<string,Limit>(values);Invalidate(); }
         public int RequiredHeight { get { return Math.Max(210,selected.Select(n=>PointCatalog.Get(n).Unit??"").Distinct().Count()*205); } }
         public ExperimentChart() { DoubleBuffered=true;BackColor=Color.White;Font=new Font("Microsoft YaHei UI",9);MinimumSize=new Size(280,170);SetStyle(ControlStyles.ResizeRedraw|ControlStyles.OptimizedDoubleBuffer,true); }
         public void SelectPoints(IEnumerable<string> names) { selected=(names??Enumerable.Empty<string>()).Distinct().ToArray();foreach(string n in selected)if(!visible.ContainsKey(n))visible[n]=true;ConstrainRangeToData();Invalidate(); }
@@ -84,6 +87,15 @@ namespace ExperimentMonitor {
                 var visibleNames=group.Where(id=>{bool v;return !visible.TryGetValue(id,out v)||v;}).ToArray();var valid=visibleNames.Where(data.ContainsKey).SelectMany(id=>data[id]).Where(s=>s.Value.HasValue&&s.Utc>=fromUtc&&s.Utc<=toUtc).ToArray();
                 if(valid.Length==0){TextRenderer.DrawText(g,"当前时间范围没有可见样本",Font,new Rectangle(rect.Left,rect.Top+8,rect.Width,28),UiTheme.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter);TextRenderer.DrawText(g,fromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss",CultureInfo.InvariantCulture),Font,new Rectangle(rect.Left,rect.Bottom+4,190,18),UiTheme.Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter);TextRenderer.DrawText(g,toUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss",CultureInfo.InvariantCulture),Font,new Rectangle(rect.Right-190,rect.Bottom+4,190,18),UiTheme.Muted,TextFormatFlags.Right|TextFormatFlags.VerticalCenter);continue;}
                 if(valid.Length>0){double min=valid.Min(x=>x.Value.Value),max=valid.Max(x=>x.Value.Value);double span=max-min;if(span==0)span=Math.Max(Math.Abs(max)*.02,.01);double pad=span*.10;min-=pad;max+=pad;for(int i=0;i<=4;i++){double v=max-(max-min)*i/4;TextRenderer.DrawText(g,v.ToString("G5",CultureInfo.InvariantCulture),Font, new Rectangle(1,rect.Top+rect.Height*i/4-8,57,18),UiTheme.Muted,TextFormatFlags.Right|TextFormatFlags.VerticalCenter);}
+                    if(visibleNames.Length==1&&limits!=null){
+                     Limit singleLimit;
+                     if(limits.TryGetValue(visibleNames[0],out singleLimit)&&singleLimit!=null&&singleLimit.Active){
+                      using(var limitPen=new Pen(Color.FromArgb(214,96,96)){DashStyle=System.Drawing.Drawing2D.DashStyle.Dash}){
+                       if(singleLimit.Lo.HasValue&&singleLimit.Lo.Value>=min&&singleLimit.Lo.Value<=max){float limitY=rect.Bottom-(float)((singleLimit.Lo.Value-min)/(max-min))*rect.Height;g.DrawLine(limitPen,rect.Left,limitY,rect.Right,limitY);TextRenderer.DrawText(g,"下限 "+singleLimit.Lo.Value.ToString("G5",CultureInfo.InvariantCulture),Font,new Rectangle(rect.Left+4,(int)limitY-17,150,16),Color.FromArgb(196,72,72),TextFormatFlags.Left|TextFormatFlags.VerticalCenter);}
+                       if(singleLimit.Hi.HasValue&&singleLimit.Hi.Value>=min&&singleLimit.Hi.Value<=max){float limitY=rect.Bottom-(float)((singleLimit.Hi.Value-min)/(max-min))*rect.Height;g.DrawLine(limitPen,rect.Left,limitY,rect.Right,limitY);TextRenderer.DrawText(g,"上限 "+singleLimit.Hi.Value.ToString("G5",CultureInfo.InvariantCulture),Font,new Rectangle(rect.Left+4,(int)limitY+1,150,16),Color.FromArgb(196,72,72),TextFormatFlags.Left|TextFormatFlags.VerticalCenter);}
+                      }
+                     }
+                    }
                     for(int index=0;index<group.Length;index++){string id=group[index];bool shown;if(visible.TryGetValue(id,out shown)&&!shown)continue;List<ChartSample> series;if(!data.TryGetValue(id,out series))continue;using(Pen pen=new Pen(colors[Array.IndexOf(selected,id)%colors.Length],2)){PointF? prev=null;DateTime prevTime=DateTime.MinValue;foreach(ChartSample s in series){if(s.Utc<fromUtc||s.Utc>toUtc)continue;if(!s.Value.HasValue||(!UseExplicitGaps&&prevTime!=DateTime.MinValue&&(s.Utc-prevTime).TotalSeconds>Math.Max(30,WindowMinutes*2))){prev=null;}if(s.Value.HasValue){float x=rect.Left+(float)((s.Utc-fromUtc).TotalSeconds/totalSeconds)*rect.Width;float y=rect.Bottom-(float)((s.Value.Value-min)/(max-min))*rect.Height;PointF now=new PointF(x,y);if(prev.HasValue)g.DrawLine(pen,prev.Value,now);else g.FillEllipse(pen.Brush,x-2,y-2,4,4);prev=now;}prevTime=s.Utc;}}}
                 }
                 TextRenderer.DrawText(g,fromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss",CultureInfo.InvariantCulture),Font,new Rectangle(rect.Left,rect.Bottom+4,190,18),UiTheme.Muted,TextFormatFlags.Left|TextFormatFlags.VerticalCenter);
@@ -94,3 +106,5 @@ namespace ExperimentMonitor {
         protected override void OnMouseClick(MouseEventArgs e){if(e.Button==MouseButtons.Left){foreach(var hit in legendHits.ToArray())if(hit.Value.Contains(e.Location)){bool v;visible.TryGetValue(hit.Key,out v);visible[hit.Key]=!v;Invalidate();var h=LegendVisibilityChanged;if(h!=null)h(hit.Key,!v);break;}}base.OnMouseClick(e);}
     }
 }
+
+

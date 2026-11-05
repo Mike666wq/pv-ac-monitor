@@ -59,6 +59,37 @@ namespace ExperimentMonitor {
                     Find<Button>(history,b=>b.Text=="刷新清单").PerformClick();await Wait(()=>!Field<bool>(history,"inventoryBusy"),"清单刷新未完成");
                     check(Field<DataGridView>(history,"inventory").Rows.Count==3,"清单发现当前周期库和迁移平库并显示路径行");
                     check(ExperimentHistory.Count(storage,new HistoryFilter{Source="simulation",FromUtc=DateTime.Today.AddDays(-1).ToUniversalTime(),ToUtc=DateTime.Today.ToUniversalTime()})==37,"旧日期界面结果与底层历史计数一致");
+                    // —— 0.5.0:三个子标签 / 双向互跳 / 实验段 / 测点统计 / 阈值 ——
+                    TabControl inner=Field<TabControl>(history,"recordTabs");
+                    check(inner!=null&&inner.TabPages.Count==3&&inner.TabPages[0].Text=="数据记录"&&inner.TabPages[1].Text=="实验段"&&inner.TabPages[2].Text=="测点统计","记录页三个子标签：数据记录 / 实验段 / 测点统计");
+                    check(inner.TabPages.Count==3,"记录页子标签数量正确");
+                    bool hasTrendTab=false;foreach(TabPage tab in inner.TabPages)if(tab.Text=="历史趋势")hasTrendTab=true;
+                    check(!hasTrendTab,"记录页不再重复趋势视图");
+                    HistoryFilter applied=(HistoryFilter)typeof(HistoryPage).GetMethod("MakeFilter",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(history,null);
+                    Field<Button>(history,"openTrends").PerformClick();await Wait(()=>form.MainNavigation.SelectedIndex==1,"未跳转到趋势分析页");
+                    TrendsPage trends=null;foreach(Control candidate in form.MainNavigation.TabPages[1].Controls)if(candidate is TrendsPage)trends=(TrendsPage)candidate;
+                    check(trends!=null,"趋势分析页存在");
+                    await Wait(()=>!Field<bool>(trends,"queryBusy"),"趋势页读取未完成");
+                    check(Math.Abs((Field<DateTimePicker>(trends,"from").Value.ToUniversalTime()-applied.FromUtc).TotalSeconds)<2&&Math.Abs((Field<DateTimePicker>(trends,"to").Value.ToUniversalTime()-applied.ToUtc).TotalSeconds)<2,"趋势页收到记录页的时间范围");
+                    Field<Button>(trends,"openRecords").PerformClick();await Wait(()=>form.MainNavigation.SelectedIndex==2,"未跳回记录页");
+                    await Wait(()=>!Field<bool>(history,"queryBusy"),"回跳记录页后查询未完成");
+                    check(Math.Abs((Field<DateTimePicker>(history,"from").Value.ToUniversalTime()-applied.FromUtc).TotalSeconds)<2,"记录页收到趋势页的时间范围");
+                    inner.SelectedIndex=1;Field<Button>(history,"sessionRun").PerformClick();
+                    await Wait(()=>Field<DataGridView>(history,"sessionTable").Rows.Count>0,"实验段统计未出结果");
+                    DataGridView sessions=Field<DataGridView>(history,"sessionTable");
+                    check(sessions.Rows.Count>=1&&sessions.Columns.Count==12,"实验段表按会话列出统计");
+                    inner.SelectedIndex=2;Field<Button>(history,"pointRun").PerformClick();
+                    await Wait(()=>Field<DataGridView>(history,"pointTable").Rows.Count>0,"测点统计未出结果");
+                    DataGridView pointsTable=Field<DataGridView>(history,"pointTable");
+                    check(pointsTable.Rows.Count>0&&pointsTable.Columns.Count==13,"测点统计表按测点列出统计");
+                    int t1Index=-1;for(int i=0;i<pointsTable.Rows.Count;i++)if(Convert.ToString(pointsTable.Rows[i].Cells[0].Value)=="T1"){t1Index=i;break;}
+                    check(t1Index>=0,"测点统计里包含 T1");
+                    pointsTable.Rows[t1Index].Cells[11].Value="5";pointsTable.Rows[t1Index].Cells[12].Value="40";
+                    Field<Button>(history,"limitsSave").PerformClick();
+                    await Wait(()=>File.Exists(Path.Combine(isolated,"limits.json")),"阈值文件未写入");
+                    check(LimitStore.Load(isolated).ContainsKey("T1"),"阈值保存后可重新读回");
+                    inner.SelectedIndex=0;
+                    check(inner.SelectedIndex==0,"切回数据记录子标签");
                 }catch(Exception ex){failure=ex;}finally{form.Close();}};
                 Application.Run(form);
             }
@@ -108,3 +139,5 @@ namespace ExperimentMonitor {
         }
     }
 }
+
+
