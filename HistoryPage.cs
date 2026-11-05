@@ -61,7 +61,7 @@ namespace ExperimentMonitor {
         int pageSize=200,pageIndex,queuedNav=-1,appliedNav=NavNewest;
         DateTime? pendingAnchor,pageFrom,pageTo;bool pendingDescending=true,hasOlder,hasNewer,layoutGuard;DateTime queuedAt;
         readonly CheckBox hideTimeout=new CheckBox{Text="隐藏仅超时的轮次",Checked=false,AutoSize=true,Margin=new Padding(8,7,8,0)};
-        bool countBusy,hideTimeoutRounds,noPointColumns;string countSignature="";long countTotal=-1;long lastQueryMs;CancellationTokenSource queryToken;HistoryFilter summaryFilter,countFilter;int summaryUnits,summaryValid,summaryTimeout;bool summaryRoundView,countRoundView;HistoryLoad lastLoad;readonly System.Windows.Forms.Timer countTimer=new System.Windows.Forms.Timer{Interval=1500};
+        bool countBusy,hideTimeoutRounds,noPointColumns;ToolStripDropDown columnDrop;string countSignature="";long countTotal=-1;long lastQueryMs;CancellationTokenSource queryToken;HistoryFilter summaryFilter,countFilter;int summaryUnits,summaryValid,summaryTimeout;bool summaryRoundView,countRoundView;HistoryLoad lastLoad;readonly System.Windows.Forms.Timer countTimer=new System.Windows.Forms.Timer{Interval=1500};
         readonly HashSet<string> selectedDevices=new HashSet<string>(StringComparer.Ordinal),selectedPoints=new HashSet<string>(StringComparer.Ordinal);
         CancellationTokenSource exportCancel; bool following=true,explicitSource,queryBusy,pendingViewQuery,pendingFollowQuery,disposed,entered,inventoryBusy,filterDirty=true,wideView=true,rebuildingLists,settingSource,updatingFollowTime; int offset,generation,appliedGeneration,partitionDays=30,serialPartitionDays=30,simulationPartitionDays=30; long lastCommitted=-1,lastCompletedCaptures=-1; string activeSource="simulation",previewSignature=""; DateTime lastInventory=DateTime.MinValue;
 
@@ -368,23 +368,26 @@ namespace ExperimentMonitor {
             exportMenu.Items.Add("导出为 Excel 工作簿…",null,async(s,e)=>await ExportAsync("xlsx"));exportMenu.Items.Add("导出为 CSV…",null,async(s,e)=>await ExportAsync("csv"));export.Click+=(s,e)=>exportMenu.Show(export,new System.Drawing.Point(0,export.Height));cancel.Click+=(s,e)=>{if(exportCancel!=null)exportCancel.Cancel();};
             applyNext.Click+=(s,e)=>ApplyPartition(false);applyNow.Click+=(s,e)=>ApplyPartition(true);
             // 列选择弹出面板:勾选状态只影响宽表显示列,不改变查询语义。
+            // 列选择弹出面板:勾选状态只影响宽表显示列,不改变查询语义。
             columnPick.Click+=(s,e)=>{
-                var list=new CheckedListBox{Height=336,CheckOnClick=true,IntegralHeight=false,BorderStyle=BorderStyle.None,BackColor=Color.White,Dock=DockStyle.Fill};
+                var list=new CheckedListBox{Width=250,Height=340,CheckOnClick=true,IntegralHeight=false,BorderStyle=BorderStyle.None,BackColor=Color.White};
                 foreach(Point p in allPoints)list.Items.Add(p.name+" · "+PointCatalog.Get(p.name).Label,ColumnVisible(p.name));
                 Action refresh=()=>{try{list.BeginInvoke((Action)(async()=>{if(!filterDirty){if(queryBusy)pendingViewQuery=true;else await ApplyAndQuery();}}));}catch{}};
-                list.ItemCheck+=(ls,le)=>{string n=list.Items[le.Index].ToString().Split(new[]{" · "},StringSplitOptions.None)[0];columnVisible[n]=le.NewValue==CheckState.Checked;refresh();};
-                // 一键全选/清空:40 个测点逐个点太费事。
-                var selectAll=new StyledActionButton{Text="全选",Width=78,Height=30,MinimumSize=new Size(48,26),Margin=Padding.Empty};
-                var selectNone=new StyledActionButton{Text="清空",Width=78,Height=30,MinimumSize=new Size(48,26),Margin=Padding.Empty};
-                Action<bool> applyAll=visible=>{SetAllColumns(visible);try{list.BeginUpdate();for(int i=0;i<list.Items.Count;i++)list.SetItemChecked(i,visible);}finally{list.EndUpdate();}};
+                bool bulk=false;
+                list.ItemCheck+=(ls,le)=>{if(bulk)return;string n=list.Items[le.Index].ToString().Split(new[]{" · "},StringSplitOptions.None)[0];columnVisible[n]=le.NewValue==CheckState.Checked;refresh();};
+                // 一键全选/清空:40 个测点逐个点太费事。用下拉菜单项而不是自绘面板,避免控件宿主不渲染。
+                // bulk 期间屏蔽逐项回调,否则一次全选会排队几十次重查。
+                Action<bool> applyAll=visible=>{bulk=true;try{SetAllColumns(visible);list.BeginUpdate();for(int i=0;i<list.Items.Count;i++)list.SetItemChecked(i,visible);list.EndUpdate();}finally{bulk=false;}};
+                var selectAll=new ToolStripMenuItem("全选（勾选全部测点列）");
+                var selectNone=new ToolStripMenuItem("清空（只留时间与采集轮）");
                 selectAll.Click+=(a,b)=>applyAll(true);
                 selectNone.Click+=(a,b)=>applyAll(false);
-                var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=38,WrapContents=false,BackColor=Color.White,Margin=Padding.Empty,Padding=new Padding(4,4,4,0)};
-                bar.Controls.Add(selectAll);bar.Controls.Add(selectNone);
-                var panel=new Panel{Width=250,Height=380,BackColor=Color.White};
-                panel.Controls.Add(list);panel.Controls.Add(bar);
-                var host=new ToolStripControlHost(panel){Margin=Padding.Empty,Padding=new Padding(2)};
-                var drop=new ToolStripDropDown();drop.Items.Add(host);drop.Show(columnPick,new System.Drawing.Point(0,columnPick.Height));
+                var drop=new ToolStripDropDown{AutoSize=true};
+                drop.Items.Add(selectAll);drop.Items.Add(selectNone);drop.Items.Add(new ToolStripSeparator());
+                var listHost=new ToolStripControlHost(list){Margin=Padding.Empty,Padding=new Padding(2),AutoSize=false,Size=new Size(256,348)};
+                drop.Items.Add(listHost);
+                columnDrop=drop;
+                drop.Show(columnPick,new System.Drawing.Point(0,columnPick.Height));
             };
             timer.Tick+=(s,e)=>FollowTick();
             countTimer.Tick+=(s,e)=>{countTimer.Stop();StartCount();};
@@ -589,6 +592,7 @@ namespace ExperimentMonitor {
         void BuildWidePreview(List<List<StoredObservation>> rounds,HistoryFilter filter){grid.Columns.Clear();grid.Columns.Add("time","轮次开始时间（本地）");grid.Columns.Add("round","采集轮");var points=allPoints.Select((p,index)=>new{Point=p,Index=index}).Where(x=>filter.Points.Contains(x.Point.name)&&ColumnVisible(x.Point.name)).OrderBy(x=>DeviceRank(x.Point.binding.device)).ThenBy(x=>x.Index).Select(x=>x.Point).ToList();
             // 列选择把全部测点都关掉时回退为显示全部筛选测点,避免空表困惑。
             if(points.Count==0&&columnVisible.Count==0)points=allPoints.Select((p,index)=>new{Point=p,Index=index}).Where(x=>filter.Points.Contains(x.Point.name)).OrderBy(x=>DeviceRank(x.Point.binding.device)).ThenBy(x=>x.Index).Select(x=>x.Point).ToList();
+
             noPointColumns=points.Count==0;
             foreach(Point p in points){PointInfo info=PointCatalog.Get(p.name);string unit=info.Unit??"";grid.Columns.Add(p.name,info.Label+(String.IsNullOrEmpty(unit)?"":"（"+unit+"）"));}foreach(DataGridViewColumn c in grid.Columns)c.Width=150;
             foreach(var group in rounds.OrderByDescending(g=>g.Min(r=>r.RoundStartedUtc??r.Utc))){if(hideTimeoutRounds&&!group.Any(r=>r.Quality=="good"))continue;var byPoint=group.GroupBy(x=>x.Point).ToDictionary(g=>g.Key,g=>g.OrderBy(x=>x.Utc).First());StoredObservation sample=group.First();DateTime start=sample.RoundStartedUtc??group.Min(x=>x.Utc);var cells=new List<object>{start.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"),sample.Round};var over=new List<int>();for(int pi=0;pi<points.Count;pi++){Point p=points[pi];StoredObservation o;if(!byPoint.TryGetValue(p.name,out o)){cells.Add("");continue;}cells.Add(o.Number.HasValue?((object)o.Number.Value.ToString("G17",System.Globalization.CultureInfo.InvariantCulture)):((o.Quality=="good"?"":QualityLabel(o.Quality)+"：")+o.Value));Limit limit=LimitFor(p.name);if(o.Number.HasValue&&limit!=null&&limit.Violates(o.Number.Value))over.Add(2+pi);}int wideRow=grid.Rows.Add(cells.ToArray());foreach(int column in over){DataGridViewCell cell=grid.Rows[wideRow].Cells[column];cell.Style.BackColor=Color.FromArgb(255,235,235);cell.Style.ForeColor=Color.Firebrick;}}}
@@ -631,6 +635,9 @@ namespace ExperimentMonitor {
         void DisposePage(){if(disposed)return;disposed=true;generation++;timer.Stop();timer.Dispose();countTimer.Stop();countTimer.Dispose();if(exportCancel!=null)try{exportCancel.Cancel();}catch{} }
     }
 }
+
+
+
 
 
 
