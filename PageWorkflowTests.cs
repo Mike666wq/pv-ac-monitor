@@ -88,6 +88,18 @@ namespace ExperimentMonitor {
                     Field<Button>(history,"limitsSave").PerformClick();
                     await Wait(()=>File.Exists(Path.Combine(isolated,"limits.json")),"阈值文件未写入");
                     check(LimitStore.Load(isolated).ContainsKey("T1"),"阈值保存后可重新读回");
+                    // 列选择的一键全选 / 清空
+                    Find<CheckBox>(history,c=>c.Text.Contains("采集轮宽表")).Checked=true;
+                    await Wait(()=>!Field<bool>(history,"queryBusy"),"切回宽表未完成");
+                    MethodInfo setAllColumns=typeof(HistoryPage).GetMethod("SetAllColumns",BindingFlags.Instance|BindingFlags.NonPublic);
+                    check(setAllColumns!=null,"列选择提供一键全选/清空入口");
+                    setAllColumns.Invoke(history,new object[]{true});
+                    await Wait(()=>!Field<bool>(history,"queryBusy"),"全选列未完成");
+                    int allColumns=grid.Columns.Count;
+                    setAllColumns.Invoke(history,new object[]{false});
+                    await Wait(()=>!Field<bool>(history,"queryBusy"),"清空列未完成");
+                    check(allColumns>2&&grid.Columns.Count==2,"列选择的一键清空只留下时间与采集轮两列");
+                    check(Field<Label>(history,"feedback").Text.Contains("未勾选"),"清空全部列后给出提示，不静默显示全部");
                     // 回归：在别的子标签下触发查询，不能把数据表永久留在隐藏状态。
                     inner.SelectedIndex=1;
                     Field<Button>(history,"query").PerformClick();await Wait(()=>!Field<bool>(history,"queryBusy"),"子标签下的查询未完成");
