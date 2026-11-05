@@ -39,8 +39,9 @@ namespace ExperimentMonitor {
                     // 分页条:六个按钮与两块文字必须真实可见,不能只在代码里存在。
                     Func<Control,bool> visibleWithin=c=>{if(c==null||!c.Visible||c.Width<=0||c.Height<=0)return false;System.Drawing.Rectangle bounds=c.RectangleToScreen(c.ClientRectangle);for(Control parent=c.Parent;parent!=null;parent=parent.Parent){if(!parent.RectangleToScreen(parent.ClientRectangle).Contains(bounds))return false;if(Object.ReferenceEquals(parent,form))return true;}return false;};
                     var barButtons=new[]{Field<Button>(history,"oldest"),Field<Button>(history,"next"),Field<Button>(history,"newer"),Field<Button>(history,"latest"),Field<Button>(history,"jumpStart"),Field<Button>(history,"jumpTo")};
-                    bool barVisible=true;foreach(Button button in barButtons)if(!visibleWithin(button))barVisible=false;
-                    check(barVisible,"分页条六个按钮完整位于可视区域内，未被父容器裁切");
+                    string barProblem=null;
+                    foreach(Button button in barButtons)if(!visibleWithin(button)){barProblem=button.Text+" bounds="+button.Bounds+" parent="+button.Parent.GetType().Name+button.Parent.ClientRectangle;break;}
+                    check(barProblem==null,"分页条六个按钮完整位于可视区域内，未被父容器裁切"+(barProblem==null?"":" · "+barProblem));
                     bool barSized=true;foreach(Button button in barButtons)if(button.Width<=45||button.Height<22)barSized=false;
                     check(barSized,"分页条按钮尺寸可用");
                     Label pageInfo=Field<Label>(history,"pageInfo"),coverage=Field<Label>(history,"coverage");

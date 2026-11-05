@@ -79,31 +79,37 @@ namespace ExperimentMonitor {
             var records=new TabPage("数据记录"){BackColor=Color.White};var trend=new TabPage("历史趋势"){BackColor=Color.White};tabs.TabPages.Add(records);tabs.TabPages.Add(trend);records.Controls.Add(grid);
             emptyHint=new Label{Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=UiTheme.Muted,BackColor=Color.White,Text="当前筛选范围没有记录。",Visible=false};
             records.Controls.Add(emptyHint);emptyHint.BringToFront();
-            // 分页条放在表格正上方:两行固定高度,子控件全部固定尺寸,文本变化不触发布局链重排。
+            // 分页条放在表格正上方:两行固定高度;两行都用按比例分列,窗口被压窄时控件一起收窄而不是被裁掉。
             var pageBar=new Panel{Dock=DockStyle.Top,Height=82,BackColor=Color.White,Padding=new Padding(6,2,6,2)};
             var bar=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,BackColor=Color.White,Margin=Padding.Empty,Padding=Padding.Empty};
             bar.RowStyles.Add(new RowStyle(SizeType.Absolute,40));bar.RowStyles.Add(new RowStyle(SizeType.Absolute,38));
-            var navRow=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false,BackColor=Color.White,Margin=Padding.Empty,Padding=new Padding(2,2,0,0)};
+            var navRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=5,RowCount=1,BackColor=Color.White,Margin=Padding.Empty,Padding=Padding.Empty};
+            navRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,13));
+            navRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,15));
+            navRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,44));
+            navRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,15));
+            navRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,13));
             // 固定高度行里的子控件必须零外边距:36 高的按钮 + 6 上下边距会被 40 高的行裁掉。
             oldest.Margin=Padding.Empty;next.Margin=Padding.Empty;newer.Margin=Padding.Empty;latest.Margin=Padding.Empty;jumpStart.Margin=Padding.Empty;jumpTo.Margin=Padding.Empty;
-            navRow.Controls.Add(oldest);navRow.Controls.Add(next);navRow.Controls.Add(pageInfo);navRow.Controls.Add(newer);navRow.Controls.Add(latest);
-            var infoRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=6,RowCount=1,BackColor=Color.White,Margin=Padding.Empty,Padding=Padding.Empty};
-            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
-            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,46));
-            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,104));
-            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,150));
-            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,196));
-            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,124));
+            // 允许按钮随列宽收窄(默认最小宽 72 会在窄窗口里顶出列外)。
+            oldest.MinimumSize=new Size(40,30);next.MinimumSize=new Size(40,30);newer.MinimumSize=new Size(40,30);latest.MinimumSize=new Size(40,30);jumpStart.MinimumSize=new Size(40,30);jumpTo.MinimumSize=new Size(40,30);
+            oldest.Dock=DockStyle.Fill;next.Dock=DockStyle.Fill;newer.Dock=DockStyle.Fill;latest.Dock=DockStyle.Fill;pageInfo.Dock=DockStyle.Fill;
+            navRow.Controls.Add(oldest,0,0);navRow.Controls.Add(next,1,0);navRow.Controls.Add(pageInfo,2,0);navRow.Controls.Add(newer,3,0);navRow.Controls.Add(latest,4,0);
+            var infoRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=5,RowCount=1,BackColor=Color.White,Margin=Padding.Empty,Padding=Padding.Empty};
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,28));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,14));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,17));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,26));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,15));
             pageSizeBox.Items.AddRange(new object[]{"200 轮","500 轮"});pageSizeBox.SelectedIndex=0;
             jumpStart.Dock=DockStyle.Fill;jumpTo.Dock=DockStyle.Fill;
-            var pageSizeHost=new RoundedInputHost(pageSizeBox){Dock=DockStyle.Fill,Margin=Padding.Empty};
-            var anchorHost=new RoundedInputHost(anchorTime){Dock=DockStyle.Fill,Margin=Padding.Empty};
+            var pageSizeHost=new RoundedInputHost(pageSizeBox){Dock=DockStyle.Fill,Margin=Padding.Empty,MinimumSize=Size.Empty};
+            var anchorHost=new RoundedInputHost(anchorTime){Dock=DockStyle.Fill,Margin=Padding.Empty,MinimumSize=Size.Empty};
             infoRow.Controls.Add(coverage,0,0);
-            infoRow.Controls.Add(FixedLabel("每页",ContentAlignment.MiddleCenter),1,0);
-            infoRow.Controls.Add(pageSizeHost,2,0);
-            infoRow.Controls.Add(jumpStart,3,0);
-            infoRow.Controls.Add(anchorHost,4,0);
-            infoRow.Controls.Add(jumpTo,5,0);
+            infoRow.Controls.Add(pageSizeHost,1,0);
+            infoRow.Controls.Add(jumpStart,2,0);
+            infoRow.Controls.Add(anchorHost,3,0);
+            infoRow.Controls.Add(jumpTo,4,0);
             bar.Controls.Add(navRow,0,0);bar.Controls.Add(infoRow,0,1);pageBar.Controls.Add(bar);records.Controls.Add(pageBar);
             var chartScroll=new Panel{Dock=DockStyle.Fill,AutoScroll=true};chart.Dock=DockStyle.Top;chartScroll.Controls.Add(chart);
             trendStatus=new Label{Dock=DockStyle.Fill,AutoSize=true,ForeColor=UiTheme.Muted,Padding=new Padding(6,4,6,4),Text="按整个筛选范围绘制趋势；与“趋势分析”页使用同一套读取逻辑。"};
@@ -419,6 +425,7 @@ namespace ExperimentMonitor {
         void DisposePage(){if(disposed)return;disposed=true;generation++;timer.Stop();timer.Dispose();countTimer.Stop();countTimer.Dispose();if(exportCancel!=null)try{exportCancel.Cancel();}catch{} }
     }
 }
+
 
 
 
