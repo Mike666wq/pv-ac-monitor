@@ -96,7 +96,7 @@ namespace ExperimentMonitor {
             planGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "设定值", FillWeight = 10, MinimumWidth = 80, Name = "value" });
             planGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "单位", FillWeight = 5, MinimumWidth = 55, ReadOnly = true, Name = "unit" });
             planGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "范围", FillWeight = 8, MinimumWidth = 75, ReadOnly = true, Name = "range" });
-            planGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "最近结果", FillWeight = 30, MinimumWidth = 230, ReadOnly = true, Name = "result" });
+            planGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "最近结果", FillWeight = 32, MinimumWidth = 260, ReadOnly = true, Name = "result" });
             planGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "操作", FillWeight = 12, MinimumWidth = 150, ReadOnly = true, Name = "ops" });
             planGrid.Columns["current"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
             planGrid.Columns["current"].HeaderCell.Style.Alignment = DataGridViewContentAlignment.MiddleCenter;
@@ -217,6 +217,12 @@ namespace ExperimentMonitor {
                 foreach (ControlTarget target in Targets()) {
                     int index = planGrid.Rows.Add(target.point, target.label, "—", "", String.IsNullOrEmpty(target.unit) ? "—" : target.unit, target.min + " – " + target.max, "", "");
                     planGrid.Rows[index].Tag = target;
+                    string placeholder = target.note == null ? "" : target.note;
+                    bool unconfirmed = String.IsNullOrEmpty(target.unit) || placeholder.Contains("未确认") || placeholder.Contains("无证据") || placeholder.Contains("无工程依据");
+                    if (unconfirmed) {
+                        planGrid.Rows[index].Cells[4].ToolTipText = "点表未给出单位（UNIT 为空），这里显示「—」";
+                        planGrid.Rows[index].Cells[5].ToolTipText = "范围 " + target.min + " – " + target.max + " 是本程序的占位值，不是工程定义；现场确认后请收紧";
+                    }
                     edited[target.point] = false;
                     steps[target.point] = new StepRecord();
                 }
@@ -240,7 +246,7 @@ namespace ExperimentMonitor {
             int top = bounds.Top + Math.Max(6, (bounds.Height - (pillH + 24)) / 2);
             for (int i = 0; i < 4; i++) {
                 int state = record.Steps[i];
-                Color background = state == 2 ? Color.FromArgb(0, 142, 105) : state == 3 ? Color.FromArgb(190, 52, 60) : state == 1 ? Color.FromArgb(54, 112, 220) : state == 4 ? Color.FromArgb(191, 116, 18) : state == 5 ? Color.FromArgb(130, 145, 160) : Color.FromArgb(226, 232, 240);
+                Color background = state == 2 ? Color.FromArgb(0, 142, 105) : state == 3 ? Color.FromArgb(190, 52, 60) : state == 1 ? Color.FromArgb(54, 112, 220) : state == 4 ? Color.FromArgb(130, 145, 160) : state == 5 ? Color.FromArgb(130, 145, 160) : Color.FromArgb(226, 232, 240);
                 Color foreground = state == 0 ? Color.FromArgb(120, 133, 148) : Color.White;
                 Rectangle rect = new Rectangle(left + i * (pillW + gap), top, pillW, pillH);
                 using (var path = Rounded(rect, 9)) {
@@ -647,7 +653,7 @@ namespace ExperimentMonitor {
             sb.AppendLine("03 回读   TX " + Modbus.Hex(r.ReadbackTx ?? new byte[0]));
             sb.AppendLine("          RX " + Modbus.Hex(r.ReadbackRx ?? new byte[0]));
             sb.AppendLine();
-            sb.AppendLine("设备返回信号（观测 " + ObservationSeconds() + " 秒）");
+            sb.AppendLine("设备返回信号（观测 " + ObservationSeconds() + " 秒）——未变化只表示这 6 个点没动，不代表写入失败");
             foreach (string point in FeedbackPoints()) {
                 PointInfo info = PointCatalog.Get(point);
                 int? before;
