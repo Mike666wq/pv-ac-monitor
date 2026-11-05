@@ -39,6 +39,28 @@ namespace ExperimentMonitor {
                     }
                     case "workflow": count = WorkflowTests.Run(points, root); break;
                     case "ui": count = UiLayoutTests.Run(points, root); break;
+                    case "probe": {  // 诊断卡片数值标签布局
+                        using (var form = new DashboardForm(points, root)) {
+                            form.Size = new System.Drawing.Size(1440, 900);
+                            form.ShowInTaskbar = false;
+                            form.Show(); Application.DoEvents();
+                            form.Engine.Connect(true, "SIM", 9600);
+                            form.Engine.Start(1, 1, System.Linq.Enumerable.Select(points, p => p.name));
+                            for (int k = 0; k < 60; k++) { Application.DoEvents(); System.Threading.Thread.Sleep(50); }
+                            var nav = form.MainNavigation;
+                            nav.SelectedIndex = 0; Application.DoEvents();
+                            foreach (Control c in AllControls(form)) {
+                                Label l = c as Label;
+                                if (l == null) continue;
+                                if (!System.Text.RegularExpressions.Regex.IsMatch(l.Text ?? "", "^[0-9]")) continue;
+                                Console.WriteLine("PROBE text=" + l.Text + " bounds=" + l.Bounds + " autosize=" + l.AutoSize + " dock=" + l.Dock + " font=" + l.Font.Size + " parent=" + l.Parent.GetType().Name + " " + l.Parent.Bounds);
+                                TableLayoutPanel tlp = l.Parent as TableLayoutPanel;
+                                if (tlp != null) { Console.WriteLine("PROBE tlp rows=" + tlp.RowCount + " rowstyles=" + tlp.RowStyles.Count + " row0=" + (tlp.RowStyles.Count > 0 ? tlp.RowStyles[0].SizeType + "/" + tlp.RowStyles[0].Height : "none")); }
+                            }
+                            form.Close();
+                        }
+                        count = 1; break;
+                    }
                     case "smoke": count = Smoke(points, root); break;
                     case "demo": {
                         string isolated = Path.Combine(root, "demo");
@@ -197,6 +219,9 @@ namespace ExperimentMonitor {
             }
         }
 
+        static IEnumerable<Control> AllControls(Control root) {
+            foreach (Control c in root.Controls) { yield return c; foreach (Control n in AllControls(c)) yield return n; }
+        }
         static T Find<T>(Control root) where T : Control {
             foreach (Control child in root.Controls) {
                 T value = child as T;

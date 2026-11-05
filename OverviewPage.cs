@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -44,6 +44,22 @@ namespace ExperimentMonitor {
     internal static class OverviewPageBuilder {
         const int CardMinWidth=200,CardHeight=110;
 
+        /// <summary>数值标签按实际宽度收缩字号，保证任何 DPI/字体下都不溢出卡片（E 记数法尤其需要）。</summary>
+        static void FitValueFont(Label value,FontFamily family,float baseSize){
+            if(value==null||value.IsDisposed||value.ClientSize.Width<=0||String.IsNullOrEmpty(value.Text))return;
+            int limit=value.ClientSize.Width+2;
+            float size=baseSize;
+            while(size>8f){
+                using(var probe=new Font(family,size,FontStyle.Bold)){
+                    if(TextRenderer.MeasureText(value.Text,probe).Width<=limit){
+                        if(Math.Abs(value.Font.Size-size)>0.01f){try{value.Font.Dispose();}catch{}value.Font=new Font(family,size,FontStyle.Bold);}
+                        return;
+                    }
+                }
+                size-=1f;
+            }
+        }
+
         internal static void Build(TabPage page,List<Point> points,Dictionary<string,Label[]> cards,ToolTip tips,ExperimentChart overviewChart,Font baseFont) {
             var viewport=new Panel { Dock=DockStyle.Fill,AutoScroll=true,BackColor=UiTheme.Canvas };page.Controls.Add(viewport);
             var stack=new TableLayoutPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=0,Padding=new Padding(2) };viewport.Controls.Add(stack);
@@ -66,7 +82,8 @@ namespace ExperimentMonitor {
                     grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
                     grid.RowStyles.Add(new RowStyle(SizeType.Absolute,22));grid.RowStyles.Add(new RowStyle(SizeType.Percent,100));grid.RowStyles.Add(new RowStyle(SizeType.Absolute,20));
                     var label=new Label { Text=info.Label+"  "+p.name,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Muted,Font=new Font(baseFont.FontFamily,8.5f),AutoEllipsis=true,BackColor=UiTheme.Surface,Margin=Padding.Empty,Padding=Padding.Empty };
-                    var value=new Label { Text="—",Dock=DockStyle.Fill,TextAlign=ContentAlignment.BottomLeft,ForeColor=UiTheme.Ink,Font=new Font(baseFont.FontFamily,info.Mode=="U16 / I16"?9.5f:17,FontStyle.Bold),AutoEllipsis=false,UseCompatibleTextRendering=true,BackColor=UiTheme.Surface };
+                    float valueSize = info.Mode=="U16 / I16" ? 9.5f : 17f;
+                    var value=new Label { Text="—",Dock=DockStyle.Fill,TextAlign=ContentAlignment.BottomLeft,ForeColor=UiTheme.Ink,Font=new Font(baseFont.FontFamily,valueSize,FontStyle.Bold),AutoEllipsis=false,UseCompatibleTextRendering=true,BackColor=UiTheme.Surface };
                     string unitText=info.Unit??"";
                     // “原始值/原始码”是无单位占位,不占用单位列,让大数值(含 E 记数法)用满整行。
                     if(unitText=="原始值"||unitText=="原始码")unitText="";
@@ -76,7 +93,10 @@ namespace ExperimentMonitor {
                     // 数值列 Percent 填充(AutoEllipsis 兜底),任何 DPI 下都不会溢出。
                     value.AutoSize=false;value.AutoEllipsis=true;value.Margin=Padding.Empty;
                     int unitWidth=String.IsNullOrEmpty(unitText)?0:TextRenderer.MeasureText(unitText,unit.Font).Width+8;
+                    int maxUnitWidth=Math.Max(24,Math.Min(60,(int)((card.Width-card.Padding.Horizontal)*0.30f)));
+                    if(unitWidth>maxUnitWidth){unitWidth=maxUnitWidth;unit.AutoEllipsis=true;}
                     var valueRow=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=Padding.Empty,Padding=Padding.Empty,BackColor=UiTheme.Surface };
+                    valueRow.RowStyles.Add(new RowStyle(SizeType.Percent,100));
                     valueRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
                     if(unitWidth>0){valueRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,unitWidth));valueRow.Controls.Add(unit,1,0);}
                     valueRow.Controls.Add(value,0,0);
