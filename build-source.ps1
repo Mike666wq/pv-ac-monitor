@@ -1,4 +1,4 @@
-param([switch]$Test)
+﻿param([switch]$Test)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
@@ -47,13 +47,13 @@ $compilerArguments += $sources
 if ($LASTEXITCODE -ne 0) { throw ('C# compilation failed with exit code ' + $LASTEXITCODE) }
 
 # Stage the runtime files needed beside the newly compiled executable.
-foreach ($name in @('ExperimentMonitorDemo.exe.config','protocol.json','System.Data.SQLite.dll')) {
+foreach ($name in @('ExperimentMonitorDemo.exe.config','protocol.json','control-config.json','System.Data.SQLite.dll','README.md','CONTROL-DESIGN.md')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $outputRoot -Force
 }
 
 function Copy-RuntimeFiles([string]$destination) {
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
-    foreach ($name in @('ExperimentMonitorDemo.exe','ExperimentMonitorDemo.exe.config','protocol.json','System.Data.SQLite.dll')) {
+    foreach ($name in @('ExperimentMonitorDemo.exe','ExperimentMonitorDemo.exe.config','protocol.json','control-config.json','System.Data.SQLite.dll')) {
         $sourceRoot = if ($name -eq 'ExperimentMonitorDemo.exe') { $outputRoot } else { $projectRoot }
         $sourcePath = [IO.Path]::GetFullPath((Join-Path $sourceRoot $name))
         $targetPath = [IO.Path]::GetFullPath((Join-Path $destination $name))
@@ -101,7 +101,7 @@ if ($Test) {
         }
     } finally { $process.Dispose() }
 
-    $resultNames = @('self-test-result.json','core-test-result.json','records-test-result.json','cloud-test-result.json','trend-test-result.json','ui-test-result.json','workflow-test-result.json','extended-test-result.json')
+    $resultNames = @('self-test-result.json','core-test-result.json','records-test-result.json','cloud-test-result.json','trend-test-result.json','ui-test-result.json','workflow-test-result.json','extended-test-result.json','control-test-result.json')
     foreach ($name in $resultNames) {
         $resultPath = Join-Path $testRoot $name
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw ('Self-test did not produce ' + $name + '. Evidence directory: ' + $testRoot) }
@@ -111,4 +111,24 @@ if ($Test) {
     $uiResult = Get-Content -LiteralPath (Join-Path $testRoot 'ui-test-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($uiResult.cases.Count -ne 9 -or $uiResult.screenshots.Count -lt 49) { throw ('Self-test UI evidence is incomplete. Evidence directory: ' + $testRoot) }
     Write-Output ('Self-test passed. Isolated results: ' + $testRoot)
+}
+
+
+# 本地程序：每次构建后直接用新 exe 覆盖仓库根目录的 ExperimentMonitorDemo.exe（用户运行的就是这个），
+# 旧版本留一份 *.bak 以便回退；打包脚本仍从 bin 取 exe（内容相同）。
+$rootExe = Join-Path $projectRoot 'ExperimentMonitorDemo.exe'
+$newVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exePath).FileVersion
+if (Test-Path -LiteralPath $rootExe -PathType Leaf) {
+    $oldVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($rootExe).FileVersion
+    if ($oldVersion -and $oldVersion -ne $newVersion) {
+        $backupPath = Join-Path $projectRoot ('ExperimentMonitorDemo.exe.' + ($oldVersion -replace '\.0$','') + '.bak')
+        if (-not (Test-Path -LiteralPath $backupPath)) { Copy-Item -LiteralPath $rootExe -Destination $backupPath -Force }
+    }
+}
+# 本地程序覆盖：若根目录 exe 正在运行则给出明确提示，不中断构建。
+try {
+    Copy-Item -LiteralPath $exePath -Destination $rootExe -Force
+    Write-Output ('Local program updated: ' + $rootExe + ' (' + [Diagnostics.FileVersionInfo]::GetVersionInfo($rootExe).FileVersion + ')')
+} catch {
+    Write-Warning ('本地程序正在运行，无法覆盖。请先关闭 ' + $rootExe + ' 再重新构建；bin 目录里的新 exe 已生成。')
 }

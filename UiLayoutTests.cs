@@ -14,7 +14,7 @@ namespace ExperimentMonitor {
     internal static class UiLayoutTests {
         static int checks;
         static string tracePath;
-        static readonly string[] MainPages={"实时监控","趋势分析","数据记录","云端连接","通信诊断"};
+        static readonly string[] MainPages={"实时监控","运行控制","趋势分析","数据记录","云端连接","通信诊断"};
         static void Check(bool ok,string message){checks++;if(!ok)throw new InvalidOperationException("UI验收失败："+message);}
         static void Trace(string message){if(!String.IsNullOrEmpty(tracePath))File.AppendAllText(tracePath,DateTime.Now.ToString("HH:mm:ss.fff")+" "+message+Environment.NewLine);}
 
@@ -84,7 +84,7 @@ namespace ExperimentMonitor {
                         await Task.Delay(60);
                         Check(form.ClientSize==requested,title+" actual client size equals requested size");
                         TabControl nav=form.MainNavigation;
-                        Check(nav!=null&&nav.TabPages.Count==5,title+" five navigation pages");
+                        Check(nav!=null&&nav.TabPages.Count==6,title+" six navigation pages");
                         VerifyConnectionControls(form,title);
                         await WaitAsync(()=>Field<Label>(form,"cloudState").ForeColor==UiTheme.Muted,3000,"Disabled cloud should be neutral, not a failure");
                         Check(Field<Label>(form,"cloudState").ForeColor==UiTheme.Muted,title+" disabled cloud has neutral status");
@@ -162,7 +162,7 @@ namespace ExperimentMonitor {
             headerAction.PerformClick();
             await WaitAsync(()=>!form.Engine.IsConnected,5000,"UI disconnect did not release");
             await WaitAsync(()=>Field<Label>(form,"connectionState").Text.Contains("未连接")&&headerAction.Text=="连接",5000,"UI connection state did not reflect disconnect");
-            TabPage page=form.MainNavigation.TabPages[2];
+            TabPage page=form.MainNavigation.TabPages[3];
             form.MainNavigation.SelectedTab=page;
             HistoryPage history=Find<HistoryPage>(page);
             DataGridView grid=Field<DataGridView>(history,"grid");
@@ -255,6 +255,16 @@ namespace ExperimentMonitor {
                 TextBox log=Find<TextBox>(page,c=>c.Multiline&&c.ReadOnly);Control logContainer=log==null?null:log.Parent;ScrollableControl logScroll=logContainer==null?null:logContainer.Parent as ScrollableControl;bool logReachable=logContainer!=null&&(FullyVisible(logContainer,form)||(logScroll!=null&&logScroll.AutoScroll));Check(log!=null&&log.Dock==DockStyle.Fill&&log.ScrollBars==ScrollBars.Both&&log.ClientSize.Width>=200&&log.ClientSize.Height>=50&&logReachable,title+" 通信日志保持可用高度，并完整可见或可通过诊断页滚动访问"+(log==null?"":" · client="+log.ClientSize.Width+"x"+log.ClientSize.Height+" dock="+log.Dock+" bars="+log.ScrollBars+" reachable="+logReachable)+" · "+DescribeBounds(log));
             }
             if(page.Text=="云端连接")Check(Find<Control>(page,c=>c.Text.Contains("HTTPS"))!=null,title+" 云端连接信息存在");
+            if(page.Text=="运行控制"){
+                Check(Find<Button>(page,c=>c.Text.StartsWith("控制开关"))!=null,title+" 控制开关存在");
+                Check(Find<Button>(page,c=>c.Text.StartsWith("发送全部"))!=null,title+" 批量发送入口存在");
+                Check(Find<Button>(page,c=>c.Text=="重新读取核对")!=null,title+" 控制核对入口存在");
+                Check(Find<Label>(page,c=>c.Text.Contains("待发"))!=null,title+" 待发计数存在");
+                Check(Find<Label>(page,c=>c.Text.Contains("联锁"))!=null,title+" 联锁提示存在");
+                Check(Find<RichTextBox>(page)!=null,title+" 过程日志存在");
+                Check(Find<DataGridView>(page)!=null,title+" 设定表存在");
+                Check(Find<TabControl>(page)!=null,title+" 日志/详情页签存在");
+            }
         }
         static void VerifyCardText(DashboardForm form,List<Point> points,string title){
             FieldInfo field=typeof(DashboardForm).GetField("cards",BindingFlags.Instance|BindingFlags.NonPublic);var map=field.GetValue(form) as Dictionary<string,Label[]>;Check(map!=null&&map.Count==points.Count,title+" 37个测点卡片全部创建");

@@ -33,7 +33,7 @@ namespace ExperimentMonitor {
                     // Create a synthetic previous-day migration fixture from the isolated acquisition, never field data.
                     string old=Path.Combine(storage,"simulation-previous-day-30d.db");File.Copy(source,old);
                     using(var c=new SQLiteConnection("Data Source="+old+";Version=3;")){c.Open();using(var q=new SQLiteCommand("UPDATE observations SET utc_ticks=utc_ticks-@shift,round_started_utc_ticks=round_started_utc_ticks-@shift,session=COALESCE(session,'')||'-previousday'",c)){q.Parameters.AddWithValue("@shift",TimeSpan.FromDays(1).Ticks);q.ExecuteNonQuery();}}
-                    form.MainNavigation.SelectedIndex=2;await Wait(()=>!Field<bool>(history,"queryBusy"),"首次记录页加载未完成");
+                    form.MainNavigation.SelectedIndex=3;await Wait(()=>!Field<bool>(history,"queryBusy"),"首次记录页加载未完成");
                     Field<DateTimePicker>(history,"from").Value=DateTime.Today.AddDays(-1);Field<DateTimePicker>(history,"to").Value=DateTime.Today;
                     Field<Button>(history,"query").PerformClick();await Wait(()=>!Field<bool>(history,"queryBusy"),"旧日期范围查询未完成");DataGridView grid=Field<DataGridView>(history,"grid");
                     check(grid.Rows.Count==1&&Field<Label>(history,"summary").Text.Contains("历史查询"),"记录页显式旧日期查询显示一整轮历史");
@@ -67,12 +67,12 @@ namespace ExperimentMonitor {
                     bool hasTrendTab=false;foreach(TabPage tab in inner.TabPages)if(tab.Text=="历史趋势")hasTrendTab=true;
                     check(!hasTrendTab,"记录页不再重复趋势视图");
                     HistoryFilter applied=(HistoryFilter)typeof(HistoryPage).GetMethod("MakeFilter",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(history,null);
-                    Field<Button>(history,"openTrends").PerformClick();await Wait(()=>form.MainNavigation.SelectedIndex==1,"未跳转到趋势分析页");
-                    TrendsPage trends=null;foreach(Control candidate in form.MainNavigation.TabPages[1].Controls)if(candidate is TrendsPage)trends=(TrendsPage)candidate;
+                    Field<Button>(history,"openTrends").PerformClick();await Wait(()=>form.MainNavigation.SelectedIndex==2,"未跳转到趋势分析页");
+                    TrendsPage trends=null;foreach(Control candidate in form.MainNavigation.TabPages[2].Controls)if(candidate is TrendsPage)trends=(TrendsPage)candidate;
                     check(trends!=null,"趋势分析页存在");
                     await Wait(()=>!Field<bool>(trends,"queryBusy"),"趋势页读取未完成");
                     check(Math.Abs((Field<DateTimePicker>(trends,"from").Value.ToUniversalTime()-applied.FromUtc).TotalSeconds)<2&&Math.Abs((Field<DateTimePicker>(trends,"to").Value.ToUniversalTime()-applied.ToUtc).TotalSeconds)<2,"趋势页收到记录页的时间范围");
-                    Field<Button>(trends,"openRecords").PerformClick();await Wait(()=>form.MainNavigation.SelectedIndex==2,"未跳回记录页");
+                    Field<Button>(trends,"openRecords").PerformClick();await Wait(()=>form.MainNavigation.SelectedIndex==3,"未跳回记录页");
                     await Wait(()=>!Field<bool>(history,"queryBusy"),"回跳记录页后查询未完成");
                     check(Math.Abs((Field<DateTimePicker>(history,"from").Value.ToUniversalTime()-applied.FromUtc).TotalSeconds)<2,"记录页收到趋势页的时间范围");
                     inner.SelectedIndex=1;Field<Button>(history,"sessionRun").PerformClick();
@@ -152,7 +152,7 @@ namespace ExperimentMonitor {
                 form.Shown+=async(s,e)=>{try{
                     Field<CheckBox>(form,"simulation").Checked=true;Field<Button>(form,"headerAction").PerformClick();
                     check(form.Engine.IsConnected&&!form.Engine.IsRunning,"手动诊断连接不启动采集");
-                    form.MainNavigation.SelectedIndex=4;Control page=form.MainNavigation.SelectedTab;
+                    form.MainNavigation.SelectedIndex=5;Control page=form.MainNavigation.SelectedTab;
                     ComboBox mode=Find<ComboBox>(page,c=>c.Items.Contains("FLOAT CDAB"));string requested=swapped?"FLOAT CDAB":"FLOAT ABCD";mode.SelectedItem=requested;
                     Find<NumericUpDown>(page,n=>n.Maximum==8).Value=2;Button read=Find<Button>(page,b=>b.Text=="发送读取");read.PerformClick();
                     DateTime end=DateTime.UtcNow.AddSeconds(5);while(!read.Enabled&&DateTime.UtcNow<end)await Task.Delay(20);
@@ -172,7 +172,7 @@ namespace ExperimentMonitor {
             using(var form=new DashboardForm(points,isolated)){
                 var cloud=new CloudPage(isolated,form.Engine);form.AttachCloudPage(cloud);form.ShowInTaskbar=false;form.Opacity=0;
                 form.Shown+=async(s,e)=>{try{
-                    form.MainNavigation.SelectedIndex=3;string mockToken="fixture-token-no-production";
+                    form.MainNavigation.SelectedIndex=4;string mockToken="fixture-token-no-production";
                     Field<CheckBox>(cloud,"enabled").Checked=false;Field<TextBox>(cloud,"endpoint").Text="https://example.invalid";Field<TextBox>(cloud,"alias").Text="test fixture";Field<TextBox>(cloud,"token").Text=mockToken;
                     Find<Button>(cloud,b=>b.Text=="保存并应用").PerformClick();string path=Path.Combine(isolated,"cloud-settings.json");var saved=CloudConfiguration.Load(path);
                     check(!saved.Enabled&&saved.Endpoint=="https://example.invalid"&&saved.Alias=="test fixture"&&saved.Token==mockToken,"云页面保存操作实际持久化当前配置");

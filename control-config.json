@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "mode": "preview",
+  "requireOperatorAck": true,
+  "autoLockIdleSeconds": 0,
+  "enforceInterlocks": false,
+  "requireConfirmed": false,
+  "interlocks": {
+    "remotePoint": "D2003",
+    "remoteExpected": null,
+    "faultPoint": "D2208",
+    "faultExpected": 0,
+    "maxAgeSeconds": 10,
+    "requireAcquiring": true
+  },
+  "limits": {
+    "minIntervalMs": 1000,
+    "maxWritesPerMinute": 6,
+    "verifyWindowMs": 1500,
+    "observeFeedbackSeconds": 10
+  },
+  "feedbackPoints": ["D2208", "D2209", "D2210", "D2211", "D2212", "D2213"],
+  "targets": [
+    {
+      "point": "D2202",
+      "label": "主机温度设定",
+      "kind": "int16",
+      "unit": "℃",
+      "slave": 2,
+      "address": 2202,
+      "min": 0,
+      "max": 60,
+      "step": 1,
+      "confirmed": false,
+      "allowWrite": false,
+      "note": "HRS2203→零基2202；单位/量程无工程依据（2026-10-03 实机读数 0）；范围按常见℃设定放宽，现场确认后收紧"
+    },
+    {
+      "point": "D2001",
+      "label": "模式控制",
+      "kind": "int16",
+      "unit": "",
+      "slave": 2,
+      "address": 2201,
+      "min": 0,
+      "max": 10,
+      "step": 1,
+      "confirmed": false,
+      "allowWrite": false,
+      "note": "HRS2202→零基2201；⚠ 点名写的是 2001，但连接项是 HRS2202（零基 2201），疑为原工程笔误 D2201，现场按名字核对会找错寄存器；模式码枚举无证据"
+    },
+    {
+      "point": "D2000",
+      "label": "送风风机速度",
+      "kind": "int16",
+      "unit": "",
+      "slave": 2,
+      "address": 2000,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "confirmed": false,
+      "allowWrite": false,
+      "note": "HRS2001→零基2000；单位/范围未确认"
+    },
+    {
+      "point": "D2207",
+      "label": "放冷反馈设定",
+      "kind": "int16",
+      "unit": "",
+      "slave": 2,
+      "address": 2207,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "confirmed": false,
+      "allowWrite": false,
+      "note": "HRS2208→零基2207；语义未确认"
+    }
+  ]
+}

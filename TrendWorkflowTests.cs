@@ -36,7 +36,7 @@ namespace ExperimentMonitor {
             Exception failure=null;int checks=0;Action<bool,string> check=(ok,message)=>{if(!ok)throw new InvalidOperationException("统一趋势失败："+message);checks++;};
             using(var form=new DashboardForm(points,isolated)){form.ShowInTaskbar=false;form.Opacity=0;
                 form.Shown+=async(s,e)=>{try{
-                    form.MainNavigation.SelectedIndex=1;TrendsPage page=Find<TrendsPage>(form.MainNavigation.SelectedTab);await Wait(()=>!Field<bool>(page,"queryBusy")&&HasValues(page),"未自动读取已有历史记录");
+                    form.MainNavigation.SelectedIndex=2;TrendsPage page=Find<TrendsPage>(form.MainNavigation.SelectedTab);await Wait(()=>!Field<bool>(page,"queryBusy")&&HasValues(page),"未自动读取已有历史记录");
                     check(!form.Engine.IsConnected&&(string)Field<ComboBox>(page,"source").SelectedItem=="实机","离线默认读取唯一已有来源，无须连接采集");
                     check(Field<CheckBox>(page,"followLatest").Checked,"默认跟随最近记录");
                     DateTime a=Field<DateTime>(page,"loadedFrom"),b=Field<DateTime>(page,"loadedTo");check(b-a==TimeSpan.FromHours(1)&&b.Date==utc.Date,"默认滚动1小时锚定已有记录，不跳到空的当前日期");
@@ -57,7 +57,7 @@ namespace ExperimentMonitor {
                 Field<ComboBox>(form,"port").Items.Add("TEST_VIRTUAL_PORT");Field<ComboBox>(form,"port").SelectedItem="TEST_VIRTUAL_PORT";Field<CheckBox>(form,"simulation").Checked=!serial;Field<NumericUpDown>(form,"period").Value=1;
                 form.Shown+=async(s,e)=>{try{
                     Field<Button>(form,"headerAction").PerformClick();Field<Button>(form,"start").PerformClick();await Wait(()=>form.Engine.Store!=null&&form.Engine.Store.Committed>=37,"未真正采集并写盘");
-                    form.MainNavigation.SelectedIndex=1;TrendsPage page=Find<TrendsPage>(form.MainNavigation.SelectedTab);await Wait(()=>!Field<bool>(page,"queryBusy")&&HasValues(page),"默认最近记录未加载");
+                    form.MainNavigation.SelectedIndex=2;TrendsPage page=Find<TrendsPage>(form.MainNavigation.SelectedTab);await Wait(()=>!Field<bool>(page,"queryBusy")&&HasValues(page),"默认最近记录未加载");
                     check((string)Field<ComboBox>(page,"source").SelectedItem==(serial?"实机":"模拟"),"默认来源采用实际采集来源");
                     DateTime oldA=Field<DateTime>(page,"loadedFrom"),oldB=Field<DateTime>(page,"loadedTo");
                     await Wait(()=>Field<DateTime>(page,"loadedTo")>oldB&&!Field<bool>(page,"queryBusy"),"新记录入库后时间轴未向前跟随");

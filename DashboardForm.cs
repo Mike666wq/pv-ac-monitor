@@ -95,17 +95,18 @@ namespace ExperimentMonitor {
         }
 
         void BuildPages() {
-            TabPage live=AddPage("实时监控"),trends=AddPage("趋势分析"),records=AddPage("数据记录"),cloud=AddPage("云端连接"),diag=AddPage("通信诊断");
+            TabPage live=AddPage("实时监控"),control=AddPage("运行控制"),trends=AddPage("趋势分析"),records=AddPage("数据记录"),cloud=AddPage("云端连接"),diag=AddPage("通信诊断");
             var liveTabs=new TabControl { Dock=DockStyle.Fill,DrawMode=TabDrawMode.OwnerDrawFixed,ItemSize=new Size(104,30),SizeMode=TabSizeMode.Fixed };
             liveTabs.DrawItem+=(s,e)=>{bool selected=(e.State&DrawItemState.Selected)!=0;TextRenderer.DrawText(e.Graphics,liveTabs.TabPages[e.Index].Text,Font,e.Bounds,selected?UiTheme.Blue:UiTheme.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter);if(selected)using(var p=new Pen(UiTheme.Blue,2))e.Graphics.DrawLine(p,e.Bounds.Left+18,e.Bounds.Bottom-1,e.Bounds.Right-18,e.Bounds.Bottom-1);};live.Controls.Add(liveTabs);
             var overview=new TabPage("总览") { BackColor=UiTheme.Canvas,Padding=new Padding(7) };var detail=new TabPage("测点详情") { BackColor=UiTheme.Canvas,Padding=new Padding(7) };liveTabs.TabPages.Add(overview);liveTabs.TabPages.Add(detail);
             BuildOverview(overview);BuildDetails(detail);
+            control.Controls.Add(new ControlPage(points,Engine,appRoot));
             var historyHost=new Panel { Dock=DockStyle.Fill,Padding=new Padding(2) };records.Controls.Add(historyHost);HistoryHost=historyHost;
             var cloudHost=new Panel { Dock=DockStyle.Fill,Padding=new Padding(2) };cloud.Controls.Add(cloudHost);CloudHost=cloudHost;
             SettingsHost=null;
             trendsPage=new TrendsPage(points,Engine,appRoot);trendsPage.AttachTo(trends);
             // 趋势页看到某一段 → 带着可见区间跳回记录页看原始值。
-            trendsPage.OpenRecordsRequested+=(selection)=>{MainNavigation.SelectedIndex=2;if(historyPage!=null)historyPage.ApplySelection(selection);};
+            trendsPage.OpenRecordsRequested+=(selection)=>{MainNavigation.SelectedIndex=3;if(historyPage!=null)historyPage.ApplySelection(selection);};
             BuildDiagnostics(diag);
             MainNavigation.SelectedIndexChanged+=(s,e)=>{if(MainNavigation.SelectedTab==records&&historyPage!=null)historyPage.EnterPage(Engine.ActiveSource);};
         }
@@ -182,7 +183,7 @@ namespace ExperimentMonitor {
         }
         public void AttachHistoryPage(HistoryPage page){if(page==null)throw new ArgumentNullException("page");historyPage=page;HistoryHost.Controls.Clear();page.Dock=DockStyle.Fill;HistoryHost.Controls.Add(page);UiTheme.Apply(page);page.SetActiveSource(Engine.ActiveSource??"simulation");
             // 记录页看到某段 → 带着筛选条件跳到趋势页。
-            page.OpenTrendsRequested+=(selection)=>{MainNavigation.SelectedIndex=1;if(trendsPage!=null)trendsPage.ApplySelection(selection);};}
+            page.OpenTrendsRequested+=(selection)=>{MainNavigation.SelectedIndex=2;if(trendsPage!=null)trendsPage.ApplySelection(selection);};}
         public void AttachCloudPage(CloudPage page){if(page==null)throw new ArgumentNullException("page");if(cloudPage!=null)cloudPage.CloudStatusChanged-=OnCloudStatus;cloudPage=page;cloudPage.CloudStatusChanged+=OnCloudStatus;CloudHost.Controls.Clear();page.Dock=DockStyle.Fill;CloudHost.Controls.Add(page);UiTheme.Apply(page);OnCloudStatus(page.CurrentStatusLabel);}
         void OnCloudStatus(string value){Dispatch(()=>{
             CloudPublisherStatus snapshot=cloudPage==null?null:cloudPage.CurrentStatus;

@@ -28,7 +28,7 @@ namespace ExperimentMonitor {
   static string QLabel(string q,string status){if(q=="good")return "正常";return String.IsNullOrEmpty(status)?(q??"未知"):status;}
   static string Num(double? d){return d.HasValue?d.Value.ToString("G17",CultureInfo.InvariantCulture):"";}
   static string Local(long ticks){return new DateTime(ticks,DateTimeKind.Utc).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff zzz",CultureInfo.InvariantCulture);}
-  internal static bool ExportablePoint(string point){return point!="0006H"&&PointCatalog.Get(point).Group!="运行状态";}
+  internal static bool ExportablePoint(string point){string group=PointCatalog.Get(point).Group;return point!="0006H"&&group!="运行状态"&&group!="控制/设定";}
   static object[] Detail(SQLiteDataReader r){long utc=r.GetInt64(1);string point=Txt(r,7);PointInfo info=PointCatalog.Get(point);return new object[]{Local(utc),new DateTime(utc,DateTimeKind.Utc).ToString("o",CultureInfo.InvariantCulture),Txt(r,6),point,info.Label,r.GetInt32(9),r.GetInt32(10),r.GetInt32(11),r.IsDBNull(12)?null:(object)r.GetDouble(12),r.IsDBNull(13)?null:(object)r.GetDouble(13),Txt(r,14),Txt(r,15),info.Unit??"",info.Mode??"",Txt(r,18),QLabel(Txt(r,18),Txt(r,19)),Txt(r,20),Txt(r,21),r.GetInt64(22),Txt(r,23)};}
   static object[] Quality(SQLiteDataReader r){long utc=r.GetInt64(1);return new object[]{Local(utc),Txt(r,6),Txt(r,7),Txt(r,18),QLabel(Txt(r,18),Txt(r,19)),Txt(r,15),Txt(r,21)};}
   static string CsvCell(object v){if(v==null)return "";if(v is int||v is long||v is double)return Convert.ToString(v,CultureInfo.InvariantCulture);return Journal.Cell(Convert.ToString(v,CultureInfo.InvariantCulture));}

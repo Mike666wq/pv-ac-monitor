@@ -27,6 +27,7 @@ namespace ExperimentMonitor {
             File.WriteAllText(Path.Combine(root,"records-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,storageChecks=count,recordsChecks=recordsChecks,failureChecks=failureChecks,count=count+recordsChecks+failureChecks,hardware_tested=false}));
             int cloudChecks=CloudSelfTests.Run();File.WriteAllText(Path.Combine(root,"cloud-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=cloudChecks,production_cloud_tested=false}));checks.Add("Cloud lease / credentials / retry / HTTP integration: "+cloudChecks);
             var trendChecks=TrendTests.Run();File.WriteAllText(Path.Combine(root,"trend-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=trendChecks.Count,checks=trendChecks,hardware_tested=false,production_cloud_tested=false}));checks.Add("Trend compression / continuity regression: "+trendChecks.Count);
+            var controlChecks=ControlTests.Run(points,root);File.WriteAllText(Path.Combine(root,"control-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=controlChecks.Count,checks=controlChecks,hardware_tested=false}));checks.Add("Control write path / gates / readback / audit: "+controlChecks.Count);
             Check(PointCatalog.Get("D6").Label=="功率因数"&&PointCatalog.Get("T1").Label=="水箱","labels from field screenshot",checks);
             string folder=Path.Combine(root,".testing","integrated-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);File.Copy(Path.Combine(root,"protocol.json"),Path.Combine(folder,"protocol.json"));
             var observed=new List<Observation>();
@@ -60,7 +61,7 @@ namespace ExperimentMonitor {
             int workflowChecks=WorkflowTests.Run(points,root);
             checks.Add("UI layout and screenshots: "+uiChecks);
             checks.Add("Fresh-directory end-to-end workflow: "+workflowChecks);
-            File.WriteAllText(Path.Combine(root,"extended-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,checks=checks,count=checks.Count+count+recordsChecks+failureChecks+cloudChecks+coreChecks.Count+uiChecks+workflowChecks+trendChecks.Count-7,hardware_tested=false,production_cloud_tested=false}));
+            File.WriteAllText(Path.Combine(root,"extended-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,checks=checks,count=checks.Count+count+recordsChecks+failureChecks+cloudChecks+coreChecks.Count+uiChecks+workflowChecks+trendChecks.Count+controlChecks.Count-7,hardware_tested=false,production_cloud_tested=false}));
         }
         sealed class RecoveryTransport:IReadTransport {
             readonly Func<bool> fail;readonly SimulationTransport sim=new SimulationTransport();

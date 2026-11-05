@@ -6,6 +6,8 @@
 !/README.md
 !/CHANGELOG.md
 !/*.cs
+!/CONTROL-DESIGN.md
+!/control-config.json
 !/build-source.ps1
 !/package-ci.ps1
 !/.github/
@@ -17,6 +19,10 @@
 !/System.Data.SQLite.dll
 !/x64/
 !/x86/
+!/tools/
+!/tools/control-runner/
+!/tools/control-runner/*.cs
+!/tools/control-runner/*.ps1
 /x64/*
 /x86/*
 !/x64/SQLite.Interop.dll

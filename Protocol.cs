@@ -56,6 +56,37 @@ namespace ExperimentMonitor {
                 throw new ArgumentOutOfRangeException("读取范围", "站号1..247，零基地址0..65535，数量1..125且不能越界");
             return WithCrc(new byte[] {(byte)slave, 3, (byte)(address >> 8), (byte)address, (byte)(count >> 8), (byte)count});
         }
+        /// <summary>功能码 06：写单个保持寄存器。v1 只支持这一个写功能码。</summary>
+        public static byte[] WriteSingle(int slave, int address, int value) {
+            if (slave < 1 || slave > 247 || address < 0 || address > 65535 || value < 0 || value > 65535)
+                throw new ArgumentOutOfRangeException("写入范围", "站号1..247，零基地址0..65535，写入值0..65535");
+            return WithCrc(new byte[] {(byte)slave, 6, (byte)(address >> 8), (byte)address, (byte)(value >> 8), (byte)value});
+        }
+        /// <summary>06 的回显必须是同一站号/地址/值；0x86 异常帧也在此识别，交由调用方判定。</summary>
+        public static bool ExtractWriteEcho(List<byte> buffer, int slave, int address, int value, out byte[] frame) {
+            frame = null;
+            for (int offset = 0; offset + 2 < buffer.Count; offset++) {
+                if (buffer[offset] != slave) continue;
+                int function = buffer[offset + 1];
+                int size;
+                if (function == 0x86) size = 5;
+                else if (function == 6 && offset + 5 < buffer.Count && buffer[offset + 2] == (byte)(address >> 8) &&
+                         buffer[offset + 3] == (byte)address && buffer[offset + 4] == (byte)(value >> 8) && buffer[offset + 5] == (byte)value) size = 8;
+                else continue;
+                if (offset + size > buffer.Count) continue;
+                var candidate = buffer.GetRange(offset, size).ToArray();
+                ushort crc = Crc(candidate, size - 2);
+                if (candidate[size - 2] != (byte)crc || candidate[size - 1] != (byte)(crc >> 8)) continue;
+                buffer.RemoveRange(0, offset + size); frame = candidate; return true;
+            }
+            if (buffer.Count > 1024) buffer.RemoveRange(0, buffer.Count - 260);
+            return false;
+        }
+        /// <summary>写回读使用 03 读同一个寄存器；返回 null 表示没有可用的数值。</summary>
+        public static int? ReadSingleValue(byte[] frame) {
+            if (frame == null || frame.Length != 7 || frame[1] != 3 || frame[2] != 2) return null;
+            return (frame[3] << 8) | frame[4];
+        }
         public static string Hex(byte[] data) { return BitConverter.ToString(data).Replace('-', ' '); }
         // Resynchronise through noise, unrelated frames, bad CRC and partial input.
         // No RTU transaction ID exists: a late reply with the same slave/length is ambiguous.
@@ -120,7 +151,11 @@ namespace ExperimentMonitor {
     public interface IReadTransport : IDisposable {
         byte[] Read(int slave, int address, int count, int timeoutMs, CancellationToken token, Action<string> log);
     }
-    public sealed class SerialTransport : IReadTransport {
+    /// <summary>写通道单独成接口：只读测试替身无需实现写，控制功能会被门禁拒绝。</summary>
+    public interface IWriteTransport {
+        byte[] WriteSingle(int slave, int address, int value, int timeoutMs, CancellationToken token, Action<string> log);
+    }
+    public sealed class SerialTransport : IReadTransport, IWriteTransport {
         readonly SerialPort port;
         public SerialTransport(string name, int baud) {
             port = new SerialPort(name, baud, Parity.None, 8, StopBits.One);
@@ -128,9 +163,8 @@ namespace ExperimentMonitor {
             port.Handshake = Handshake.None;
             try { port.Open(); } catch { port.Dispose(); throw; }
         }
-        public byte[] Read(int slave, int address, int count, int timeoutMs, CancellationToken token, Action<string> log) {
-            token.ThrowIfCancellationRequested();
-            // Start only after a quiet interval; log bytes discarded before a new request.
+        /// <summary>发送前至少 10 ms 静默；丢弃并记录上一次事务残留的 RX。</summary>
+        void WaitForQuiet(CancellationToken token, Action<string> log) {
             var quiet = Stopwatch.StartNew(); var guard = Stopwatch.StartNew(); var scratch = new byte[256];
             while (quiet.ElapsedMilliseconds < 10) {
                 token.ThrowIfCancellationRequested();
@@ -140,6 +174,28 @@ namespace ExperimentMonitor {
                     log("发送前丢弃 RX " + Modbus.Hex(scratch.Take(n).ToArray())); quiet.Restart();
                 } else token.WaitHandle.WaitOne(1);
             }
+        }
+        public byte[] WriteSingle(int slave, int address, int value, int timeoutMs, CancellationToken token, Action<string> log) {
+            token.ThrowIfCancellationRequested();
+            WaitForQuiet(token, log);
+            var tx = Modbus.WriteSingle(slave, address, value);
+            log("TX " + Modbus.Hex(tx)); port.Write(tx, 0, tx.Length);
+            var watch = Stopwatch.StartNew(); var input = new List<byte>(); var scratch = new byte[64];
+            while (watch.ElapsedMilliseconds < timeoutMs) {
+                token.ThrowIfCancellationRequested();
+                try {
+                    int n = port.Read(scratch, 0, scratch.Length);
+                    var chunk = scratch.Take(n).ToArray(); log("RX " + Modbus.Hex(chunk)); input.AddRange(chunk);
+                    byte[] frame;
+                    if (Modbus.ExtractWriteEcho(input, slave, address, value, out frame)) return frame;
+                } catch (TimeoutException) { }
+            }
+            throw new TimeoutException("写入回显超时；接收缓存 " + Modbus.Hex(input.ToArray()));
+        }
+        public byte[] Read(int slave, int address, int count, int timeoutMs, CancellationToken token, Action<string> log) {
+            token.ThrowIfCancellationRequested();
+            WaitForQuiet(token, log);
+            var scratch = new byte[256];
             var tx = Modbus.Request(slave, address, count);
             log("TX " + Modbus.Hex(tx)); port.Write(tx, 0, tx.Length);
             var watch = Stopwatch.StartNew(); var input = new List<byte>();
@@ -156,12 +212,75 @@ namespace ExperimentMonitor {
         }
         public void Dispose() { port.Dispose(); }
     }
-    public sealed class SimulationTransport : IReadTransport {
+    public sealed class SimulationTransport : IReadTransport, IWriteTransport {
         int tick;
+        readonly Dictionary<int, int> registers = new Dictionary<int, int>();
+        public int WriteCount { get; private set; }
+        /// <summary>测试故障注入：drop=丢回显，exception=0x86 异常，ignore=回显成功但值不变。</summary>
+        public string FailMode = "";
+        static int Key(int slave, int address) { return (slave << 16) | (address & 0xffff); }
+        /// <summary>模拟 PLC 的合理初值：远程=1、无故障=0、设定=24、风机/主机/水泵=1 等，便于演示控制闭环。</summary>
+        static int SimulationRegister(int slave, int address) {
+            if (slave == 2) {
+                switch (address) {
+                    case 2000: return 60;
+                    case 2001: return 1;
+                    case 2003: return 1;
+                    case 2202: return 24;
+                    case 2207: return 45;
+                    case 2208: return 0;
+                    case 2209: return 1;
+                    case 2210: return 2;
+                    case 2211: return 1;
+                    case 2212: return 50;
+                    case 2213: return 1;
+                    case 302: return 24;
+                }
+                return 0;
+            }
+            if (slave == 1) return address == 0 ? 1653 : address == 3 ? 12 : 20;
+            return 701;
+        }
+        public void Seed(int slave, int address, int value) { registers[Key(slave, address)] = value & 0xffff; }
+        public int? Seeded(int slave, int address) { int value; return registers.TryGetValue(Key(slave, address), out value) ? value : (int?)null; }
+        public byte[] WriteSingle(int slave, int address, int value, int timeoutMs, CancellationToken token, Action<string> log) {
+            if (token.WaitHandle.WaitOne(12)) token.ThrowIfCancellationRequested();
+            WriteCount++;
+            log("[模拟] TX " + Modbus.Hex(Modbus.WriteSingle(slave, address, value)));
+            if (FailMode == "drop") throw new TimeoutException("模拟写入回显丢失");
+            if (FailMode == "exception") { var failure = Modbus.WithCrc(new byte[] { (byte)slave, 0x86, 2 }); log("[模拟] RX " + Modbus.Hex(failure)); return failure; }
+            if (FailMode != "ignore") { registers[Key(slave, address)] = value & 0xffff; SimulateDeviceReaction(slave, address, value); }
+            var echo = Modbus.WriteSingle(slave, address, value); log("[模拟] RX " + Modbus.Hex(echo)); return echo;
+        }
+
+        /// <summary>
+        /// 模拟设备动作：写设定点后联动一个状态点，让「观察窗口」能看到返回信号变化（仅模拟，真实设备行为以现场为准）。
+        /// D2202 主机温度设定 → D2212 冷量反馈 = 设定值；D2001 模式控制 → D2210 当前模式；
+        /// D2000 风机速度 → D2209 风机状态（>0 为 1）；D2207 放冷设定 → D2213 水泵（1）。
+        /// </summary>
+        void SimulateDeviceReaction(int slave, int address, int value) {
+            if (slave != 2) return;
+            switch (address) {
+                case 2202: registers[Key(2, 2212)] = value & 0xffff; break;
+                case 2001: registers[Key(2, 2210)] = value & 0xffff; break;
+                case 2000: registers[Key(2, 2209)] = value > 0 ? 1 : 0; break;
+                case 2207: registers[Key(2, 2213)] = 1; break;
+            }
+        }
         public byte[] Read(int slave, int address, int count, int timeoutMs, CancellationToken token, Action<string> log) {
             if (token.WaitHandle.WaitOne(12)) token.ThrowIfCancellationRequested();
             log("[模拟] TX " + Modbus.Hex(Modbus.Request(slave, address, count)));
             var body = new byte[3 + count * 2]; body[0] = (byte)slave; body[1] = 3; body[2] = (byte)(count * 2);
+            int seeded;
+            if (count == 1 && registers.TryGetValue(Key(slave, address), out seeded)) {
+                body[3] = (byte)(seeded >> 8); body[4] = (byte)seeded;
+                var seededReply = Modbus.WithCrc(body); log("[模拟] RX " + Modbus.Hex(seededReply)); return seededReply;
+            }
+            if (count == 1) {
+                int simulated = SimulationRegister(slave, address);
+                body[3] = (byte)(simulated >> 8); body[4] = (byte)simulated;
+                var simulatedReply = Modbus.WithCrc(body); log("[模拟] RX " + Modbus.Hex(simulatedReply)); return simulatedReply;
+            }
             if (count == 2) {
                 float value;
                 if(slave==2)value=25f+(address-125)*.05f+(float)Math.Sin(++tick*.08)*.4f;

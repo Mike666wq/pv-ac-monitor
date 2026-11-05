@@ -26,6 +26,7 @@ namespace ExperimentMonitor {
                 if(args.Contains("--test-storage")) { int storage=StorageTests.Run(),records=RecordsTests.Run(),failures=ExportFailureTests.Run(points,root);File.WriteAllText(Path.Combine(root,"records-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,storageChecks=storage,recordsChecks=records,failureChecks=failures,count=storage+records+failures,hardware_tested=false}));return 0; }
                 if(args.Contains("--test-cloud")) { int count=CloudSelfTests.Run();File.WriteAllText(Path.Combine(root,"cloud-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=count,production_cloud_tested=false}));return 0; }
                 if(args.Contains("--test-ui")) { UiLayoutTests.Run(points,root);return 0; }
+                if(args.Contains("--test-control")) { var checks=ControlTests.Run(points,root);File.WriteAllText(Path.Combine(root,"control-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=checks.Count,checks=checks,hardware_tested=false}));return 0; }
                 if(args.Contains("--test-workflow")) { WorkflowTests.Run(points,root);return 0; }
                 using(var form=new DashboardForm(points,root)) {
                     var history=new HistoryPage(points,root,form.Engine);form.HistoryHost.Controls.Add(history);form.AttachHistoryPage(history);
