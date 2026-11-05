@@ -11,7 +11,6 @@ using System.Windows.Forms;
 namespace ExperimentMonitor {
     /// <summary>BMS-style local history: follow newest while visible; freeze when the user changes filters.</summary>
     public sealed class HistoryPage : UserControl {
-        const int PageSize=200;
         readonly string dataRoot,appRoot; readonly MonitorEngine engine; readonly List<Point> allPoints;
         readonly DateTimePicker from=new DateTimePicker{Format=DateTimePickerFormat.Custom,CustomFormat="yyyy-MM-dd HH:mm:ss",Width=210};
         readonly DateTimePicker to=new DateTimePicker{Format=DateTimePickerFormat.Custom,CustomFormat="yyyy-MM-dd HH:mm:ss",Width=210};
@@ -24,7 +23,7 @@ namespace ExperimentMonitor {
         readonly Label summary=new Label{AutoSize=true,ForeColor=Color.FromArgb(75,96,120),TextAlign=ContentAlignment.MiddleLeft};
         readonly Label feedback=new Label{AutoSize=true,ForeColor=Color.FromArgb(75,96,120),Text="选择时间范围并查询记录。"};
         readonly Label exportStatus=new Label{AutoSize=true,Visible=false,ForeColor=Color.FromArgb(45,108,175)};
-        readonly StyledActionButton query=new StyledActionButton{Text="查询记录",Width=120,BackColor=UiTheme.Blue,IconGlyph="⌕"},follow=new StyledActionButton{Text="回到最新",Width=104},next=new StyledActionButton{Text="更早 200 条",Width=112,Enabled=false},export=new StyledActionButton{Text="导出数据  ▾",Width=128},cancel=new StyledActionButton{Text="取消导出",Visible=false,Width=96},columnPick=new StyledActionButton{Text="列选择  ▾",Width=100};
+        readonly StyledActionButton query=new StyledActionButton{Text="查询记录",Width=120,BackColor=UiTheme.Blue,IconGlyph="⌕"},follow=new StyledActionButton{Text="回到最新",Width=104},next=new StyledActionButton{Text="‹ 更早 200 轮",Width=124,Enabled=false},export=new StyledActionButton{Text="导出数据  ▾",Width=128},cancel=new StyledActionButton{Text="取消导出",Visible=false,Width=96},columnPick=new StyledActionButton{Text="列选择  ▾",Width=100};
         readonly ContextMenuStrip exportMenu=new ContextMenuStrip();
         readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer{Interval=1000};
         readonly ComboBox partitionPreset=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=100};
@@ -40,9 +39,18 @@ namespace ExperimentMonitor {
         readonly LinkLabel storageToggle=new LinkLabel{Text="本地存储状态与分库设置  ▸",AutoSize=true,LinkColor=Color.FromArgb(45,108,175)};
         readonly ProgressBar progress=new ProgressBar{Width=120,Height=16,Visible=false};
         TableLayoutPanel outerLayout;TabControl recordTabs;Label trendStatus;
-        readonly StyledActionButton oldest=new StyledActionButton{Text="最早记录",Width=100},stopQuery=new StyledActionButton{Text="取消查询",Width=96,Visible=false};
+        readonly StyledActionButton oldest=new StyledActionButton{Text="« 最早",Width=84},stopQuery=new StyledActionButton{Text="取消查询",Width=96,Visible=false},newer=new StyledActionButton{Text="更新 ›",Width=96},latest=new StyledActionButton{Text="最新 »",Width=84},jumpStart=new StyledActionButton{Text="跳到开始时间",Width=150},jumpTo=new StyledActionButton{Text="跳到该时刻",Width=124};
+        // 分页条一律固定高度、固定列宽、不使用 AutoSize:标签文本变化不触发布局链重排。
+        readonly Label pageInfo=new Label{AutoSize=false,AutoEllipsis=true,TextAlign=ContentAlignment.MiddleLeft,Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold),ForeColor=Color.FromArgb(25,52,82),Width=240,Height=26,Margin=new Padding(8,2,8,0)};
+        readonly Label coverage=new Label{AutoSize=false,AutoEllipsis=true,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.FromArgb(75,96,120),Dock=DockStyle.Fill,Margin=Padding.Empty};
+        readonly DateTimePicker anchorTime=new DateTimePicker{Format=DateTimePickerFormat.Custom,CustomFormat="yyyy-MM-dd HH:mm",Width=176,ShowUpDown=true};
+        readonly ComboBox pageSizeBox=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=96};
+        // —— 分页与定位:一律用时间锚点重新定位,不逐页前推;页码只在从最新端连续前进时累加 ——
+        const int NavNewest=0,NavOlder=1,NavNewer=2,NavEarliest=3,NavAtTime=4;
+        int pageSize=200,pageIndex,queuedNav=-1,appliedNav=NavNewest;
+        DateTime? pendingAnchor,pageFrom,pageTo;bool pendingDescending=true,hasOlder,hasNewer,layoutGuard;DateTime queuedAt;
         readonly CheckBox hideTimeout=new CheckBox{Text="隐藏仅超时的轮次",Checked=false,AutoSize=true,Margin=new Padding(8,7,8,0)};
-        ExperimentHistory.RoundCursor pageCursor;bool pageDescending=true,countBusy,trendBusy,hideTimeoutRounds;string countSignature="";long countTotal=-1;long lastQueryMs;CancellationTokenSource queryToken,trendToken;HistoryFilter summaryFilter;int summaryUnits,summaryValid,summaryTimeout;bool summaryRoundView;HistoryLoad lastLoad;
+        bool countBusy,trendBusy,hideTimeoutRounds;string countSignature="";long countTotal=-1;long lastQueryMs;CancellationTokenSource queryToken,trendToken;HistoryFilter summaryFilter,countFilter;int summaryUnits,summaryValid,summaryTimeout;bool summaryRoundView,countRoundView;HistoryLoad lastLoad;readonly System.Windows.Forms.Timer countTimer=new System.Windows.Forms.Timer{Interval=1500};
         readonly HashSet<string> selectedDevices=new HashSet<string>(StringComparer.Ordinal),selectedPoints=new HashSet<string>(StringComparer.Ordinal);
         CancellationTokenSource exportCancel; bool following=true,explicitSource,queryBusy,pendingViewQuery,pendingFollowQuery,disposed,entered,inventoryBusy,filterDirty=true,wideView=true,rebuildingLists,settingSource,updatingFollowTime; int offset,generation,appliedGeneration,partitionDays=30,serialPartitionDays=30,simulationPartitionDays=30; long lastCommitted=-1,lastCompletedCaptures=-1; string activeSource="simulation",previewSignature=""; DateTime lastInventory=DateTime.MinValue;
 
@@ -53,7 +61,7 @@ namespace ExperimentMonitor {
             BuildLayout();LoadPartitionSetting();WireEvents();StyleGrid(grid);StyleGrid(inventory);UiTheme.Apply(this);VisibleChanged+=OnVisibleChanged;Disposed+=(s,e)=>DisposePage();
         }
         void BuildLayout(){
-            var viewport=new Panel{Dock=DockStyle.Fill,AutoScroll=true,BackColor=BackColor};var outer=new TableLayoutPanel{Dock=DockStyle.Top,ColumnCount=1,RowCount=7,BackColor=BackColor,Padding=Padding.Empty,MinimumSize=new Size(0,680)};outerLayout=outer;outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,42));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,82));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,48));outer.RowStyles.Add(new RowStyle(SizeType.Percent,100));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,36));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,25));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,0));viewport.Controls.Add(outer);Controls.Add(viewport);EventHandler resizeViewport=(s,e)=>{outer.Width=viewport.ClientSize.Width;int floor=680;if(storageBody.Visible)floor+=storageBody.GetPreferredSize(new Size(Math.Max(200,viewport.ClientSize.Width-8),0)).Height+8;outer.Height=Math.Max(viewport.ClientSize.Height,floor);};viewport.Resize+=resizeViewport;resizeViewport(viewport,EventArgs.Empty);
+            var viewport=new Panel{Dock=DockStyle.Fill,AutoScroll=true,BackColor=BackColor};var outer=new TableLayoutPanel{Dock=DockStyle.Top,ColumnCount=1,RowCount=7,BackColor=BackColor,Padding=Padding.Empty,MinimumSize=new Size(0,680)};outerLayout=outer;outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,42));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,82));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,48));outer.RowStyles.Add(new RowStyle(SizeType.Percent,100));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,36));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,25));outer.RowStyles.Add(new RowStyle(SizeType.Absolute,0));viewport.Controls.Add(outer);Controls.Add(viewport);viewport.Resize+=(s,e)=>ResizeOuter();ResizeOuter();
             var titleRow=new Panel{Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(10,5,8,4)};var title=new Label{Text="本地数据记录",Font=new Font("Microsoft YaHei UI",14,FontStyle.Bold),ForeColor=Color.FromArgb(25,52,82),Dock=DockStyle.Left,Width=220,TextAlign=ContentAlignment.MiddleLeft};titleRow.Controls.Add(title);
             export.Anchor=AnchorStyles.Top|AnchorStyles.Right;cancel.Anchor=AnchorStyles.Top|AnchorStyles.Right;exportStatus.Anchor=AnchorStyles.Top|AnchorStyles.Right;progress.Anchor=AnchorStyles.Top|AnchorStyles.Right;titleRow.Controls.Add(export);titleRow.Controls.Add(cancel);titleRow.Controls.Add(exportStatus);titleRow.Controls.Add(progress);titleRow.Resize+=(s,e)=>PositionExport(titleRow);outer.Controls.Add(titleRow,0,0);
             var filters=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=true,BackColor=Color.White,Padding=new Padding(7,5,5,3),Margin=new Padding(0,4,0,3)};
@@ -71,11 +79,37 @@ namespace ExperimentMonitor {
             var records=new TabPage("数据记录"){BackColor=Color.White};var trend=new TabPage("历史趋势"){BackColor=Color.White};tabs.TabPages.Add(records);tabs.TabPages.Add(trend);records.Controls.Add(grid);
             emptyHint=new Label{Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=UiTheme.Muted,BackColor=Color.White,Text="当前筛选范围没有记录。",Visible=false};
             records.Controls.Add(emptyHint);emptyHint.BringToFront();
+            // 分页条放在表格正上方:两行固定高度,子控件全部固定尺寸,文本变化不触发布局链重排。
+            var pageBar=new Panel{Dock=DockStyle.Top,Height=82,BackColor=Color.White,Padding=new Padding(6,2,6,2)};
+            var bar=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,BackColor=Color.White,Margin=Padding.Empty,Padding=Padding.Empty};
+            bar.RowStyles.Add(new RowStyle(SizeType.Absolute,40));bar.RowStyles.Add(new RowStyle(SizeType.Absolute,38));
+            var navRow=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false,BackColor=Color.White,Margin=Padding.Empty,Padding=new Padding(2,2,0,0)};
+            // 固定高度行里的子控件必须零外边距:36 高的按钮 + 6 上下边距会被 40 高的行裁掉。
+            oldest.Margin=Padding.Empty;next.Margin=Padding.Empty;newer.Margin=Padding.Empty;latest.Margin=Padding.Empty;jumpStart.Margin=Padding.Empty;jumpTo.Margin=Padding.Empty;
+            navRow.Controls.Add(oldest);navRow.Controls.Add(next);navRow.Controls.Add(pageInfo);navRow.Controls.Add(newer);navRow.Controls.Add(latest);
+            var infoRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=6,RowCount=1,BackColor=Color.White,Margin=Padding.Empty,Padding=Padding.Empty};
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,46));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,104));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,150));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,196));
+            infoRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,124));
+            pageSizeBox.Items.AddRange(new object[]{"200 轮","500 轮"});pageSizeBox.SelectedIndex=0;
+            jumpStart.Dock=DockStyle.Fill;jumpTo.Dock=DockStyle.Fill;
+            var pageSizeHost=new RoundedInputHost(pageSizeBox){Dock=DockStyle.Fill,Margin=Padding.Empty};
+            var anchorHost=new RoundedInputHost(anchorTime){Dock=DockStyle.Fill,Margin=Padding.Empty};
+            infoRow.Controls.Add(coverage,0,0);
+            infoRow.Controls.Add(FixedLabel("每页",ContentAlignment.MiddleCenter),1,0);
+            infoRow.Controls.Add(pageSizeHost,2,0);
+            infoRow.Controls.Add(jumpStart,3,0);
+            infoRow.Controls.Add(anchorHost,4,0);
+            infoRow.Controls.Add(jumpTo,5,0);
+            bar.Controls.Add(navRow,0,0);bar.Controls.Add(infoRow,0,1);pageBar.Controls.Add(bar);records.Controls.Add(pageBar);
             var chartScroll=new Panel{Dock=DockStyle.Fill,AutoScroll=true};chart.Dock=DockStyle.Top;chartScroll.Controls.Add(chart);
             trendStatus=new Label{Dock=DockStyle.Fill,AutoSize=true,ForeColor=UiTheme.Muted,Padding=new Padding(6,4,6,4),Text="按整个筛选范围绘制趋势；与“趋势分析”页使用同一套读取逻辑。"};
             var trendHost=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,BackColor=Color.White};trendHost.RowStyles.Add(new RowStyle(SizeType.AutoSize));trendHost.RowStyles.Add(new RowStyle(SizeType.Percent,100));trendHost.Controls.Add(trendStatus,0,0);trendHost.Controls.Add(chartScroll,0,1);trend.Controls.Add(trendHost);split.Panel2.Controls.Add(tabs);
             recordTabs=tabs;tabs.SelectedIndexChanged+=(s,e)=>{if(tabs.SelectedIndex==1)RefreshTrend();else RenderRows();};
-            var pager=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false,BackColor=Color.White,Padding=new Padding(4,0,2,0)};pager.Controls.Add(next);pager.Controls.Add(oldest);pager.Controls.Add(stopQuery);pager.Controls.Add(feedback);outer.Controls.Add(pager,0,4);
+            var pager=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false,BackColor=Color.White,Padding=new Padding(4,0,2,0)};pager.Controls.Add(stopQuery);pager.Controls.Add(feedback);outer.Controls.Add(pager,0,4);
             storageToggle.Margin=new Padding(8,4,0,2);outer.Controls.Add(storageToggle,0,5);
             BuildStorageBody();
             // Fold-out storage controls are placed beneath the record panel without introducing another tab.
@@ -88,10 +122,23 @@ namespace ExperimentMonitor {
             var settings=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=true,AutoSize=true};settings.Controls.Add(MakeLabel("分库周期"));partitionPreset.Items.AddRange(new object[]{"7 天","15 天","30 天","自定义"});partitionPreset.SelectedIndex=2;settings.Controls.Add(new RoundedInputHost(partitionPreset){Width=112});settings.Controls.Add(new RoundedInputHost(partitionCustom){Width=96});settings.Controls.Add(applyNext);settings.Controls.Add(applyNow);settings.Controls.Add(storageStatus);shell.Controls.Add(settings,0,0);
             var invHeading=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false};invHeading.Controls.Add(MakeLabel("本地数据库（按来源分开保存）"));var refresh=new StyledActionButton{Text="刷新清单",Width=96};refresh.Click+=(s,e)=>RefreshInventory(true);invHeading.Controls.Add(refresh);shell.Controls.Add(invHeading,0,1);
             var cols=new[]{"来源","数据库文件","大小 MiB","状态"};foreach(string c in cols)inventory.Columns.Add(c,c);inventory.Columns[0].FillWeight=45;inventory.Columns[1].FillWeight=200;inventory.Columns[2].FillWeight=55;inventory.Columns[3].FillWeight=85;inventory.MinimumSize=new Size(0,170);shell.Controls.Add(inventory,0,2);storageBody.Controls.Add(shell);
-            storageToggle.LinkClicked+=(s,e)=>{bool show=!storageBody.Visible;storageBody.Visible=show;RowStyle rs=outerLayout.RowStyles[6];if(show)rs.SizeType=SizeType.AutoSize;else{rs.SizeType=SizeType.Absolute;rs.Height=0;}storageToggle.Text=show?"本地存储状态与分库设置  ▾":"本地存储状态与分库设置  ▸";Control vp=outerLayout.Parent;if(vp!=null){outerLayout.Width=vp.ClientSize.Width;outerLayout.Height=Math.Max(vp.ClientSize.Height,680+(show?storageBody.GetPreferredSize(new Size(Math.Max(200,vp.ClientSize.Width-8),0)).Height+8:0));}};
+            storageToggle.LinkClicked+=(s,e)=>{bool show=!storageBody.Visible;storageBody.Visible=show;RowStyle rs=outerLayout.RowStyles[6];if(show)rs.SizeType=SizeType.AutoSize;else{rs.SizeType=SizeType.Absolute;rs.Height=0;}storageToggle.Text=show?"本地存储状态与分库设置  ▾":"本地存储状态与分库设置  ▸";ResizeOuter();};
         }
         void WireEvents(){
-            query.Click+=async(s,e)=>{following=false;ResetPaging();await ApplyAndQuery();};follow.Click+=async(s,e)=>{ResetPaging();SetToNow();MarkDirty();following=true;await ApplyAndQuery();};next.Click+=async(s,e)=>{if(next.Enabled){if(!wideView)offset+=PageSize;await RunQuery();}};oldest.Click+=async(s,e)=>{following=false;pageDescending=false;pageCursor=null;await RunQuery();};stopQuery.Click+=(s,e)=>{if(queryToken!=null)try{queryToken.Cancel();}catch{}if(trendToken!=null)try{trendToken.Cancel();}catch{}};
+            query.Click+=async(s,e)=>{following=false;await NavTo(NavNewest,default(DateTime));};
+            follow.Click+=async(s,e)=>{ResetPaging();pageIndex=0;appliedNav=NavNewest;pendingAnchor=null;SetToNow();MarkDirty();following=true;await RunQuery();};
+            oldest.Click+=async(s,e)=>await NavTo(NavEarliest,default(DateTime));
+            next.Click+=async(s,e)=>await NavTo(NavOlder,default(DateTime));
+            newer.Click+=async(s,e)=>await NavTo(NavNewer,default(DateTime));
+            latest.Click+=async(s,e)=>await NavTo(NavNewest,default(DateTime));
+            jumpStart.Click+=async(s,e)=>await NavTo(NavEarliest,default(DateTime));
+            jumpTo.Click+=async(s,e)=>{
+                DateTime at=TruncateToDisplayedSecond(anchorTime.Value);
+                if(at<TruncateToDisplayedSecond(from.Value)||at>TruncateToDisplayedSecond(to.Value)){feedback.Text="定位时刻必须落在所选时间范围之内。";return;}
+                if(!wideView){feedback.Text="“跳到该时刻”按采集轮定位，请先勾选“按采集轮宽表显示”。";return;}
+                await NavTo(NavAtTime,LocalDisplaySecondToUtc(at));};
+            pageSizeBox.SelectedIndexChanged+=(s,e)=>{int n=pageSizeBox.SelectedIndex==1?500:200;if(n==pageSize)return;pageSize=n;pageIndex=0;ResetPaging();if(filterDirty){feedback.Text="每页轮数已改为 "+n+"；点击“查询记录”后生效。";}else if(!queryBusy){Task<bool> ignored=RunQuery();}};
+            stopQuery.Click+=(s,e)=>{if(queryToken!=null)try{queryToken.Cancel();}catch{}if(trendToken!=null)try{trendToken.Cancel();}catch{}};
             source.SelectedIndexChanged+=(s,e)=>{if(source.SelectedItem==null)return;if(!settingSource){explicitSource=true;following=false;offset=0;MarkDirty();}LoadSourcePartitionSetting();RefreshStorageStatus();RefreshInventory(false);};
             devices.ItemCheck+=(s,e)=>{if(rebuildingLists)return;string item=devices.Items[e.Index] as string;bool check=e.NewValue==CheckState.Checked;BeginInvoke((Action)(()=>{if(check)selectedDevices.Add(item);else selectedDevices.Remove(item);offset=0;following=false;MarkDirty();RebuildVisibleDevices();RebuildVisiblePoints();}));};channels.ItemCheck+=(s,e)=>{if(rebuildingLists)return;string item=channels.Items[e.Index] as string;string point=item.Split(new[]{" · "},StringSplitOptions.None)[0];bool check=e.NewValue==CheckState.Checked;BeginInvoke((Action)(()=>{if(check)selectedPoints.Add(point);else selectedPoints.Remove(point);offset=0;following=false;MarkDirty();RebuildVisiblePoints();}));};
             from.ValueChanged+=(s,e)=>{if(!updatingFollowTime){following=false;MarkDirty();}};to.ValueChanged+=(s,e)=>{if(!updatingFollowTime){following=false;MarkDirty();}};deviceSearch.TextChanged+=(s,e)=>RebuildVisibleDevices();pointSearch.TextChanged+=(s,e)=>RebuildVisiblePoints();
@@ -106,8 +153,24 @@ namespace ExperimentMonitor {
                 var drop=new ToolStripDropDown();drop.Items.Add(host);drop.Show(columnPick,new System.Drawing.Point(0,columnPick.Height));
             };
             timer.Tick+=(s,e)=>FollowTick();
+            countTimer.Tick+=(s,e)=>{countTimer.Stop();StartCount();};
         }
         static Label MakeLabel(string text){return new Label{Text=text,AutoSize=true,Margin=new Padding(4,7,4,3),ForeColor=Color.FromArgb(88,105,125)};}
+        static Label FixedLabel(string text,ContentAlignment align){return new Label{Text=text,AutoSize=false,AutoEllipsis=true,Dock=DockStyle.Fill,TextAlign=align,Margin=Padding.Empty,ForeColor=Color.FromArgb(88,105,125)};}
+        /// <summary>外框尺寸只在真正需要时改动,并阻止 Resize → 改尺寸 → Resize 的自激循环。</summary>
+        void ResizeOuter(){
+            if(layoutGuard||disposed||outerLayout==null)return;
+            Control viewport=outerLayout.Parent;if(viewport==null||viewport.IsDisposed)return;
+            layoutGuard=true;
+            try{
+                int width=Math.Max(200,viewport.ClientSize.Width);
+                int floor=680;
+                if(storageBody.Visible)floor+=storageBody.GetPreferredSize(new Size(Math.Max(200,width-8),0)).Height+8;
+                int height=Math.Max(viewport.ClientSize.Height,floor);
+                if(outerLayout.Width!=width)outerLayout.Width=width;
+                if(outerLayout.Height!=height)outerLayout.Height=height;
+            }finally{layoutGuard=false;}
+        }
         void RebuildVisibleDevices(){if(disposed)return;rebuildingLists=true;try{string q=deviceSearch.Text.Trim();devices.BeginUpdate();devices.Items.Clear();foreach(string d in allPoints.Select(p=>p.binding.device).Distinct().Where(x=>x.IndexOf(q,StringComparison.OrdinalIgnoreCase)>=0)){int i=devices.Items.Add(d);devices.SetItemChecked(i,selectedDevices.Contains(d));}devices.EndUpdate();}finally{rebuildingLists=false;}}
         void RebuildVisiblePoints(){if(disposed)return;rebuildingLists=true;try{string q=pointSearch.Text.Trim();channels.BeginUpdate();channels.Items.Clear();foreach(Point p in allPoints){string dev=p.binding.device,name=p.name+" · "+PointCatalog.Get(p.name).Label;if(selectedDevices.Contains(dev)&&name.IndexOf(q,StringComparison.OrdinalIgnoreCase)>=0){int i=channels.Items.Add(name);channels.SetItemChecked(i,selectedPoints.Contains(p.name));}}channels.EndUpdate();}finally{rebuildingLists=false;}}
         static void StyleGrid(DataGridView v){v.ColumnHeadersHeight=56;v.ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.AutoSize;v.ColumnHeadersDefaultCellStyle.WrapMode=DataGridViewTriState.True;v.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(232,241,250);v.ColumnHeadersDefaultCellStyle.ForeColor=Color.FromArgb(29,58,89);v.ColumnHeadersDefaultCellStyle.Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold);v.ColumnHeadersDefaultCellStyle.SelectionBackColor=Color.FromArgb(232,241,250);v.DefaultCellStyle.SelectionBackColor=Color.FromArgb(211,231,250);v.DefaultCellStyle.SelectionForeColor=Color.FromArgb(25,52,82);v.AlternatingRowsDefaultCellStyle.BackColor=Color.FromArgb(248,251,254);}
@@ -125,16 +188,66 @@ namespace ExperimentMonitor {
         string Signature(HistoryFilter f){return f.Source+"|"+f.FromUtc.Ticks+"|"+f.ToUtc.Ticks+"|"+String.Join(",",f.Devices.OrderBy(x=>x))+"|"+String.Join(",",f.Points.OrderBy(x=>x));}
         HistoryFilter MakeFilter(){DateTime a=TruncateToDisplayedSecond(from.Value),b=TruncateToDisplayedSecond(to.Value);if(b<=a)throw new InvalidOperationException("结束时间必须晚于开始时间（结束时刻不包含）。");string[] ds=selectedDevices.ToArray();string[] ps=allPoints.Where(p=>selectedDevices.Contains(p.binding.device)&&selectedPoints.Contains(p.name)).Select(p=>p.name).ToArray();if(ds.Length==0||ps.Length==0)throw new InvalidOperationException("请至少选择一台设备和一个测点。");return new HistoryFilter{FromUtc=a.ToUniversalTime(),ToUtc=b.ToUniversalTime(),Source=(string)source.SelectedItem,Devices=ds,Points=ps};}
         async Task<bool> ApplyAndQuery(){return await RunQuery();}
-        sealed class HistoryLoad{public List<List<StoredObservation>> Rounds;public List<StoredObservation> Rows;public int Units;public bool HasMore;public ExperimentHistory.RoundCursor Next;public DateTime FromUtc,ToUtc;}
-        void ResetPaging(){offset=0;pageCursor=null;pageDescending=true;}
-        HistoryLoad LoadPreview(HistoryFilter f,bool roundView,CancellationToken token){
+        sealed class HistoryLoad{public List<List<StoredObservation>> Rounds;public List<StoredObservation> Rows;public int Units;public bool HasMore,HasOlder,HasNewer;public ExperimentHistory.RoundCursor Next;public DateTime FromUtc,ToUtc;}
+        void ResetPaging(){offset=0;}
+        // —— 分页导航:页码只在从最新端连续前进时累加,锚点/最早端进入不显示页码 ——
+        int PageIndexFor(int kind){
+            switch(kind){
+                case NavNewest:return 1;
+                case NavOlder:return pageIndex>0?pageIndex+1:0;
+                case NavNewer:return pageIndex>1?pageIndex-1:0;
+                default:return 0;
+            }
+        }
+        /// <summary>把一次导航意图翻译成"这一页的时间锚点 + 取数方向";锚点在执行这一刻才计算。</summary>
+        void ApplyNav(int kind,DateTime at){
+            following=false;
+            if(!wideView){
+                pendingAnchor=null;
+                if(kind==NavOlder)offset+=pageSize;
+                else if(kind==NavNewer)offset=Math.Max(0,offset-pageSize);
+                else offset=0;
+                return;
+            }
+            offset=0;
+            switch(kind){
+                case NavNewest:pendingAnchor=null;pendingDescending=true;break;
+                case NavOlder:pendingAnchor=pageFrom.HasValue?(DateTime?)pageFrom.Value.AddTicks(-1):null;pendingDescending=true;break;
+                case NavNewer:pendingAnchor=pageTo.HasValue?(DateTime?)pageTo.Value.AddTicks(1):null;pendingDescending=false;break;
+                case NavEarliest:pendingAnchor=LocalDisplaySecondToUtc(TruncateToDisplayedSecond(from.Value));pendingDescending=false;break;
+                default:pendingAnchor=at;pendingDescending=false;break;
+            }
+        }
+        async Task NavTo(int kind,DateTime at){
+            if(queryBusy){queuedNav=kind;queuedAt=at;feedback.Text="查询进行中，已记下这次定位，本次查询结束后自动执行。";return;}
+            queuedNav=-1;
+            int index=PageIndexFor(kind);appliedNav=kind;pageIndex=index;
+            ApplyNav(kind,at);
+            await RunQuery();
+        }
+        HistoryLoad LoadPreview(HistoryFilter f,bool roundView,CancellationToken token,DateTime? anchor,bool descending,int nav){
          if(roundView){
-          ExperimentHistory.RoundPage page=ExperimentHistory.QueryRoundWindow(dataRoot,f,pageCursor,PageSize,pageDescending,token);
-          return new HistoryLoad{Rounds=page.Rounds,Rows=page.Rounds.SelectMany(x=>x).ToList(),Units=page.Rounds.Count,HasMore=page.HasMore,Next=page.Next,FromUtc=page.FromUtc,ToUtc=page.ToUtc};
+          ExperimentHistory.RoundPage page=anchor.HasValue
+              ?ExperimentHistory.QueryRoundWindowFrom(dataRoot,f,anchor.Value,pageSize,!descending,token)
+              :ExperimentHistory.QueryRoundWindow(dataRoot,f,null,pageSize,descending,token);
+          // 方向标记由"这一次是怎么取出来的"推出,不额外探两个方向:
+          // 最新端=没有更新的;更早=一定还有更新的(就是从更新的一页翻过来的);更新=一定还有更早的;
+          // 最早端=没有更早的;跳到该时刻只有"还有更早的"需要真探一次。
+          bool older=false,newer=false;
+          switch(nav){
+           case NavOlder:older=page.HasMore;newer=true;break;
+           case NavNewer:older=true;newer=page.HasMore;break;
+           case NavEarliest:older=false;newer=page.HasMore;break;
+           case NavAtTime:newer=page.HasMore;older=page.Rounds.Count>0&&page.FromUtc>f.FromUtc&&ExperimentHistory.HasRoundBefore(dataRoot,f,page.FromUtc);break;
+           default:older=page.HasMore;newer=false;break;
+          }
+          return new HistoryLoad{Rounds=page.Rounds,Rows=page.Rounds.SelectMany(x=>x).ToList(),Units=page.Rounds.Count,HasMore=page.HasMore,HasOlder=older,HasNewer=newer,Next=page.Next,FromUtc=page.FromUtc,ToUtc=page.ToUtc};
          }
-         List<StoredObservation> rows=ExperimentHistory.QueryPage(dataRoot,f,offset,PageSize+1);
-         bool more=rows.Count>PageSize;if(more)rows.RemoveRange(PageSize,rows.Count-PageSize);
-         return new HistoryLoad{Rows=rows,Units=rows.Count,HasMore=more};
+         List<StoredObservation> rows=ExperimentHistory.QueryPage(dataRoot,f,offset,pageSize+1);
+         bool more=rows.Count>pageSize;if(more)rows.RemoveRange(pageSize,rows.Count-pageSize);
+         HistoryLoad load=new HistoryLoad{Rows=rows,Units=rows.Count,HasMore=more,HasOlder=offset>0,HasNewer=more};
+         if(rows.Count>0){load.FromUtc=rows.Min(r=>r.Utc);load.ToUtc=rows.Max(r=>r.Utc);}
+         return load;
         }
         async Task<bool> RunQuery(){
          if(queryBusy||disposed)return false;if(!Visible)return false;
@@ -143,7 +256,8 @@ namespace ExperimentMonitor {
          queryToken=new CancellationTokenSource();CancellationTokenSource cts=queryToken;CancellationToken cancel=cts.Token;
          try{
           HistoryFilter f=MakeFilter();string signature=Signature(f);bool roundView=wideView;
-          HistoryLoad data=await Task.Run(()=>LoadPreview(f,roundView,cancel));
+          DateTime? anchor=pendingAnchor;bool descending=pendingDescending;int nav=appliedNav;
+          HistoryLoad data=await Task.Run(()=>LoadPreview(f,roundView,cancel,anchor,descending,nav));
           if(disposed||token!=generation||(string)source.SelectedItem!=f.Source||roundView!=wideView)return false;
           watch.Stop();lastQueryMs=watch.ElapsedMilliseconds;
           lastLoad=data;summaryFilter=f;summaryRoundView=roundView;summaryUnits=data.Units;
@@ -151,26 +265,38 @@ namespace ExperimentMonitor {
           if(roundView)foreach(List<StoredObservation> group in data.Rounds){bool good=false;foreach(StoredObservation r in group)if(r.Quality=="good"){good=true;break;}if(good)summaryValid++;else summaryTimeout++;}
           RenderRows();
           appliedGeneration=token;previewSignature=signature;filterDirty=false;
-          if(roundView)pageCursor=data.Next;
-          next.Enabled=data.HasMore;
-          next.Text=roundView&&!pageDescending?"较新 200 条":"更早 200 条";
-          oldest.Enabled=roundView&&pageDescending;
-          RenderSummary();RenderFeedback(data);
-          StartCount(f,signature,roundView);
+          hasOlder=data.HasOlder;hasNewer=data.HasNewer;
+          pageFrom=roundView&&data.Units>0?(DateTime?)data.FromUtc:null;
+          pageTo=roundView&&data.Units>0?(DateTime?)data.ToUtc:null;
+          RenderSummary();RenderFeedback(data);RenderPageBar();
+          ScheduleCount(f,signature,roundView);
           return true;}
          catch(OperationCanceledException){if(!disposed&&token==generation)feedback.Text="查询已取消；筛选条件已保留。";return false;}
          catch(Exception ex){if(!disposed&&token==generation){grid.Rows.Clear();chart.Clear();feedback.Text="查询失败："+ex.Message+"；请重试。当前筛选条件已保留。";summary.Text="记录查询不可用";}return false;}
-         finally{queryBusy=false;if(queryToken==cts)queryToken=null;try{cts.Dispose();}catch{}stopQuery.Visible=false;bool rerun=(pendingFollowQuery&&following)||(pendingViewQuery&&!filterDirty);pendingFollowQuery=pendingViewQuery=false;if(!disposed){query.Enabled=true;if(rerun&&Visible)try{BeginInvoke((Action)StartQuery);}catch{StartQuery();}}}}
+         finally{queryBusy=false;if(queryToken==cts)queryToken=null;try{cts.Dispose();}catch{}stopQuery.Visible=false;bool rerun=(pendingFollowQuery&&following)||(pendingViewQuery&&!filterDirty);pendingFollowQuery=pendingViewQuery=false;
+          int queued=queuedNav;DateTime queuedAtValue=queuedAt;queuedNav=-1;
+          if(!disposed){query.Enabled=true;
+           if(queued>=0&&Visible)try{BeginInvoke((Action)(async()=>{await NavTo(queued,queuedAtValue);}));}catch{}
+           else if(rerun&&Visible)try{BeginInvoke((Action)StartQuery);}catch{StartQuery();}}}}
         void RenderRows(){
          if(lastLoad==null||summaryFilter==null)return;
          HistoryLoad data=lastLoad;HistoryFilter filter=summaryFilter;
-         grid.Rows.Clear();chart.Clear();
-         List<StoredObservation> rows=data.Rows??new List<StoredObservation>();
-         if(wideView)BuildWidePreview(data.Rounds??new List<List<StoredObservation>>(),filter);else BuildDetailPreview(rows);
-         if(emptyHint!=null)emptyHint.Visible=rows.Count==0;
-         foreach(StoredObservation r in rows)chart.Add(new Observation{Point=r.Point,Utc=r.Utc,Number=r.Number,Quality=r.Quality});
-         chart.SelectPoints(filter.Points);chart.Height=chart.RequiredHeight;
+         // 填表期间挂起布局:200 轮 × 30 多列每次重建都要几百毫秒,不挂起会把界面拖住。
+         bool gridWasVisible=grid.Visible;grid.Visible=false;grid.SuspendLayout();
+         try{
+          grid.Rows.Clear();
+          List<StoredObservation> rows=data.Rows??new List<StoredObservation>();
+          if(wideView)BuildWidePreview(data.Rounds??new List<List<StoredObservation>>(),filter);else BuildDetailPreview(rows);
+          if(emptyHint!=null)emptyHint.Visible=rows.Count==0;
+          // 历史趋势子标签没打开时不必把这页灌进图表:切过去会按整个筛选范围重画。
+          if(TrendTabVisible()){
+           chart.Clear();
+           foreach(StoredObservation r in rows)chart.Add(new Observation{Point=r.Point,Utc=r.Utc,Number=r.Number,Quality=r.Quality});
+           chart.SelectPoints(filter.Points);chart.Height=chart.RequiredHeight;
+          }
+         }finally{grid.ResumeLayout(false);if(gridWasVisible)grid.Visible=true;}
         }
+        bool TrendTabVisible(){return recordTabs!=null&&recordTabs.SelectedIndex==1&&recordTabs.Visible;}
         void RenderSummary(){
          if(summaryFilter==null)return;
          string src=summaryFilter.Source=="serial"?"实机":"模拟";
@@ -179,16 +305,46 @@ namespace ExperimentMonitor {
          if(summaryRoundView)text+="　·　有效轮 "+summaryValid+" / 超时轮 "+summaryTimeout;
          summary.Text=text;
         }
+        /// <summary>分页条:页码只反映"从最新端连续翻了多远";两个方向按钮直接用"还有没有"驱动,不靠点击意图推。</summary>
+        void RenderPageBar(){
+         if(summaryFilter==null)return;
+         try{
+          bool spanOk=lastLoad!=null&&summaryUnits>0&&lastLoad.FromUtc>DateTime.MinValue&&lastLoad.FromUtc<=lastLoad.ToUtc;
+          double minutes=spanOk?(lastLoad.ToUtc-lastLoad.FromUtc).TotalMinutes:0;
+          string span=spanOk?lastLoad.FromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")+" – "+lastLoad.ToUtc.ToLocalTime().ToString("HH:mm:ss")+"（"+minutes.ToString("0")+" 分钟）":"—";
+          string tail=!summaryRoundView?"":(hasOlder?"还有更早的数据":"已到范围最早")+(hasNewer?" · 还有更新的数据":"");
+          coverage.Text=summaryUnits<=0?"本页没有记录":"覆盖 "+span+(tail.Length>0?"　·　"+tail:"");
+          pageInfo.Text=PageLabelText();
+          oldest.Enabled=summaryRoundView;latest.Enabled=summaryRoundView;jumpStart.Enabled=summaryRoundView;jumpTo.Enabled=summaryRoundView;
+          next.Text="‹ 更早";newer.Text="更新 ›";
+          // 数量与单位由 pageInfo 统一表达,按钮只说方向,避免在 960 宽的窄窗里被截断。
+          next.Enabled=hasOlder;newer.Enabled=hasNewer;
+         }catch(Exception ex){feedback.Text="[分页条] "+ex.GetType().Name+": "+ex.Message;}
+        }
+        string PageLabelText(){
+         if(!summaryRoundView)return summaryUnits<=0?"无记录":"第 "+(offset+1)+" – "+(offset+summaryUnits)+" 条";
+         string units="本页 "+summaryUnits+" 轮";
+         if(pageIndex>0)return "第 "+pageIndex+" 页　·　"+units;
+         if(!hasOlder)return "范围内最早　·　"+units;
+         return "更早的一段　·　"+units;
+        }
         void RenderFeedback(HistoryLoad data){
          if(summaryUnits==0){feedback.Text="当前筛选范围没有记录。";return;}
          string span=data!=null&&data.FromUtc<=data.ToUtc?data.FromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")+" ~ "+data.ToUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"):"";
          string hidden=hideTimeoutRounds&&summaryRoundView?"　·　已隐藏仅超时的轮次":"";
          feedback.Text=(wideView?"当前页显示完整采集轮；":"当前页显示逐测点明细；")+"本页时间 "+span+"　·　耗时 "+lastQueryMs+" ms"+hidden+"　·　（本地时间；结束时刻不包含）";
         }
-        /// <summary>范围总量在后台统计,不阻塞记录出数;跟随模式下范围持续滑动,不做全量统计。</summary>
-        async void StartCount(HistoryFilter f,string signature,bool roundView){
-         if(disposed||following||countBusy)return;
-         if(signature==countSignature&&countTotal>=0)return;
+        /// <summary>范围总量在后台统计:页面稳定 1.5 s 后才做,避免全量 GROUP BY 和翻页查询抢同一块磁盘。</summary>
+        void ScheduleCount(HistoryFilter f,string signature,bool roundView){
+            countFilter=f;countRoundView=roundView;
+            if(following)return;
+            if(signature==countSignature&&countTotal>=0)return;
+            countTimer.Stop();countTimer.Start();
+        }
+        async void StartCount(){
+         if(disposed||following||countBusy||countFilter==null)return;
+         HistoryFilter f=countFilter;bool roundView=countRoundView;string signature=Signature(f);
+         if(countTotal>=0&&signature==countSignature)return;
          countBusy=true;countTotal=-1;countSignature=signature;
          try{long total=await Task.Run(()=>roundView?ExperimentHistory.CountRounds(dataRoot,f):ExperimentHistory.Count(dataRoot,f));if(disposed)return;countTotal=total;RenderSummary();}
          catch{}finally{countBusy=false;}
@@ -260,6 +416,9 @@ namespace ExperimentMonitor {
             finally{inventoryBusy=false;}
         }
         public sealed class PartitionSetting{public int Days{get;set;}public int SerialDays{get;set;}public int SimulationDays{get;set;}}
-        void DisposePage(){if(disposed)return;disposed=true;generation++;timer.Stop();timer.Dispose();if(exportCancel!=null)try{exportCancel.Cancel();}catch{} }
+        void DisposePage(){if(disposed)return;disposed=true;generation++;timer.Stop();timer.Dispose();countTimer.Stop();countTimer.Dispose();if(exportCancel!=null)try{exportCancel.Cancel();}catch{} }
     }
 }
+
+
+

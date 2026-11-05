@@ -36,6 +36,23 @@ using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new 
  for(int offset=0;offset<400;offset+=50){long chunkTotal;List<List<StoredObservation>> chunk=ExperimentHistory.QueryRoundPage(pagingRoot,winFilter,offset,50,out chunkTotal,false);foreach(List<StoredObservation> group in chunk)oldKeys.Add(group[0].Session+"|"+group[0].Round);}
  Check(oldKeys.Count==400&&walked.OrderBy(x=>x,StringComparer.Ordinal).SequenceEqual(oldKeys.OrderBy(x=>x,StringComparer.Ordinal)),"键集翻页与旧分组实现轮次键完全一致");tests++;
  Check(ExperimentHistory.CountRounds(pagingRoot,winFilter)==400,"范围采集轮总数精确");tests++;
+ // 锚点定位:落在一轮采样的中途时必须返回完整的一整轮(锚点之前的记录不能丢),且首条记录早于锚点。
+ DateTime baseAnchor=new DateTime(2026,10,5,0,0,0,DateTimeKind.Utc);
+ DateTime midRound=baseAnchor.AddMinutes(100).AddTicks(1);
+ ExperimentHistory.RoundPage midPage=ExperimentHistory.QueryRoundWindowFrom(pagingRoot,winFilter,midRound,5,true,CancellationToken.None);
+ Check(midPage.Rounds.Count==5&&midPage.Rounds[0].Count==3&&midPage.Rounds[0][0].Utc.Ticks<midRound.Ticks,"锚点落在轮次中间时仍返回完整的一整轮");tests++;
+ // 锚点落在无数据空档期时,落到该时刻之后最近的真实轮次,不能空白。
+ DateTime gapAnchor=baseAnchor.AddMinutes(100).AddSeconds(30);
+ ExperimentHistory.RoundPage gapPage=ExperimentHistory.QueryRoundWindowFrom(pagingRoot,winFilter,gapAnchor,5,true,CancellationToken.None);
+ Check(gapPage.Rounds.Count==5&&gapPage.Rounds[0].Count==3&&gapPage.Rounds[0][0].Round==101&&gapPage.Rounds[0][0].Utc>=gapAnchor,"锚点落在空档期时落到该时刻之后最近的真实轮次");tests++;
+ // 锚点=范围开始时刻:与旧分组实现的升序首页轮次键完全一致。
+ ExperimentHistory.RoundPage anchorPage=ExperimentHistory.QueryRoundWindowFrom(pagingRoot,winFilter,winFilter.FromUtc,7,true,CancellationToken.None);
+ long anchorOldTotal;List<List<StoredObservation>> anchorOld=ExperimentHistory.QueryRoundPage(pagingRoot,winFilter,0,7,out anchorOldTotal,true);
+ Check(anchorPage.Rounds.Count==7&&anchorPage.Rounds.Select(g=>g[0].Session+"|"+g[0].Round).SequenceEqual(anchorOld.Select(g=>g[0].Session+"|"+g[0].Round)),"锚点定位与旧分组实现的升序首页轮次键一致");tests++;
+ Check(ExperimentHistory.QueryRoundWindowFrom(pagingRoot,winFilter,winFilter.FromUtc,500,true,CancellationToken.None).Rounds.Count==400,"锚点定位按指定每页轮数返回完整轮次");tests++;
+ // "还能不能更早"由一次最小窗口查询回答,不依赖点击意图。
+ Check(!ExperimentHistory.HasRoundBefore(pagingRoot,winFilter,baseAnchor.AddMinutes(1)),"范围最早端之前没有更早的采集轮");tests++;
+ Check(ExperimentHistory.HasRoundBefore(pagingRoot,winFilter,baseAnchor.AddMinutes(2)),"范围中间存在更早的采集轮");tests++;
  // 跨分期库的一轮只算一轮:同一 session+round 的记录分片落在两个库文件里。
  string splitRoot=Path.Combine(Path.GetTempPath(),"experiment-split-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(Path.Combine(splitRoot,"serial"));
  string splitA=Path.Combine(splitRoot,"serial-split-a.db"),splitB=Path.Combine(splitRoot,"serial","split-b.db");

@@ -135,12 +135,15 @@ namespace ExperimentMonitor {
     using(var c=OpenRead(file))using(var q=new SQLiteCommand("SELECT COALESCE(MAX(id),0) FROM observations",c))upper=Convert.ToInt64(q.ExecuteScalar());
     if(seedMode==1){time=seedTime;id=seedId;}
     else if(seedMode==2){time=seedTime;id=ascending?long.MinValue:long.MaxValue;}
+    // 3=时间锚点(含该时刻):用于"跳到该时刻",先取到包含锚点的那一轮,再由 QueryRoundWindowFrom 补齐整轮。
+    else if(seedMode==3){time=seedTime;id=ascending?long.MinValue:long.MaxValue;}
    }
    public StoredObservation Peek(){
     if(index<batch.Count)return batch[index];if(ended)return null;
     batch.Clear();index=0;
     using(var c=OpenRead(File))using(var q=Command(c,filter,light?LightColumns:"SELECT *",upper)){
      if(seedMode==2)q.CommandText+=ascending?" AND (utc_ticks>@cursorTime)":" AND (utc_ticks<@cursorTime)";
+     else if(seedMode==3)q.CommandText+=ascending?" AND (utc_ticks>=@cursorTime)":" AND (utc_ticks<=@cursorTime)";
      else q.CommandText+=ascending?" AND (utc_ticks>@cursorTime OR (utc_ticks=@cursorTime AND id>@cursorId))":" AND (utc_ticks<@cursorTime OR (utc_ticks=@cursorTime AND id<@cursorId))";
      q.CommandText+=ascending?" ORDER BY utc_ticks ASC,id ASC LIMIT "+BatchSize.ToString(CultureInfo.InvariantCulture):" ORDER BY utc_ticks DESC,id DESC LIMIT "+BatchSize.ToString(CultureInfo.InvariantCulture);
      q.Parameters.AddWithValue("@cursorTime",time);q.Parameters.AddWithValue("@cursorId",id);
@@ -214,6 +217,10 @@ namespace ExperimentMonitor {
     }
     cursors.Add(new Cursor(file,filter,!descending,seedTime,seedId,mode));
    }
+   return Collect(cursors,limit,descending,cancellationToken);
+  }
+  static RoundPage Collect(List<Cursor> cursors,int limit,bool descending,CancellationToken cancellationToken){
+   var page=new RoundPage();
    var groups=new List<List<StoredObservation>>();var seen=new Dictionary<RoundIdentity,int>();
    long lastTicks=0,lastId=0;string lastFile=null;DateTime minUtc=DateTime.MaxValue,maxUtc=DateTime.MinValue;
    while(true){
@@ -241,6 +248,36 @@ namespace ExperimentMonitor {
    if(lastFile!=null)page.Next=new RoundCursor{UtcTicks=lastTicks,Id=lastId,Database=lastFile};
    if(minUtc<=maxUtc){page.FromUtc=minUtc;page.ToUtc=maxUtc;}
    return page;
+  }
+  /// <summary>按时间锚点定位一页采集轮:返回包含该时刻的整轮起算(锚点落在空档期时取其后的第一轮)。</summary>
+  public static RoundPage QueryRoundWindowFrom(string root,HistoryFilter filter,DateTime anchorUtc,int limit,bool ascending,CancellationToken cancellationToken=default(CancellationToken)){
+   if(filter==null)throw new ArgumentNullException("filter");
+   if(limit<1||limit>10000)throw new ArgumentOutOfRangeException("limit");
+   var files=Databases(root,filter.Source).ToArray();
+   if(files.Length==0)return new RoundPage();
+   long ticks=anchorUtc.ToUniversalTime().Ticks;
+   // 升序锚点可能把一轮从中间切开。先用"只要 1 轮"的探测拿到这一轮真实的起始时刻,再用起始时刻
+   // 取完整一页:探测那一步只读一轮,比先取一整页再重取便宜得多,结果也一定是一整轮。
+   if(ascending){
+    RoundPage probe=WindowFrom(files,filter,ticks,1,true,cancellationToken);
+    if(probe.Rounds.Count>0&&probe.Rounds[0].Count>0){
+     DateTime? start=null;
+     foreach(StoredObservation row in probe.Rounds[0])if(row.RoundStartedUtc.HasValue&&(!start.HasValue||row.RoundStartedUtc.Value<start.Value))start=row.RoundStartedUtc.Value;
+     if(start.HasValue&&start.Value.Ticks<ticks)ticks=start.Value.Ticks;
+    }
+   }
+   return WindowFrom(files,filter,ticks,limit,ascending,cancellationToken);
+  }
+  static RoundPage WindowFrom(string[] files,HistoryFilter filter,long seedTicks,int limit,bool ascending,CancellationToken cancellationToken){
+   var cursors=files.Select(file=>new Cursor(file,filter,ascending,seedTicks,0,3)).ToList();
+   return Collect(cursors,limit,!ascending,cancellationToken);
+  }
+  /// <summary>范围内是否存在严格早于该时刻的采集轮。用一次最小窗口查询回答,不依赖点击意图。</summary>
+  public static bool HasRoundBefore(string root,HistoryFilter f,DateTime utc){
+   if(f==null)throw new ArgumentNullException("filter");
+   var files=Databases(root,f.Source).ToArray();
+   if(files.Length==0)return false;
+   return WindowFrom(files,f,utc.ToUniversalTime().Ticks-1,1,false,CancellationToken.None).Rounds.Count>0;
   }
   /// <summary>范围内采集轮总数(精确值)。跨分期库的同一轮只算一次。用于摘要展示,应放在后台线程执行。</summary>
   public static long CountRounds(string root,HistoryFilter f){
@@ -279,5 +316,7 @@ namespace ExperimentMonitor {
   public static long Count(string root,HistoryFilter f){long n=0;foreach(string file in Databases(root,f.Source))using(var c=OpenRead(file))using(var q=Command(c,f,"SELECT COUNT(*)",long.MaxValue))n+=Convert.ToInt64(q.ExecuteScalar());return n;}
  }
 }
+
+
 
 

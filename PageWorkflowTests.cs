@@ -36,6 +36,22 @@ namespace ExperimentMonitor {
                     Field<DateTimePicker>(history,"from").Value=DateTime.Today.AddDays(-1);Field<DateTimePicker>(history,"to").Value=DateTime.Today;
                     Field<Button>(history,"query").PerformClick();await Wait(()=>!Field<bool>(history,"queryBusy"),"旧日期范围查询未完成");DataGridView grid=Field<DataGridView>(history,"grid");
                     check(grid.Rows.Count==1&&Field<Label>(history,"summary").Text.Contains("历史查询"),"记录页显式旧日期查询显示一整轮历史");
+                    // 分页条:六个按钮与两块文字必须真实可见,不能只在代码里存在。
+                    Func<Control,bool> visibleWithin=c=>{if(c==null||!c.Visible||c.Width<=0||c.Height<=0)return false;System.Drawing.Rectangle bounds=c.RectangleToScreen(c.ClientRectangle);for(Control parent=c.Parent;parent!=null;parent=parent.Parent){if(!parent.RectangleToScreen(parent.ClientRectangle).Contains(bounds))return false;if(Object.ReferenceEquals(parent,form))return true;}return false;};
+                    var barButtons=new[]{Field<Button>(history,"oldest"),Field<Button>(history,"next"),Field<Button>(history,"newer"),Field<Button>(history,"latest"),Field<Button>(history,"jumpStart"),Field<Button>(history,"jumpTo")};
+                    bool barVisible=true;foreach(Button button in barButtons)if(!visibleWithin(button))barVisible=false;
+                    check(barVisible,"分页条六个按钮完整位于可视区域内，未被父容器裁切");
+                    bool barSized=true;foreach(Button button in barButtons)if(button.Width<=45||button.Height<22)barSized=false;
+                    check(barSized,"分页条按钮尺寸可用");
+                    Label pageInfo=Field<Label>(history,"pageInfo"),coverage=Field<Label>(history,"coverage");
+                    check(visibleWithin(pageInfo)&&pageInfo.Text.Contains("轮"),"分页条显示本页轮数");
+                    check(visibleWithin(coverage)&&coverage.Text.Contains("覆盖"),"分页条显示本页覆盖时间段");
+                    check(!Field<Button>(history,"next").Enabled,"范围内只有一轮时“更早”不可用");
+                    Field<Button>(history,"latest").PerformClick();await Wait(()=>!Field<bool>(history,"queryBusy"),"回到最新页未完成");
+                    check(grid.Rows.Count==1,"回到最新页仍是一整轮");
+                    Field<DateTimePicker>(history,"anchorTime").Value=DateTime.Today.AddDays(-1).AddSeconds(1);
+                    Field<Button>(history,"jumpTo").PerformClick();await Wait(()=>!Field<bool>(history,"queryBusy"),"跳到该时刻未完成");
+                    check(grid.Rows.Count==1,"跳到该时刻返回包含该范围数据的整轮");
                     Find<CheckBox>(history,c=>c.Text.Contains("采集轮宽表")).Checked=false;await Wait(()=>!Field<bool>(history,"queryBusy")&&grid.Rows.Count==37,"明细视图未查询全部测点");
                     check(grid.Rows.Count==37,"宽表与明细切换由一轮展开为37条实际记录");
                     var toggle=Field<LinkLabel>(history,"storageToggle");typeof(LinkLabel).GetMethod("OnLinkClicked",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(toggle,new object[]{new LinkLabelLinkClickedEventArgs(toggle.Links[0])});
