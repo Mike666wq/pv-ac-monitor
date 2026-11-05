@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -93,11 +94,10 @@ namespace ExperimentMonitor {
                     await Wait(()=>!Field<bool>(history,"queryBusy"),"切回宽表未完成");
                     MethodInfo setAllColumns=typeof(HistoryPage).GetMethod("SetAllColumns",BindingFlags.Instance|BindingFlags.NonPublic);
                     check(setAllColumns!=null,"列选择提供一键全选/清空入口");
-                    setAllColumns.Invoke(history,new object[]{true});
-                    await Wait(()=>!Field<bool>(history,"queryBusy"),"全选列未完成");
+                    string[] columnScope=Field<PointPicker>(history,"picker").SelectedPoints;
+                    setAllColumns.Invoke(history,new object[]{true,columnScope});
                     int allColumns=grid.Columns.Count;
-                    setAllColumns.Invoke(history,new object[]{false});
-                    await Wait(()=>!Field<bool>(history,"queryBusy"),"清空列未完成");
+                    setAllColumns.Invoke(history,new object[]{false,columnScope});
                     check(allColumns>2&&grid.Columns.Count==2,"列选择的一键清空只留下时间与采集轮两列");
                     check(Field<Label>(history,"feedback").Text.Contains("未勾选"),"清空全部列后给出提示，不静默显示全部");
                     // 回归：在别的子标签下触发查询，不能把数据表永久留在隐藏状态。
@@ -105,6 +105,39 @@ namespace ExperimentMonitor {
                     Field<Button>(history,"query").PerformClick();await Wait(()=>!Field<bool>(history,"queryBusy"),"子标签下的查询未完成");
                     inner.SelectedIndex=0;Application.DoEvents();
                     check(grid.Visible&&grid.Rows.Count>0,"在实验段子标签下查询后，回到数据记录仍显示表格数据");
+                    // —— 0.6.0:统一的测点选择器 / 自动应用 / 统计排队 ——
+                    PointPicker picker=Field<PointPicker>(history,"picker");
+                    check(picker!=null,"记录页左栏是统一的测点选择器");
+                    TreeView tree=(TreeView)typeof(PointPicker).GetField("tree",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(picker);
+                    TextBox pickerSearch=(TextBox)typeof(PointPicker).GetField("search",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(picker);
+                    check(tree!=null&&tree.Nodes.Count==4,"测点树按设备分组");
+                    check(picker.SelectedPoints.Length==37,"默认勾选全部测点");
+                    check(tree.Nodes[0].Text.StartsWith("DS666（"),"设备节点显示已选/总数");
+                    HistoryFilter scoped=(HistoryFilter)typeof(HistoryPage).GetMethod("MakeFilter",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(history,null);
+                    check(scoped.Devices.Length==0,"记录页的查询条件不再带冗余的设备过滤");
+                    check(scoped.Points.Length==picker.SelectedPoints.Length,"查询条件里的测点与选择器一致");
+                    // 取消勾选一个测点:去抖后自动重新查询,不用再点“查询记录”。
+                    string dropped=picker.SelectedPoints[0];
+                    tree.Nodes[0].Nodes[0].Checked=false;
+                    await Wait(()=>!Field<bool>(history,"queryBusy")&&!Field<bool>(history,"filterDirty"),"取消勾选后没有自动重新查询");
+                    check(!picker.SelectedPoints.Contains(dropped),"取消勾选后测点集合已更新");
+                    check(((HistoryFilter)typeof(HistoryPage).GetMethod("MakeFilter",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(history,null)).Points.Length==36,"自动应用后查询条件跟随选择");
+                    // 搜索 + 清空 = 旧的设备级批量取消勾选
+                    int ds666=points.Count(p=>p.binding.device=="DS666");
+                    pickerSearch.Text="DS666";await Task.Delay(80);
+                    check(picker.ListedPoints.Length==ds666,"按设备名搜索能筛出该设备的全部测点");
+                    picker.SetAllVisible(false);
+                    await Wait(()=>!Field<bool>(history,"queryBusy"),"清空可见测点后未自动应用");
+                    check(picker.SelectedPoints.Length==37-ds666,"搜索+清空等价于按设备取消勾选");
+                    pickerSearch.Text="";await Task.Delay(80);
+                    picker.SetAllVisible(true);
+                    await Wait(()=>!Field<bool>(history,"queryBusy"),"全选后未自动应用");
+                    check(picker.SelectedPoints.Length==37,"全选恢复全部测点");
+                    // 范围统计:改条件后不显示上一轮的旧数字,并且最终更新到当前范围。
+                    Field<DateTimePicker>(history,"from").Value=DateTime.Today.AddDays(-1);Field<DateTimePicker>(history,"to").Value=DateTime.Today;
+                    Field<Button>(history,"query").PerformClick();await Wait(()=>!Field<bool>(history,"queryBusy"),"范围统计前的查询未完成");
+                    check(!Field<Label>(history,"summary").Text.Contains("筛选共 0 轮"),"查询完成后摘要不显示上一轮范围的旧轮数");
+                    await Wait(()=>Field<Label>(history,"summary").Text.Contains("筛选共 1 轮"),"范围统计最终没有更新到当前范围");
                 }catch(Exception ex){failure=ex;}finally{form.Close();}};
                 Application.Run(form);
             }
@@ -154,6 +187,7 @@ namespace ExperimentMonitor {
         }
     }
 }
+
 
 
 

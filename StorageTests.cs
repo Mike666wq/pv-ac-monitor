@@ -36,6 +36,10 @@ using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new 
  for(int offset=0;offset<400;offset+=50){long chunkTotal;List<List<StoredObservation>> chunk=ExperimentHistory.QueryRoundPage(pagingRoot,winFilter,offset,50,out chunkTotal,false);foreach(List<StoredObservation> group in chunk)oldKeys.Add(group[0].Session+"|"+group[0].Round);}
  Check(oldKeys.Count==400&&walked.OrderBy(x=>x,StringComparer.Ordinal).SequenceEqual(oldKeys.OrderBy(x=>x,StringComparer.Ordinal)),"键集翻页与旧分组实现轮次键完全一致");tests++;
  Check(ExperimentHistory.CountRounds(pagingRoot,winFilter)==400,"范围采集轮总数精确");tests++;
+  // 设备条件是冗余的:测点集合已经隐含设备,带上 device IN 与不带的轮数必须一致(记录页据此去掉设备过滤)。
+  HistoryFilter withDevice=winFilter.Copy();withDevice.Devices=new[]{"PLC"};
+  Check(ExperimentHistory.CountRounds(pagingRoot,withDevice)==ExperimentHistory.CountRounds(pagingRoot,winFilter),"设备过滤对轮数没有额外影响（冗余条件）");tests++;
+  Check(ExperimentHistory.Count(pagingRoot,withDevice)==ExperimentHistory.Count(pagingRoot,winFilter),"设备过滤对记录条数没有额外影响（冗余条件）");tests++;
  // 锚点定位:落在一轮采样的中途时必须返回完整的一整轮(锚点之前的记录不能丢),且首条记录早于锚点。
  DateTime baseAnchor=new DateTime(2026,10,5,0,0,0,DateTimeKind.Utc);
  DateTime midRound=baseAnchor.AddMinutes(100).AddTicks(1);
@@ -111,5 +115,6 @@ using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new 
  return tests;}finally{ExperimentExport.RowsPerVolume=100000;Directory.Delete(root,true);}}
  }
 }
+
 
 

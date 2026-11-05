@@ -15,9 +15,7 @@ namespace ExperimentMonitor {
         readonly DateTimePicker from=new DateTimePicker{Format=DateTimePickerFormat.Custom,CustomFormat="yyyy-MM-dd HH:mm:ss",Width=210};
         readonly DateTimePicker to=new DateTimePicker{Format=DateTimePickerFormat.Custom,CustomFormat="yyyy-MM-dd HH:mm:ss",Width=210};
         readonly ComboBox source=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=118};
-        readonly CheckedListBox devices=new CheckedListBox{Dock=DockStyle.Fill,CheckOnClick=true,IntegralHeight=false};
-        readonly CheckedListBox channels=new CheckedListBox{Dock=DockStyle.Fill,CheckOnClick=true,IntegralHeight=false};
-        readonly TextBox deviceSearch=new TextBox{Dock=DockStyle.Fill}; readonly TextBox pointSearch=new TextBox{Dock=DockStyle.Fill};
+        readonly PointPicker picker;
         readonly DataGridView grid=new DataGridView{Dock=DockStyle.Fill,ReadOnly=true,AllowUserToAddRows=false,AllowUserToDeleteRows=false,RowHeadersVisible=false,MultiSelect=false,SelectionMode=DataGridViewSelectionMode.FullRowSelect,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill,BackgroundColor=Color.White,BorderStyle=BorderStyle.None,EnableHeadersVisualStyles=false};
         // —— 实验段 / 测点统计 ——
         readonly DataGridView sessionTable=new DataGridView{Dock=DockStyle.Fill,ReadOnly=true,AllowUserToAddRows=false,AllowUserToDeleteRows=false,RowHeadersVisible=false,MultiSelect=false,SelectionMode=DataGridViewSelectionMode.FullRowSelect,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill,BackgroundColor=Color.White,BorderStyle=BorderStyle.None,EnableHeadersVisualStyles=false,RowTemplate={Height=28}};
@@ -62,12 +60,15 @@ namespace ExperimentMonitor {
         DateTime? pendingAnchor,pageFrom,pageTo;bool pendingDescending=true,hasOlder,hasNewer,layoutGuard;DateTime queuedAt;
         readonly CheckBox hideTimeout=new CheckBox{Text="隐藏仅超时的轮次",Checked=false,AutoSize=true,Margin=new Padding(8,7,8,0)};
         bool countBusy,hideTimeoutRounds,noPointColumns;ToolStripDropDown columnDrop;string countSignature="";long countTotal=-1;long lastQueryMs;CancellationTokenSource queryToken;HistoryFilter summaryFilter,countFilter;int summaryUnits,summaryValid,summaryTimeout;bool summaryRoundView,countRoundView;HistoryLoad lastLoad;readonly System.Windows.Forms.Timer countTimer=new System.Windows.Forms.Timer{Interval=1500};
-        readonly HashSet<string> selectedDevices=new HashSet<string>(StringComparer.Ordinal),selectedPoints=new HashSet<string>(StringComparer.Ordinal);
-        CancellationTokenSource exportCancel; bool following=true,explicitSource,queryBusy,pendingViewQuery,pendingFollowQuery,disposed,entered,inventoryBusy,filterDirty=true,wideView=true,rebuildingLists,settingSource,updatingFollowTime; int offset,generation,appliedGeneration,partitionDays=30,serialPartitionDays=30,simulationPartitionDays=30; long lastCommitted=-1,lastCompletedCaptures=-1; string activeSource="simulation",previewSignature=""; DateTime lastInventory=DateTime.MinValue;
+        bool countPending,countFailed;
+        // 筛选变化后去抖自动应用:一次勾选只查一次,不等用户再点“查询记录”。
+        readonly System.Windows.Forms.Timer applyTimer=new System.Windows.Forms.Timer{Interval=400};
+        CancellationTokenSource exportCancel; bool following=true,explicitSource,queryBusy,pendingViewQuery,pendingFollowQuery,disposed,entered,inventoryBusy,filterDirty=true,wideView=true,settingSource,updatingFollowTime; int offset,generation,appliedGeneration,partitionDays=30,serialPartitionDays=30,simulationPartitionDays=30; long lastCommitted=-1,lastCompletedCaptures=-1; string activeSource="simulation",previewSignature=""; DateTime lastInventory=DateTime.MinValue;
 
         public HistoryPage(List<Point> points,string root,MonitorEngine engine) {
             if(engine==null)throw new ArgumentNullException("engine");this.engine=engine;if(points==null)throw new ArgumentNullException("points");allPoints=points;appRoot=root;dataRoot=Path.Combine(root,"data","storage");Dock=DockStyle.Fill;AutoScaleMode=AutoScaleMode.Dpi;BackColor=Color.FromArgb(239,244,249);Padding=new Padding(8);
             from.Value=DateTime.Now.AddHours(-2);to.Value=DateTime.Now;
+            picker=new PointPicker(allPoints);picker.SetSelection(allPoints.Select(p=>p.name));
             source.Items.AddRange(new object[]{"serial","simulation"});source.SelectedItem="simulation";source.FormattingEnabled=true;source.Format+=(s,e)=>{string v=e.ListItem as string;e.Value=v=="serial"?"实机":"模拟";};
             BuildLayout();LoadPartitionSetting();WireEvents();StyleGrid(grid);StyleGrid(inventory);UiTheme.Apply(this);VisibleChanged+=OnVisibleChanged;Disposed+=(s,e)=>DisposePage();
             foreach(var pair in LimitStore.Load(appRoot))limits[pair.Key]=pair.Value;
@@ -82,10 +83,10 @@ namespace ExperimentMonitor {
             var quick=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=128};quick.Items.AddRange(new object[]{"快捷范围…","最近 15 分钟","最近 1 小时","最近 2 小时","今天"});quick.SelectedIndex=0;quick.SelectedIndexChanged+=(s,e)=>{if(quick.SelectedIndex==0)return;DateTime now=DateTime.Now;to.Value=NextLocalSecond(now);from.Value=quick.SelectedIndex==1?now.AddMinutes(-15):quick.SelectedIndex==2?now.AddHours(-1):quick.SelectedIndex==3?now.AddHours(-2):now.Date;MarkDirty();quick.SelectedIndex=0;};filters.Controls.Add(new RoundedInputHost(quick){Width=140});filters.Controls.Add(query);filters.Controls.Add(follow);filters.Controls.Add(openTrends);filters.Controls.Add(columnPick);outer.Controls.Add(filters,0,1);
             var summaryRow=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=true,BackColor=Color.White,Padding=new Padding(8,4,4,2)};summaryRow.Controls.Add(summary);outer.Controls.Add(summaryRow,0,2);
             var split=new SplitContainer{Dock=DockStyle.Fill,Size=new Size(800,500),Panel1MinSize=190,Panel2MinSize=380,SplitterDistance=258,BackColor=BackColor};outer.Controls.Add(split,0,3);
-            var pickLayout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=6,BackColor=Color.White,Padding=new Padding(5)};pickLayout.RowStyles.Add(new RowStyle(SizeType.Absolute,24));pickLayout.RowStyles.Add(new RowStyle(SizeType.Absolute,40));pickLayout.RowStyles.Add(new RowStyle(SizeType.Percent,32));pickLayout.RowStyles.Add(new RowStyle(SizeType.Absolute,24));pickLayout.RowStyles.Add(new RowStyle(SizeType.Absolute,40));pickLayout.RowStyles.Add(new RowStyle(SizeType.Percent,68));split.Panel1.Controls.Add(pickLayout);
-            pickLayout.Controls.Add(MakeLabel("设备"),0,0);pickLayout.Controls.Add(new RoundedInputHost(deviceSearch){Dock=DockStyle.Fill},0,1);pickLayout.Controls.Add(devices,0,2);pickLayout.Controls.Add(MakeLabel("测点"),0,3);pickLayout.Controls.Add(new RoundedInputHost(pointSearch){Dock=DockStyle.Fill},0,4);pickLayout.Controls.Add(channels,0,5);
-            foreach(string d in allPoints.Select(p=>p.binding.device).Distinct()){devices.Items.Add(d,true);selectedDevices.Add(d);}
-            foreach(Point p in allPoints){channels.Items.Add(p.name+" · "+PointCatalog.Get(p.name).Label,true);selectedPoints.Add(p.name);}
+            var leftPanel=new Panel{Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(5)};
+            var leftLabel=new Label{Text="测点（决定取数与统计）",AutoSize=false,Dock=DockStyle.Top,Height=24,ForeColor=Color.FromArgb(88,105,125),TextAlign=ContentAlignment.MiddleLeft,Margin=Padding.Empty};
+            leftPanel.Controls.Add(picker);leftPanel.Controls.Add(leftLabel);
+            split.Panel1.Controls.Add(leftPanel);
             // 迷你 Tab 样式对齐主选项卡(蓝色下划线选中态)。
             var tabs=new TabControl{Dock=DockStyle.Fill,DrawMode=TabDrawMode.OwnerDrawFixed,ItemSize=new Size(110,30),SizeMode=TabSizeMode.Fixed,Padding=new System.Drawing.Point(10,3)};
             tabs.DrawItem+=(s,e)=>{bool sel=(e.State&DrawItemState.Selected)!=0;using(var b=new SolidBrush(sel?Color.White:Color.FromArgb(247,250,253)))e.Graphics.FillRectangle(b,e.Bounds);TextRenderer.DrawText(e.Graphics,tabs.TabPages[e.Index].Text,tabs.Font,e.Bounds,sel?UiTheme.Blue:UiTheme.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPrefix);if(sel)using(var p=new Pen(UiTheme.Blue,2))e.Graphics.DrawLine(p,e.Bounds.Left+18,e.Bounds.Bottom-2,e.Bounds.Right-18,e.Bounds.Bottom-2);};
@@ -302,11 +303,7 @@ namespace ExperimentMonitor {
         }
         void ApplyPoint(PointSummary summary){
             if(summary==null||disposed)return;
-            selectedPoints.Clear();selectedPoints.Add(summary.Point);
-            selectedDevices.Clear();
-            foreach(Point point in allPoints)if(point.name==summary.Point)selectedDevices.Add(point.binding.device);
-            if(selectedDevices.Count==0)foreach(string device in allPoints.Select(x=>x.binding.device).Distinct())selectedDevices.Add(device);
-            RebuildVisibleDevices();RebuildVisiblePoints();
+            picker.SetSelection(new[]{summary.Point});
             recordTabs.SelectedIndex=0;
             if(Visible)StartQuery();else MarkDirty();
             feedback.Text="已只保留测点 "+summary.Point+"（"+summary.Label+"）。";
@@ -324,10 +321,7 @@ namespace ExperimentMonitor {
             bool previous=settingSource;settingSource=true;
             try{int index=source.Items.IndexOf(selection.Source);if(index>=0)source.SelectedItem=selection.Source;}finally{settingSource=previous;}
             following=false;explicitSource=true;
-            selectedPoints.Clear();selectedDevices.Clear();
-            if(selection.Points!=null)foreach(string name in selection.Points){selectedPoints.Add(name);foreach(Point point in allPoints)if(point.name==name)selectedDevices.Add(point.binding.device);}
-            if(selectedDevices.Count==0)foreach(string device in allPoints.Select(x=>x.binding.device).Distinct())selectedDevices.Add(device);
-            RebuildVisibleDevices();RebuildVisiblePoints();
+            picker.SetSelection(selection.Points??new string[0]);
             DateTime fromValue=TruncateToDisplayedSecond(selection.FromUtc.ToLocalTime());
             DateTime toValue=TruncateToDisplayedSecond(selection.ToUtc.ToLocalTime());
             if(fromValue<from.MinDate)fromValue=from.MinDate;
@@ -339,13 +333,23 @@ namespace ExperimentMonitor {
             if(Visible)StartQuery();else MarkDirty();
             feedback.Text="已按趋势分析页的可见区间定位；跟随已关闭。";
         }
-        /// <summary>宽表列的一次性全选/清空。只影响显示列,不改变查询语义。</summary>
-        void SetAllColumns(bool visible){
-            foreach(Point point in allPoints)columnVisible[point.name]=visible;
-            if(!filterDirty){
-                if(queryBusy)pendingViewQuery=true;
-                else{Task<bool> ignored=ApplyAndQuery();}
-            }
+        /// <summary>显示列的一次性全选/清空。只影响显示列,不改变取数范围,也不重新查询。</summary>
+        void SetAllColumns(bool visible,string[] scope){
+            if(scope==null)return;
+            foreach(string name in scope)columnVisible[name]=visible;
+            // 只重画表格与提示行,不重新查询:显示层的变化不该把取数再跑一遍。
+            if(!filterDirty&&lastLoad!=null){RenderRows();RenderFeedback(lastLoad);}
+        }
+        /// <summary>测点勾选变化:去抖后自动重新查询,不用再点“查询记录”。</summary>
+        void OnPointSelectionChanged(){
+            if(disposed)return;
+            following=false;offset=0;generation++;filterDirty=true;
+            ScheduleApply();
+        }
+        void ScheduleApply(){
+            if(disposed)return;
+            applyTimer.Stop();applyTimer.Start();
+            feedback.Text="正在应用新筛选…";
         }
         void WireEvents(){
             query.Click+=async(s,e)=>{following=false;await NavTo(NavNewest,default(DateTime));};
@@ -363,27 +367,29 @@ namespace ExperimentMonitor {
             pageSizeBox.SelectedIndexChanged+=(s,e)=>{int n=pageSizeBox.SelectedIndex==1?500:200;if(n==pageSize)return;pageSize=n;pageIndex=0;ResetPaging();if(filterDirty){feedback.Text="每页轮数已改为 "+n+"；点击“查询记录”后生效。";}else if(!queryBusy){Task<bool> ignored=RunQuery();}};
             stopQuery.Click+=(s,e)=>{if(queryToken!=null)try{queryToken.Cancel();}catch{}};
             source.SelectedIndexChanged+=(s,e)=>{if(source.SelectedItem==null)return;if(!settingSource){explicitSource=true;following=false;offset=0;MarkDirty();}LoadSourcePartitionSetting();RefreshStorageStatus();RefreshInventory(false);};
-            devices.ItemCheck+=(s,e)=>{if(rebuildingLists)return;string item=devices.Items[e.Index] as string;bool check=e.NewValue==CheckState.Checked;BeginInvoke((Action)(()=>{if(check)selectedDevices.Add(item);else selectedDevices.Remove(item);offset=0;following=false;MarkDirty();RebuildVisibleDevices();RebuildVisiblePoints();}));};channels.ItemCheck+=(s,e)=>{if(rebuildingLists)return;string item=channels.Items[e.Index] as string;string point=item.Split(new[]{" · "},StringSplitOptions.None)[0];bool check=e.NewValue==CheckState.Checked;BeginInvoke((Action)(()=>{if(check)selectedPoints.Add(point);else selectedPoints.Remove(point);offset=0;following=false;MarkDirty();RebuildVisiblePoints();}));};
-            from.ValueChanged+=(s,e)=>{if(!updatingFollowTime){following=false;MarkDirty();}};to.ValueChanged+=(s,e)=>{if(!updatingFollowTime){following=false;MarkDirty();}};deviceSearch.TextChanged+=(s,e)=>RebuildVisibleDevices();pointSearch.TextChanged+=(s,e)=>RebuildVisiblePoints();
+            from.ValueChanged+=(s,e)=>{if(!updatingFollowTime){following=false;MarkDirty();}};to.ValueChanged+=(s,e)=>{if(!updatingFollowTime){following=false;MarkDirty();}};
+            // 时间框离开焦点即自动应用,免得还要再点一次“查询记录”。
+            from.Leave+=(s,e)=>ScheduleApply();to.Leave+=(s,e)=>ScheduleApply();
+            picker.SelectionChanged+=()=>OnPointSelectionChanged();
             exportMenu.Items.Add("导出为 Excel 工作簿…",null,async(s,e)=>await ExportAsync("xlsx"));exportMenu.Items.Add("导出为 CSV…",null,async(s,e)=>await ExportAsync("csv"));export.Click+=(s,e)=>exportMenu.Show(export,new System.Drawing.Point(0,export.Height));cancel.Click+=(s,e)=>{if(exportCancel!=null)exportCancel.Cancel();};
             applyNext.Click+=(s,e)=>ApplyPartition(false);applyNow.Click+=(s,e)=>ApplyPartition(true);
-            // 列选择弹出面板:勾选状态只影响宽表显示列,不改变查询语义。
-            // 列选择弹出面板:勾选状态只影响宽表显示列,不改变查询语义。
+            // 列选择弹出面板:只列"取数范围内"的测点——显示层是取数层的子集,两层不再互相打架。
             columnPick.Click+=(s,e)=>{
-                var list=new CheckedListBox{Width=250,Height=340,CheckOnClick=true,IntegralHeight=false,BorderStyle=BorderStyle.None,BackColor=Color.White};
-                foreach(Point p in allPoints)list.Items.Add(p.name+" · "+PointCatalog.Get(p.name).Label,ColumnVisible(p.name));
-                Action refresh=()=>{try{list.BeginInvoke((Action)(async()=>{if(!filterDirty){if(queryBusy)pendingViewQuery=true;else await ApplyAndQuery();}}));}catch{}};
+                string[] scope=picker.SelectedPoints;
+                var list=new CheckedListBox{Width=250,Height=336,CheckOnClick=true,IntegralHeight=false,BorderStyle=BorderStyle.None,BackColor=Color.White};
+                foreach(string name in scope)list.Items.Add(name+" · "+PointCatalog.Get(name).Label,ColumnVisible(name));
+                Action refresh=()=>{try{list.BeginInvoke((Action)(()=>{if(!filterDirty&&lastLoad!=null)RenderRows();}));}catch{}};
                 bool bulk=false;
                 list.ItemCheck+=(ls,le)=>{if(bulk)return;string n=list.Items[le.Index].ToString().Split(new[]{" · "},StringSplitOptions.None)[0];columnVisible[n]=le.NewValue==CheckState.Checked;refresh();};
-                // 一键全选/清空:40 个测点逐个点太费事。用下拉菜单项而不是自绘面板,避免控件宿主不渲染。
-                // bulk 期间屏蔽逐项回调,否则一次全选会排队几十次重查。
-                Action<bool> applyAll=visible=>{bulk=true;try{SetAllColumns(visible);list.BeginUpdate();for(int i=0;i<list.Items.Count;i++)list.SetItemChecked(i,visible);list.EndUpdate();}finally{bulk=false;}};
-                var selectAll=new ToolStripMenuItem("全选（勾选全部测点列）");
+                // 一键全选/清空:40 个测点逐个点太费事。bulk 期间屏蔽逐项回调,否则一次全选会排队几十次重绘。
+                Action<bool> applyAll=visible=>{bulk=true;try{SetAllColumns(visible,scope);list.BeginUpdate();for(int i=0;i<list.Items.Count;i++)list.SetItemChecked(i,visible);list.EndUpdate();}finally{bulk=false;}};
+                var selectAll=new ToolStripMenuItem("全选（显示全部取数测点）");
                 var selectNone=new ToolStripMenuItem("清空（只留时间与采集轮）");
                 selectAll.Click+=(a,b)=>applyAll(true);
                 selectNone.Click+=(a,b)=>applyAll(false);
+                var head=new ToolStripLabel("显示列（"+scope.Length+" 个取数测点）　只影响显示，不影响取数");
                 var drop=new ToolStripDropDown{AutoSize=true};
-                drop.Items.Add(selectAll);drop.Items.Add(selectNone);drop.Items.Add(new ToolStripSeparator());
+                drop.Items.Add(head);drop.Items.Add(selectAll);drop.Items.Add(selectNone);drop.Items.Add(new ToolStripSeparator());
                 var listHost=new ToolStripControlHost(list){Margin=Padding.Empty,Padding=new Padding(2),AutoSize=false,Size=new Size(256,348)};
                 drop.Items.Add(listHost);
                 columnDrop=drop;
@@ -391,6 +397,7 @@ namespace ExperimentMonitor {
             };
             timer.Tick+=(s,e)=>FollowTick();
             countTimer.Tick+=(s,e)=>{countTimer.Stop();StartCount();};
+            applyTimer.Tick+=async(s,e)=>{applyTimer.Stop();if(disposed||!filterDirty||!Visible)return;await NavTo(NavNewest,default(DateTime));};
             // —— 实验段 / 测点统计 / 跨页跳转 ——
             sessionRun.Click+=(s,e)=>RunSessionStats();
             sessionStop.Click+=(s,e)=>{if(sessionToken!=null)try{sessionToken.Cancel();}catch{}};
@@ -416,8 +423,7 @@ namespace ExperimentMonitor {
                 if(outerLayout.Height!=height)outerLayout.Height=height;
             }finally{layoutGuard=false;}
         }
-        void RebuildVisibleDevices(){if(disposed)return;rebuildingLists=true;try{string q=deviceSearch.Text.Trim();devices.BeginUpdate();devices.Items.Clear();foreach(string d in allPoints.Select(p=>p.binding.device).Distinct().Where(x=>x.IndexOf(q,StringComparison.OrdinalIgnoreCase)>=0)){int i=devices.Items.Add(d);devices.SetItemChecked(i,selectedDevices.Contains(d));}devices.EndUpdate();}finally{rebuildingLists=false;}}
-        void RebuildVisiblePoints(){if(disposed)return;rebuildingLists=true;try{string q=pointSearch.Text.Trim();channels.BeginUpdate();channels.Items.Clear();foreach(Point p in allPoints){string dev=p.binding.device,name=p.name+" · "+PointCatalog.Get(p.name).Label;if(selectedDevices.Contains(dev)&&name.IndexOf(q,StringComparison.OrdinalIgnoreCase)>=0){int i=channels.Items.Add(name);channels.SetItemChecked(i,selectedPoints.Contains(p.name));}}channels.EndUpdate();}finally{rebuildingLists=false;}}
+
         static void StyleGrid(DataGridView v){v.ColumnHeadersHeight=56;v.ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.AutoSize;v.ColumnHeadersDefaultCellStyle.WrapMode=DataGridViewTriState.True;v.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(232,241,250);v.ColumnHeadersDefaultCellStyle.ForeColor=Color.FromArgb(29,58,89);v.ColumnHeadersDefaultCellStyle.Font=new Font("Microsoft YaHei UI",9,FontStyle.Bold);v.ColumnHeadersDefaultCellStyle.SelectionBackColor=Color.FromArgb(232,241,250);v.DefaultCellStyle.SelectionBackColor=Color.FromArgb(211,231,250);v.DefaultCellStyle.SelectionForeColor=Color.FromArgb(25,52,82);v.AlternatingRowsDefaultCellStyle.BackColor=Color.FromArgb(248,251,254);}
         void PositionExport(Control parent){progress.Location=new System.Drawing.Point(Math.Max(10,parent.ClientSize.Width-450),10);exportStatus.Location=new System.Drawing.Point(Math.Max(10,parent.ClientSize.Width-315),11);cancel.Location=new System.Drawing.Point(Math.Max(10,parent.ClientSize.Width-214),5);export.Location=new System.Drawing.Point(Math.Max(10,parent.ClientSize.Width-138),4);}
         public void EnterPage(string active){if(!String.IsNullOrEmpty(active))activeSource=active;if(!explicitSource&&following)SetSource(activeSource);if(!entered){entered=true;SetToNow();following=true;MarkDirty();}if(Visible){timer.Start();RefreshInventory(true);RefreshStorageStatus();if(following){SetToNow();StartQuery();}}}
@@ -431,7 +437,7 @@ namespace ExperimentMonitor {
         void StartQuery(){if(queryBusy){if(following&&Visible)pendingFollowQuery=true;return;}Task<bool> ignored=RunQuery();}
         void MarkDirty(){if(disposed)return;generation++;filterDirty=true;feedback.Text="筛选条件已更改；点击“查询记录”后应用。";}
         string Signature(HistoryFilter f){return f.Source+"|"+f.FromUtc.Ticks+"|"+f.ToUtc.Ticks+"|"+String.Join(",",f.Devices.OrderBy(x=>x))+"|"+String.Join(",",f.Points.OrderBy(x=>x));}
-        HistoryFilter MakeFilter(){DateTime a=TruncateToDisplayedSecond(from.Value),b=TruncateToDisplayedSecond(to.Value);if(b<=a)throw new InvalidOperationException("结束时间必须晚于开始时间（结束时刻不包含）。");string[] ds=selectedDevices.ToArray();string[] ps=allPoints.Where(p=>selectedDevices.Contains(p.binding.device)&&selectedPoints.Contains(p.name)).Select(p=>p.name).ToArray();if(ds.Length==0||ps.Length==0)throw new InvalidOperationException("请至少选择一台设备和一个测点。");return new HistoryFilter{FromUtc=a.ToUniversalTime(),ToUtc=b.ToUniversalTime(),Source=(string)source.SelectedItem,Devices=ds,Points=ps};}
+        HistoryFilter MakeFilter(){DateTime a=TruncateToDisplayedSecond(from.Value),b=TruncateToDisplayedSecond(to.Value);if(b<=a)throw new InvalidOperationException("结束时间必须晚于开始时间（结束时刻不包含）。");string[] ps=picker.SelectedPoints;if(ps.Length==0)throw new InvalidOperationException("请至少选择一个测点。");return new HistoryFilter{FromUtc=a.ToUniversalTime(),ToUtc=b.ToUniversalTime(),Source=(string)source.SelectedItem,Points=ps};}
         async Task<bool> ApplyAndQuery(){return await RunQuery();}
         sealed class HistoryLoad{public List<List<StoredObservation>> Rounds;public List<StoredObservation> Rows;public int Units;public bool HasMore,HasOlder,HasNewer;public ExperimentHistory.RoundCursor Next;public DateTime FromUtc,ToUtc;}
         void ResetPaging(){offset=0;}
@@ -538,8 +544,8 @@ namespace ExperimentMonitor {
         void RenderSummary(){
          if(summaryFilter==null)return;
          string src=summaryFilter.Source=="serial"?"实机":"模拟";
-         string total=countTotal>=0?countTotal.ToString("N0"):(following?"范围跟随中":"统计中…");
-         string text=(following?"● 跟随最新":"○ 历史查询")+"　·　"+src+"　·　筛选共 "+total+(summaryRoundView?" 轮":" 条")+"　·　本页 "+summaryUnits.ToString("N0")+(summaryRoundView?" 轮":" 条");
+         string total=countFailed?"统计失败":(countTotal>=0?countTotal.ToString("N0"):(following?"范围跟随中":"统计中…"));
+            string text=(following?"● 跟随最新":"○ 历史查询")+"　·　"+src+"　·　"+(following?"范围跟随中":"筛选共 "+total+(summaryRoundView?" 轮":" 条"))+"　·　本页 "+summaryUnits.ToString("N0")+(summaryRoundView?" 轮":" 条");
          if(summaryRoundView)text+="　·　有效轮 "+summaryValid+" / 超时轮 "+summaryTimeout;
          summary.Text=text;
         }
@@ -578,20 +584,31 @@ namespace ExperimentMonitor {
             countFilter=f;countRoundView=roundView;
             if(following)return;
             if(signature==countSignature&&countTotal>=0)return;
+            // 签名变了就先把旧数字收起来,不要让上一轮范围的数字继续挂在摘要行上。
+            countTotal=-1;countFailed=false;RenderSummary();
             countTimer.Stop();countTimer.Start();
         }
         async void StartCount(){
-         if(disposed||following||countBusy||countFilter==null)return;
-         HistoryFilter f=countFilter;bool roundView=countRoundView;string signature=Signature(f);
-         if(countTotal>=0&&signature==countSignature)return;
-         countBusy=true;countTotal=-1;countSignature=signature;
-         try{long total=await Task.Run(()=>roundView?ExperimentHistory.CountRounds(dataRoot,f):ExperimentHistory.Count(dataRoot,f));if(disposed)return;countTotal=total;RenderSummary();}
-         catch{}finally{countBusy=false;}
+            if(disposed||following||countFilter==null)return;
+            if(countBusy){countPending=true;return;}
+            HistoryFilter f=countFilter;bool roundView=countRoundView;string signature=Signature(f);
+            if(countTotal>=0&&signature==countSignature)return;
+            countBusy=true;countTotal=-1;countFailed=false;countSignature=signature;RenderSummary();
+            try{
+                long total=await Task.Run(()=>roundView?ExperimentHistory.CountRounds(dataRoot,f):ExperimentHistory.Count(dataRoot,f));
+                if(disposed)return;
+                countTotal=total;
+            }catch{
+                if(!disposed){countFailed=true;countTotal=-1;}
+            }finally{
+                countBusy=false;
+                // 统计期间又改了筛选条件:这一次不丢,排一次最新的。
+                if(countPending&&!disposed){countPending=false;countTimer.Stop();countTimer.Start();}
+                if(!disposed)RenderSummary();
+            }
         }
         void BuildDetailPreview(List<StoredObservation> rows){grid.Columns.Clear();string[] headers={"采样时间（本地）","测点","名称","设备","工程值","原始值 HEX","单位","质量"};int[] widths={165,130,170,100,160,150,100,110};for(int i=0;i<headers.Length;i++)grid.Columns.Add(headers[i],headers[i]);for(int i=0;i<widths.Length;i++)grid.Columns[i].Width=widths[i];foreach(StoredObservation r in rows){PointInfo rinfo=PointCatalog.Get(r.Point);string runit=String.IsNullOrEmpty(rinfo.Unit)?r.Unit:rinfo.Unit;string engineering=r.Number.HasValue?r.Number.Value.ToString("G17",System.Globalization.CultureInfo.InvariantCulture):r.Value;string raw=r.RawNumber.HasValue?r.RawNumber.Value.ToString("G17",System.Globalization.CultureInfo.InvariantCulture):r.Payload;int rowIndex=grid.Rows.Add(r.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"),r.Point,rinfo.Label,r.Device,engineering,raw,runit,QualityLabel(r.Quality));Limit detailLimit=LimitFor(r.Point);if(detailLimit!=null&&r.Number.HasValue&&detailLimit.Violates(r.Number.Value)){DataGridViewCell cell=grid.Rows[rowIndex].Cells[4];cell.Style.BackColor=Color.FromArgb(255,235,235);cell.Style.ForeColor=Color.Firebrick;}}}
         void BuildWidePreview(List<List<StoredObservation>> rounds,HistoryFilter filter){grid.Columns.Clear();grid.Columns.Add("time","轮次开始时间（本地）");grid.Columns.Add("round","采集轮");var points=allPoints.Select((p,index)=>new{Point=p,Index=index}).Where(x=>filter.Points.Contains(x.Point.name)&&ColumnVisible(x.Point.name)).OrderBy(x=>DeviceRank(x.Point.binding.device)).ThenBy(x=>x.Index).Select(x=>x.Point).ToList();
-            // 列选择把全部测点都关掉时回退为显示全部筛选测点,避免空表困惑。
-            if(points.Count==0&&columnVisible.Count==0)points=allPoints.Select((p,index)=>new{Point=p,Index=index}).Where(x=>filter.Points.Contains(x.Point.name)).OrderBy(x=>DeviceRank(x.Point.binding.device)).ThenBy(x=>x.Index).Select(x=>x.Point).ToList();
 
             noPointColumns=points.Count==0;
             foreach(Point p in points){PointInfo info=PointCatalog.Get(p.name);string unit=info.Unit??"";grid.Columns.Add(p.name,info.Label+(String.IsNullOrEmpty(unit)?"":"（"+unit+"）"));}foreach(DataGridViewColumn c in grid.Columns)c.Width=150;
@@ -635,6 +652,10 @@ namespace ExperimentMonitor {
         void DisposePage(){if(disposed)return;disposed=true;generation++;timer.Stop();timer.Dispose();countTimer.Stop();countTimer.Dispose();if(exportCancel!=null)try{exportCancel.Cancel();}catch{} }
     }
 }
+
+
+
+
 
 
 

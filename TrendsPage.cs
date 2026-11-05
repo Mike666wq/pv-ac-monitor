@@ -12,32 +12,30 @@ namespace ExperimentMonitor {
     public sealed class TrendsPage : UserControl {
         readonly List<Point> points;readonly MonitorEngine engine;readonly string dataRoot;
         readonly ExperimentChart chart=new ExperimentChart{Dock=DockStyle.Fill,RequestExactSamples=true,UseExplicitGaps=true};
-        readonly CheckedListBox devices=new CheckedListBox{Dock=DockStyle.Fill,CheckOnClick=true,IntegralHeight=false};
-        readonly CheckedListBox channels=new CheckedListBox{Dock=DockStyle.Fill,CheckOnClick=true,IntegralHeight=false};
+        readonly PointPicker picker;
         readonly ComboBox source=new ComboBox{Width=110,DropDownStyle=ComboBoxStyle.DropDownList,Margin=new Padding(3,0,3,0)};
         readonly DateTimePicker from=new DateTimePicker{Width=210,Format=DateTimePickerFormat.Custom,CustomFormat="yyyy-MM-dd HH:mm:ss",Margin=new Padding(3,0,3,0)};
         readonly DateTimePicker to=new DateTimePicker{Width=210,Format=DateTimePickerFormat.Custom,CustomFormat="yyyy-MM-dd HH:mm:ss",Margin=new Padding(3,0,3,0)};
         readonly ComboBox quick=new ComboBox{Width=150,DropDownStyle=ComboBoxStyle.DropDownList,Margin=new Padding(3,0,3,0)};
         readonly CheckBox followLatest=new CheckBox{Text="跟随最新记录",Checked=true,AutoSize=true,Margin=new Padding(3,8,12,3)};
-        readonly TextBox search=new TextBox{Width=160};
         readonly Label status=new Label{AutoSize=true,Text="读取最近已保存记录…"};
-        readonly StyledActionButton query=new StyledActionButton{Text="应用范围",Width=112,BackColor=UiTheme.Blue,IconGlyph="⌕",Margin=new Padding(3,0,3,0)},latest=new StyledActionButton{Text="回到最新",Width=100,Margin=new Padding(3,0,3,0)},all=new StyledActionButton{Text="全选",Width=72},none=new StyledActionButton{Text="清空",Width=72};
+        readonly StyledActionButton query=new StyledActionButton{Text="应用范围",Width=112,BackColor=UiTheme.Blue,IconGlyph="⌕",Margin=new Padding(3,0,3,0)},latest=new StyledActionButton{Text="回到最新",Width=100,Margin=new Padding(3,0,3,0)};
         readonly StyledActionButton openRecords=new StyledActionButton{Text="看原始记录 ▸",Width=136},exportImage=new StyledActionButton{Text="导出图片 ▸",Width=112};
         public event Action<HistorySelection> OpenRecordsRequested;
         readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer{Interval=1000};
         readonly TrendTimeWindow window=new TrendTimeWindow();
-        readonly Dictionary<string,bool> pointChecked=new Dictionary<string,bool>();
         readonly Dictionary<string,int> exactRequestIds=new Dictionary<string,int>();
         Dictionary<string,Limit> chartLimits;
-        bool disposed,queryBusy,filtering,initializing=true,updatingControls,sourceChosen,rangeDirty,pendingRefresh;
+        bool disposed,queryBusy,initializing=true,updatingControls,sourceChosen,rangeDirty,pendingRefresh;
         int generation,loadedGeneration=-1;DateTime loadedFrom,loadedTo,lastRevisionCheck=DateTime.MinValue;string loadedSource,lastRevision="";long lastCommitted=-2,lastCompleted=-1;
         CancellationTokenSource queryCancellation;
         public TrendsPage(List<Point> points,MonitorEngine engine,string appRoot){
             if(points==null)throw new ArgumentNullException("points");if(engine==null)throw new ArgumentNullException("engine");this.points=points;this.engine=engine;dataRoot=System.IO.Path.Combine(appRoot,"data","storage");
             Dock=DockStyle.Fill;AutoScaleMode=AutoScaleMode.Dpi;BackColor=UiTheme.Canvas;
+            picker=new PointPicker(points);picker.SetSelection(points.Select(p=>p.name));
             source.Items.AddRange(new object[]{"实机","模拟"});source.SelectedIndex=InitialSource()=="simulation"?1:0;
             quick.Items.AddRange(new object[]{"最近15分钟","最近1小时","最近2小时","今天（固定）","自定义"});quick.SelectedIndex=1;
-            SetBounds(window.Resolve(DateTime.UtcNow,null));BuildLayout();Wire();PopulateFilters();initializing=false;
+            SetBounds(window.Resolve(DateTime.UtcNow,null));BuildLayout();Wire();initializing=false;
             chartLimits=LimitStore.Load(appRoot);chart.SetLimits(chartLimits);
             engine.ConnectionChanged+=OnConnection;timer.Tick+=(s,e)=>Tick();
             HandleCreated+=(s,e)=>RequestRefresh();VisibleChanged+=(s,e)=>{if(Visible){chartLimits=LimitStore.Load(appRoot);chart.SetLimits(chartLimits);timer.Start();RequestRefresh();}else timer.Stop();};
@@ -65,12 +63,7 @@ namespace ExperimentMonitor {
                 from.Value=fromLocal;to.Value=toLocal;
                 window.Fix(selection.FromUtc.ToUniversalTime(),selection.ToUtc.ToUniversalTime());
                 rangeDirty=false;SetQuick(4);SetFollowing(false);
-                if(selection.Points!=null&&selection.Points.Length>0){
-                    foreach(Point point in points)pointChecked[point.name]=false;
-                    foreach(string id in selection.Points)pointChecked[id]=true;
-                    for(int i=0;i<devices.Items.Count;i++)devices.SetItemChecked(i,true);
-                    FilterPoints();
-                }
+                if(selection.Points!=null&&selection.Points.Length>0)picker.SetSelection(selection.Points);
             }finally{updatingControls=false;}
             InvalidateQuery();RequestRefresh();
             status.Text="已按记录页的筛选范围显示（固定范围，已退出跟随）。";
@@ -108,13 +101,10 @@ namespace ExperimentMonitor {
             actionRow.Controls.Add(followLatest);actionRow.Controls.Add(query);actionRow.Controls.Add(latest);actionRow.Controls.Add(openRecords);actionRow.Controls.Add(exportImage);toolbar.Controls.Add(actionRow,0,1);
             root.Controls.Add(toolbar,0,0);
             var split=new SplitContainer { Size=new Size(700,500),Dock=DockStyle.Fill,Panel1MinSize=205,Panel2MinSize=350,SplitterWidth=6,SplitterDistance=265,BackColor=UiTheme.Canvas,BorderStyle=BorderStyle.None };
-            // 设备列表固定高度(4 台设备,去掉底部死空间),测点列表吃掉剩余高度;搜索框拉满整行。
-            var left=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=6,Padding=new Padding(5),BackColor=Color.White };
-            left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Absolute,40));left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Absolute,100));left.RowStyles.Add(new RowStyle(SizeType.Absolute,24));left.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-            var searchRow=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=Padding.Empty,Padding=Padding.Empty };
-            searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));searchRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            searchRow.Controls.Add(new RoundedInputHost(search) { Dock=DockStyle.Fill },0,0);searchRow.Controls.Add(all,1,0);searchRow.Controls.Add(none,2,0);
-            left.Controls.Add(TextLabel("搜索测点并按设备筛选"),0,0);left.Controls.Add(searchRow,0,1);left.Controls.Add(TextLabel("设备"),0,2);left.Controls.Add(devices,0,3);left.Controls.Add(TextLabel("测点"),0,4);left.Controls.Add(channels,0,5);split.Panel1.Controls.Add(left);
+            // 左栏与记录页共用同一个测点选择器:设备分组树 + 搜索 + 全选/清空。
+            var left=new Panel { Dock=DockStyle.Fill,Padding=new Padding(5),BackColor=Color.White };
+            var leftLabel=new Label { Text="测点（决定画哪些测点）",AutoSize=false,Dock=DockStyle.Top,Height=24,ForeColor=Color.FromArgb(88,105,125),TextAlign=ContentAlignment.MiddleLeft,Margin=Padding.Empty };
+            left.Controls.Add(picker);left.Controls.Add(leftLabel);split.Panel1.Controls.Add(left);
             var chartHost=new Panel { Dock=DockStyle.Fill,Padding=new Padding(6),BackColor=Color.White,AutoScroll=true };chart.Dock=DockStyle.Top;chartHost.Controls.Add(chart);chartHost.SizeChanged+=(s,e)=>{chart.Width=Math.Max(200,chartHost.ClientSize.Width-16);ResizeChart();};split.Panel2.Controls.Add(chartHost);root.Controls.Add(split,0,1);
             status.Dock=DockStyle.Fill;status.TextAlign=ContentAlignment.MiddleLeft;status.ForeColor=UiTheme.Muted;root.Controls.Add(status,0,2);
         }
@@ -134,16 +124,11 @@ namespace ExperimentMonitor {
             };
             from.ValueChanged+=(s,e)=>TimeEdited();to.ValueChanged+=(s,e)=>TimeEdited();
             source.SelectedIndexChanged+=(s,e)=>{if(initializing||updatingControls)return;sourceChosen=true;lastRevision="";InvalidateQuery();RequestRefresh();};
-            all.Click+=(s,e)=>CheckAll(true);none.Click+=(s,e)=>CheckAll(false);search.TextChanged+=(s,e)=>FilterPoints();
-            devices.ItemCheck+=(s,e)=>{if(initializing||filtering||!IsHandleCreated)return;BeginInvoke((Action)(()=>{if(!disposed){FilterPoints();}}));};
-            channels.ItemCheck+=(s,e)=>{if(initializing||filtering||!IsHandleCreated)return;string id=channels.Items[e.Index].ToString().Split(new[]{" · "},StringSplitOptions.None)[0];pointChecked[id]=e.NewValue==CheckState.Checked;BeginInvoke((Action)(()=>{if(!disposed)SelectionChanged();}));};
+            picker.SelectionChanged+=()=>{if(initializing||disposed)return;SelectionChanged();};
         }
         string InitialSource(){if(engine.ActiveSource!=null)return engine.ActiveSource;try{bool serial=ExperimentHistory.Databases(dataRoot,"serial").Any(),sim=ExperimentHistory.Databases(dataRoot,"simulation").Any();if(sim&&!serial)return "simulation";}catch(System.IO.IOException){}catch(UnauthorizedAccessException){}return "serial";}
         string SelectedSource(){return (string)source.SelectedItem=="模拟"?"simulation":"serial";}
-        void PopulateFilters(){foreach(string d in points.Select(p=>p.binding.device).Distinct())devices.Items.Add(d,true);foreach(Point p in points)pointChecked[p.name]=true;FilterPoints();}
-        void FilterPoints(){if(disposed)return;for(int i=0;i<channels.Items.Count;i++){string id=channels.Items[i].ToString().Split(new[]{" · "},StringSplitOptions.None)[0];pointChecked[id]=channels.GetItemChecked(i);}filtering=true;try{string text=search.Text??"";string[] chosen=devices.CheckedItems.Cast<string>().ToArray();channels.BeginUpdate();channels.Items.Clear();foreach(Point p in points)if(chosen.Contains(p.binding.device)&&(text.Length==0||p.name.IndexOf(text,StringComparison.OrdinalIgnoreCase)>=0||PointCatalog.Get(p.name).Label.IndexOf(text,StringComparison.OrdinalIgnoreCase)>=0||p.binding.device.IndexOf(text,StringComparison.OrdinalIgnoreCase)>=0)){int i=channels.Items.Add(p.name+" · "+PointCatalog.Get(p.name).Label);channels.SetItemChecked(i,pointChecked[p.name]);}channels.EndUpdate();}finally{filtering=false;}SelectionChanged();}
-        void CheckAll(bool value){filtering=true;try{for(int i=0;i<channels.Items.Count;i++){string id=channels.Items[i].ToString().Split(new[]{" · "},StringSplitOptions.None)[0];pointChecked[id]=value;channels.SetItemChecked(i,value);}}finally{filtering=false;}SelectionChanged();}
-        string[] SelectedPoints(){return channels.CheckedItems.Cast<string>().Select(x=>x.Split(new[]{" · "},StringSplitOptions.None)[0]).ToArray();}
+        string[] SelectedPoints(){return picker.SelectedPoints;}
         void SelectionChanged(){if(initializing)return;InvalidateQuery();RequestRefresh();}
         void TimeEdited(){if(initializing||updatingControls)return;SetFollowing(false);SetQuick(4);rangeDirty=true;InvalidateQuery();status.Text="时间范围已修改，点击“应用范围”查询；后台采集不受影响。";UpdateActions();}
         bool ValidRange(){return DisplayedSecondUtc(to)>DisplayedSecondUtc(from);}
@@ -197,4 +182,7 @@ namespace ExperimentMonitor {
         void DisposePage(){if(disposed)return;disposed=true;InvalidateQuery();timer.Stop();timer.Dispose();engine.ConnectionChanged-=OnConnection;}
     }
 }
+
+
+
 
