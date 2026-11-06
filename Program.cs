@@ -71,6 +71,7 @@ namespace ExperimentMonitor {
                 if(args.Contains("--diag-page")) return Diag.Page(points,root,(string[])args);
                 if(args.Contains("--diag-export")) return Diag.Export(points,root,(string[])args);
                 if(args.Contains("--diag-cycles")) return Diag.Cycles(points,root,(string[])args);
+                if(args.Contains("--diag-paging")) return Diag.Paging(points,root,(string[])args);
                 if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
                     Application.Run(form);
                 }
@@ -101,6 +102,12 @@ namespace ExperimentMonitor {
                     form.AttachHistoryPage(historyPage);
                     form.AttachCloudPage(new CloudPage(root,form.Engine));
                 } catch(Exception ex) { facts["attachError"]=ex.Message; }
+                // 允许指定窗口尺寸：960x640 是最小支持尺寸，布局问题只会在那里暴露。
+                foreach(string a in args) if(a!=null&&a.StartsWith("--size=",StringComparison.Ordinal)) {
+                    string[] wh=a.Substring(7).Split('x');
+                    int sw,sh;
+                    if(wh.Length==2&&Int32.TryParse(wh[0],out sw)&&Int32.TryParse(wh[1],out sh)) { form.ClientSize=new System.Drawing.Size(sw,sh); facts["clientSize"]=sw+"x"+sh; }
+                }
                 form.ShowInTaskbar=false;
                 var timer=new System.Windows.Forms.Timer{Interval=200};
                 int ticks=0;
@@ -222,6 +229,70 @@ namespace ExperimentMonitor {
             Console.Out.WriteLine("DIAG cycles");
             return facts.ContainsKey("error")?1:0;
         }
+        /// <summary>
+        /// 分页导航实跑：进程内切到数据记录页，依次点"更新 ›/最新 »/‹ 更早/« 最早"，
+        /// 每点一次记下页脚时间范围与宽表行数。数据记录页的 DataGridView 让 UI Automation
+        /// 枚举超过 30 秒上限，这条路径只能进程内驱动。
+        /// </summary>
+        internal static int Paging(List<Point> points,string root,string[] args) {
+            var facts=new Dictionary<string,object>();
+            var steps=new List<string>();
+            using(var form=new DashboardForm(points,root)) {
+                var historyPage=new HistoryPage(points,root,form.Engine);
+                form.HistoryHost.Controls.Add(historyPage);
+                form.AttachHistoryPage(historyPage);
+                form.ShowInTaskbar=false;
+                var timer=new System.Windows.Forms.Timer{Interval=300};
+                int ticks=0, step=0;
+                string[] order={"更新 ›","最新 »","‹ 更早","« 最早"};
+                form.Shown+=(s,e)=>{
+                    timer.Tick+=(s2,e2)=>{
+                        ticks++;
+                        try {
+                            if(ticks==5) form.MainNavigation.SelectedIndex=3;   // 数据记录
+                            if(ticks==12) {
+                                var inv=new List<string>();
+                                foreach(var b in AllOf<Button>(historyPage)) if(b.Text!=null&&(b.Text.Contains("更")||b.Text.Contains("最新")||b.Text.Contains("最早")))
+                                    inv.Add("["+b.Text+"] enabled="+b.Enabled+" type="+b.GetType().Name);
+                                facts["pagingButtons"]=inv;
+                            }
+                            if(ticks==20) steps.Add("起始 | "+Snapshot(historyPage));
+                            if(ticks>20&&ticks%8==0&&step<order.Length) {
+                                var button=FindButton(historyPage,order[step]);
+                                if(button!=null&&button.Enabled) { button.PerformClick(); steps.Add(order[step]+" | "+Snapshot(historyPage)); }
+                                else steps.Add(order[step]+" | （按钮不可用或未找到）");
+                                step++;
+                            }
+                            if(step>=order.Length&&ticks%8==4) {
+                                timer.Stop();
+                                facts["steps"]=steps;
+                                form.Close();
+                            }
+                        } catch(Exception ex) { facts["error"]=ex.GetType().Name+"："+ex.Message; timer.Stop(); form.Close(); }
+                    };
+                    timer.Start();
+                };
+                Application.Run(form);
+            }
+            File.WriteAllText(Path.Combine(root,"diag-paging.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
+            Console.Out.WriteLine("DIAG paging");
+            return facts.ContainsKey("error")?1:0;
+        }
+        static string Snapshot(HistoryPage page) {
+            string info="", rows="";
+            foreach(var l in AllOf<Label>(page)) {
+                if(l.Visible&&l.Text!=null&&l.Text.StartsWith("当前页显示完整采集轮",StringComparison.Ordinal)) { info=l.Text; break; }
+            }
+            foreach(var g in AllOf<DataGridView>(page)) { if(g.Columns.Count>10) { rows=g.Rows.Count+" 行"; break; } }
+            int a=info.IndexOf("本页时间",StringComparison.Ordinal);
+            int b=info.IndexOf("　·　耗时",StringComparison.Ordinal);
+            string range=(a>=0&&b>a)?info.Substring(a,b-a):info;
+            return rows+" | "+range;
+        }
+        static Button FindButton(Control root,string text) {
+            foreach(var b in AllOf<Button>(root)) if(b.Text==text) return b;
+            return null;
+        }
         static void Collect(DashboardForm form,int tab,Dictionary<string,object> facts) {
             facts["tab"]=tab;
             facts["tabTitle"]=form.MainNavigation.SelectedTab==null?"":form.MainNavigation.SelectedTab.Text;
@@ -243,6 +314,17 @@ namespace ExperimentMonitor {
             var texts=AllOf<Label>(page).Where(l=>l.Visible&&!String.IsNullOrWhiteSpace(l.Text))
                 .OrderByDescending(l=>l.Text.Length).Take(8).Select(l=>l.Text).ToList();
             facts["labels"]=texts;
+            // 卡片裁切自查：每张卡片的屏幕矩形必须落在其所属容器的可视矩形内。
+            int clipped=0, cards=0; string firstClip="";
+            foreach(var rp in AllOf<RoundedPanel>(page)) {
+                if(!rp.Visible) continue;
+                cards++;
+                var parent=rp.Parent; if(parent==null) continue;
+                var cardRect=rp.RectangleToScreen(rp.ClientRectangle);
+                var clipRect=parent.RectangleToScreen(parent.ClientRectangle);
+                if(!clipRect.Contains(cardRect)) { clipped++; if(firstClip.Length==0) firstClip=rp.Name+" card="+cardRect+" parent="+clipRect; }
+            }
+            facts["cards"]=cards; facts["clippedCards"]=clipped; facts["firstClipped"]=firstClip;
             var buttons=AllOf<Button>(page).Where(b=>b.Visible).Select(b=>b.Text??"").Where(t=>t.Length>0).Take(12).ToList();
             if(buttons.Count==0) buttons=AllOf<Button>(form).Where(b=>b.Visible).Select(b=>b.Text??"").Where(t=>t.Length>0).Take(12).ToList();
             // 控制页：把每个控制点的门禁判定原样导出来。
