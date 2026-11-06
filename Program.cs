@@ -70,6 +70,7 @@ namespace ExperimentMonitor {
                     if(args.Contains("--diag-cpu")) return Diag.Cpu(points,root,(string[])args);
                 if(args.Contains("--diag-page")) return Diag.Page(points,root,(string[])args);
                 if(args.Contains("--diag-export")) return Diag.Export(points,root,(string[])args);
+                if(args.Contains("--diag-cycles")) return Diag.Cycles(points,root,(string[])args);
                 if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
                     Application.Run(form);
                 }
@@ -163,6 +164,62 @@ namespace ExperimentMonitor {
             } catch(Exception ex) { facts["error"]=ex.GetType().Name+"："+ex.Message; }
             File.WriteAllText(Path.Combine(root,"diag-export.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
             Console.Out.WriteLine("DIAG export");
+            return facts.ContainsKey("error")?1:0;
+        }
+        /// <summary>
+        /// 反复启停采集：每次开始都会新建 ExperimentStore 与日志文件句柄。
+        /// 如果句柄/线程/net 泄漏，长时间反复启停会把程序拖死 —— 这条路径无头测试覆盖不到。
+        /// </summary>
+        internal static int Cycles(List<Point> points,string root,string[] args) {
+            int cycles=5; foreach(string a in args) if(a!=null&&a.StartsWith("--cycles=",StringComparison.Ordinal)) { int v; if(Int32.TryParse(a.Substring(9),out v)) cycles=Math.Max(2,Math.Min(20,v)); }
+            var facts=new Dictionary<string,object>();
+            using(var form=new DashboardForm(points,root)) {
+                form.ShowInTaskbar=false;
+                var timer=new System.Windows.Forms.Timer{Interval=200};
+                int ticks=0, completed=0; bool captureOn=false;
+                int handles0=0; long mem0=0; int threads0=0;
+                var perCycle=new List<int>();
+                form.Shown+=(s,e)=>{
+                    timer.Tick+=(s2,e2)=>{
+                        ticks++;
+                        try {
+                            if(ticks==5) {
+                                form.Engine.TransportFactory=(sim,port,baud)=>new SimulationTransport();
+                                form.Engine.Connect(true,"SIM",9600);
+                                form.Engine.SetPeriodSeconds(1);
+                                GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+                                handles0=Process.GetCurrentProcess().HandleCount;
+                                mem0=GC.GetTotalMemory(true);
+                                threads0=Process.GetCurrentProcess().Threads.Count;
+                            }
+                            // 每个周期：开 2 秒 → 停 → 记一次
+                            if(ticks>5&&ticks%10==1&&completed<cycles&&!captureOn) {
+                                form.Engine.Start(1,1,points.Select(p=>p.name).ToArray());
+                                captureOn=true;
+                            } else if(ticks>5&&ticks%10==6&&captureOn) {
+                                var st=form.Engine.Store;
+                                perCycle.Add(st==null?0:(int)st.Committed);
+                                form.Engine.Stop();
+                                captureOn=false; completed++;
+                            }
+                            if(completed>=cycles) {
+                                timer.Stop();
+                                GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+                                facts["cycles"]=completed;
+                                facts["committedPerCycle"]=perCycle;
+                                facts["handleDelta"]=Process.GetCurrentProcess().HandleCount-handles0;
+                                facts["threadDelta"]=Process.GetCurrentProcess().Threads.Count-threads0;
+                                facts["memDeltaBytes"]=GC.GetTotalMemory(true)-mem0;
+                                form.Close();
+                            }
+                        } catch(Exception ex) { facts["error"]=ex.GetType().Name+"："+ex.Message; timer.Stop(); form.Close(); }
+                    };
+                    timer.Start();
+                };
+                Application.Run(form);
+            }
+            File.WriteAllText(Path.Combine(root,"diag-cycles.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
+            Console.Out.WriteLine("DIAG cycles");
             return facts.ContainsKey("error")?1:0;
         }
         static void Collect(DashboardForm form,int tab,Dictionary<string,object> facts) {
