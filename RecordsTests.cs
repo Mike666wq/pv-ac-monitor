@@ -136,6 +136,37 @@ namespace ExperimentMonitor {
                 }
                 Require(splitRounds.Count == 2, "两个时间升序采集轮各自完整落在不同卷");
                 checks++;
+
+                // 元数据三级回退：历史行必须用"写入当时"的名称/单位，不能跟着今天的点表变。
+                // 这里故意写一条和当前点表不一致的旧名称，导出必须原样带出来。
+                {
+                    string legacyRoot = Path.Combine(root, "legacy-metadata");
+                    Directory.CreateDirectory(legacyRoot);
+                    DateTime legacyUtc = DateTime.UtcNow;
+                    using (var store = new ExperimentStore(legacyRoot, "simulation", "legacy-test")) {
+                        store.Ready.GetAwaiter().GetResult();
+                        store.Record(new Observation {
+                            Point = "T0", Description = "2203相变温度1（2026年旧名）", Device = "PLC", Source = "simulation",
+                            Utc = legacyUtc, RoundStartedUtc = legacyUtc, SessionId = store.SessionId, Round = 1,
+                            Slave = 2, Address = 125, Count = 2, Unit = "degC-old", Mode = "FLOAT ABCD",
+                            Number = 24.5, RawNumber = 24.5, Value = "24.5", Quality = "good", Status = "正常",
+                            Tx = new byte[] { 1 }, Rx = new byte[] { 1, 2 }, Payload = new byte[] { 0, 1 }, ConfigVersion = "legacy-cfg"
+                        }, 1, "degC-old");
+                        store.FlushAsync().GetAwaiter().GetResult();
+                    }
+                    var legacyFilter = new HistoryFilter { Source = "simulation", FromUtc = legacyUtc.AddMinutes(-1), ToUtc = legacyUtc.AddMinutes(1) };
+                    var legacy = ExperimentExport.ExportAsync(legacyRoot, legacyFilter, legacyRoot, "csv", null, CancellationToken.None).GetAwaiter().GetResult();
+                    string detailFile = legacy.Files.First(x => x.Contains("明细"));
+                    string detailText = File.ReadAllText(Path.Combine(legacy.OutputDirectory, detailFile));
+                    Require(detailText.Contains("2203相变温度1（2026年旧名）"), "导出的名称取写入当时的行内记录，而不是当前点表");
+                    Require(detailText.Contains("degC-old"), "导出的单位取写入当时的行内记录");
+                    Require(detailText.Contains("行内"), "明细标注元数据来源为行内");
+                    checks++;
+                    string wideFile = legacy.Files.First(x => x.Contains("宽表"));
+                    string wideText = File.ReadAllText(Path.Combine(legacy.OutputDirectory, wideFile));
+                    Require(wideText.Contains("2203相变温度1（2026年旧名）"), "宽表列名与数据行使用同一份历史名称");
+                    checks++;
+                }
                 return checks;
             } finally {
                 ExperimentExport.RowsPerVolume = previousVolumeSize;

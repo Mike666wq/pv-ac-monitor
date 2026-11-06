@@ -16,7 +16,7 @@ namespace ExperimentMonitor {
  public static class ExperimentExport {
   internal static int RowsPerVolume=100000;
   static readonly SemaphoreSlim gate=new SemaphoreSlim(1,1);
-  static readonly string[] DetailHeaders={"采样时间（本地）","采样时间 UTC","设备","测点","名称","站号","地址","寄存器数","工程值","原始数值","显示文本","原始值 HEX","单位","模式","质量","状态","请求 HEX","响应 HEX","耗时 ms","配置版本"};
+  static readonly string[] DetailHeaders={"采样时间（本地）","采样时间 UTC","设备","测点","名称","站号","地址","寄存器数","工程值","原始数值","显示文本","原始值 HEX","单位","模式","质量","状态","请求 HEX","响应 HEX","耗时 ms","配置版本","元数据来源"};
   static readonly string[] QualityHeaders={"采样时间（本地）","设备","测点","质量","状态说明","原始值 HEX","响应 HEX"};
   static readonly object[] SummaryHeaders={"会话 / 测点","开始 / 名称","结束 / 单位","时长 / 有效点","轮数 / 超时点","应有轮数 / 越限点","缺口 / 最小","最大间隔 / 最大","记录数 / 均值","有效轮 / 标准差","超时轮 / 下限","越限轮 / 上限","设备","测点"};
   static readonly string[] logicalOrder={"D1","D2","D3","T1","D4","D5","D6","D7","D8","T0","T2","T3","T4","T5","D2206","DU1","DU2","DU3","DU6","DU7","DU8","D9","ZU6682","ZI6682","ZW66822"};
@@ -29,8 +29,37 @@ namespace ExperimentMonitor {
   static string Num(double? d){return d.HasValue?d.Value.ToString("G17",CultureInfo.InvariantCulture):"";}
   static string Local(long ticks){return new DateTime(ticks,DateTimeKind.Utc).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff zzz",CultureInfo.InvariantCulture);}
   internal static bool ExportablePoint(string point){string group=PointCatalog.Get(point).Group;return point!="0006H"&&group!="运行状态"&&group!="控制/设定";}
-  static object[] Detail(SQLiteDataReader r){long utc=r.GetInt64(1);string point=Txt(r,7);PointInfo info=PointCatalog.Get(point);return new object[]{Local(utc),new DateTime(utc,DateTimeKind.Utc).ToString("o",CultureInfo.InvariantCulture),Txt(r,6),point,info.Label,r.GetInt32(9),r.GetInt32(10),r.GetInt32(11),r.IsDBNull(12)?null:(object)r.GetDouble(12),r.IsDBNull(13)?null:(object)r.GetDouble(13),Txt(r,14),Txt(r,15),info.Unit??"",info.Mode??"",Txt(r,18),QLabel(Txt(r,18),Txt(r,19)),Txt(r,20),Txt(r,21),r.GetInt64(22),Txt(r,23)};}
+  static object[] Detail(SQLiteDataReader r){long utc=r.GetInt64(1);string point=Txt(r,7);PointInfo info=PointCatalog.Get(point);
+    // 元数据三级回退：行内（写入当时的名称/单位/模式）优先，当前点表只作为旧行的兜底。
+    // 用今天的点表解释去年的行，会把旧数据的名称、单位、倍率一起改掉 —— 那等于篡改历史。
+    string storedLabel=Txt(r,8),storedUnit=Txt(r,16),storedMode=Txt(r,17);
+    string label=String.IsNullOrEmpty(storedLabel)?info.Label:SafeHistoryText(storedLabel);
+    string unit=String.IsNullOrEmpty(storedUnit)?(info.Unit??""):SafeHistoryText(storedUnit);
+    string mode=String.IsNullOrEmpty(storedMode)?(info.Mode??""):SafeHistoryText(storedMode);
+    string metaSource=String.IsNullOrEmpty(storedLabel)?"当前点表":"行内";
+    return new object[]{Local(utc),new DateTime(utc,DateTimeKind.Utc).ToString("o",CultureInfo.InvariantCulture),Txt(r,6),point,label,r.GetInt32(9),r.GetInt32(10),r.GetInt32(11),r.IsDBNull(12)?null:(object)r.GetDouble(12),r.IsDBNull(13)?null:(object)r.GetDouble(13),Txt(r,14),Txt(r,15),unit,mode,Txt(r,18),QLabel(Txt(r,18),Txt(r,19)),Txt(r,20),Txt(r,21),r.GetInt64(22),Txt(r,23),metaSource};}
   static object[] QualityRows(SQLiteDataReader r){long utc=r.GetInt64(1);return new object[]{Local(utc),Txt(r,6),Txt(r,7),Txt(r,18),QLabel(Txt(r,18),Txt(r,19)),Txt(r,15),Txt(r,21)};}
+  /// <summary>
+  /// 历史名称/单位/模式在导出前要过这一道：以 = + - @ 或制表符开头的文本，
+  /// 在 Excel 里会被当成公式执行。这里把首字符换成全角等价字符 ——
+  /// 既保留了可读性，也不会让 "=unsafe" 这类内容以原样出现在文件里。
+  /// </summary>
+  static string SafeHistoryText(string text){
+   if(String.IsNullOrEmpty(text))return "";
+   char first=text[0];
+   char replacement;
+   switch(first){
+    case '=': replacement='＝'; break;
+    case '+': replacement='＋'; break;
+    case '-': replacement='－'; break;
+    case '@': replacement='＠'; break;
+    case '\t': replacement=' '; break;
+    case '\r': replacement=' '; break;
+    default: return text;
+   }
+   return replacement+text.Substring(1);
+  }
+
   static string CsvCell(object v){if(v==null)return "";if(v is int||v is long||v is double)return Convert.ToString(v,CultureInfo.InvariantCulture);return Journal.Cell(Convert.ToString(v,CultureInfo.InvariantCulture));}
   static void CsvRow(StreamWriter w,object[] cells){w.WriteLine(String.Join(",",cells.Select(CsvCell).ToArray()));}
 
@@ -84,10 +113,13 @@ namespace ExperimentMonitor {
     // Materialize the sorted round index on disk, then assign volumes in bounded keyset batches.
     using(var q=new SQLiteCommand("INSERT INTO round_index(session,round,first_utc,start_utc,row_count) SELECT session,round,MIN(utc),MIN(round_start),COUNT(*) FROM obs GROUP BY session,round ORDER BY COALESCE(MIN(round_start),MIN(utc)),session,round",c))q.ExecuteNonQuery();
     const int batchSize=256;long after=0;while(true){token.ThrowIfCancellationRequested();var rounds=new List<Tuple<long,string,long,long,long?,int>>(batchSize);using(var q=new SQLiteCommand("SELECT seq,session,round,first_utc,start_utc,row_count FROM round_index WHERE seq>@after ORDER BY seq LIMIT @n",c)){q.Parameters.AddWithValue("@after",after);q.Parameters.AddWithValue("@n",batchSize);using(var r=q.ExecuteReader())while(r.Read())rounds.Add(Tuple.Create(r.GetInt64(0),r.GetString(1),r.GetInt64(2),r.GetInt64(3),r.IsDBNull(4)?(long?)null:r.GetInt64(4),r.GetInt32(5)));}if(rounds.Count==0)break;after=rounds[rounds.Count-1].Item1;using(var t=c.BeginTransaction())using(var ins=new SQLiteCommand("INSERT INTO round_volume VALUES(@s,@r,@v,@u,@st,@n)",c,t)){foreach(var round in rounds){token.ThrowIfCancellationRequested();int rows=round.Item6;if(last>0&&last+rows>RowsPerVolume){vol++;last=0;}ins.Parameters.Clear();ins.Parameters.AddWithValue("@s",round.Item2);ins.Parameters.AddWithValue("@r",round.Item3);ins.Parameters.AddWithValue("@v",vol);ins.Parameters.AddWithValue("@u",round.Item4);ins.Parameters.AddWithValue("@st",round.Item5.HasValue?(object)round.Item5.Value:DBNull.Value);ins.Parameters.AddWithValue("@n",rows);ins.ExecuteNonQuery();last+=rows;}t.Commit();}}}
-   int volumeCount=Math.Max(1,vol);var headers=new List<string>{"轮次开始时间（本地）"};foreach(string p in pointIds){PointInfo info=PointCatalog.Get(p);headers.Add(info.Label+(String.IsNullOrWhiteSpace(info.Unit)?"":" ("+info.Unit+")"));}
+   int volumeCount=Math.Max(1,vol);// 宽表列名同样不能只用今天的点表：它必须和下面的数据行对得上。
+    // 取每个测点在本批数据里最后一条行内记录的名称/单位，缺失才退回当前点表。
+    Dictionary<string,Tuple<string,string>> historical=HistoricalLabels(spool,pointIds);
+    var headers=new List<string>{"轮次开始时间（本地）"};foreach(string p in pointIds){PointInfo info=PointCatalog.Get(p);string hLabel=info.Label,hUnit=info.Unit??"";Tuple<string,string> hist;if(historical.TryGetValue(p,out hist)){if(!String.IsNullOrEmpty(hist.Item1))hLabel=SafeHistoryText(hist.Item1);if(!String.IsNullOrEmpty(hist.Item2))hUnit=SafeHistoryText(hist.Item2);}headers.Add(hLabel+(String.IsNullOrWhiteSpace(hUnit)?"":" ("+hUnit+")"));}
     // 记录页不再按设备过滤(测点集合已经隐含设备),设备一栏改为按导出的测点推导,避免空着。
     string[] deviceList=(f.Devices!=null&&f.Devices.Length>0)?f.Devices:pointMeta.Values.Select(x=>x.Item1).Where(x=>!String.IsNullOrEmpty(x)).Distinct().OrderBy(x=>x,StringComparer.Ordinal).ToArray();
-   var infoRows=new List<object[]>{new object[]{"格式版本","1"},new object[]{"时间筛选(本地)",f.FromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz",CultureInfo.InvariantCulture)+" 至 "+f.ToUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz",CultureInfo.InvariantCulture)+"（开始包含，结束不包含）"},new object[]{"时间筛选(UTC)",f.FromUtc.ToString("o")+" 至 "+f.ToUtc.ToString("o")},new object[]{"设备",String.Join(",",deviceList)},new object[]{"测点",String.Join(",",pointIds)},new object[]{"记录条数",total},new object[]{"宽表规则","每个来源会话和采集轮一行；空值留空；不以旧值填充，不做插值"},new object[]{"轮次开始时间","优先使用采集轮开始时间；旧记录缺失时采用该轮最早实际采样时间"},new object[]{"数据质量","质量与通讯状态在质量记录页；详细采样时间在测点明细页"},new object[]{"记录上界","导出时固定的本地 SQLite 快照；导出期间新数据不进入本次导出"}};
+   var infoRows=new List<object[]>{new object[]{"格式版本","1"},new object[]{"时间筛选(本地)",f.FromUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz",CultureInfo.InvariantCulture)+" 至 "+f.ToUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz",CultureInfo.InvariantCulture)+"（开始包含，结束不包含）"},new object[]{"时间筛选(UTC)",f.FromUtc.ToString("o")+" 至 "+f.ToUtc.ToString("o")},new object[]{"设备",String.Join(",",deviceList)},new object[]{"测点",String.Join(",",pointIds)},new object[]{"记录条数",total},new object[]{"宽表规则","每个来源会话和采集轮一行；空值留空；不以旧值填充，不做插值"},new object[]{"轮次开始时间","优先使用采集轮开始时间；旧记录缺失时采用该轮最早实际采样时间"},new object[]{"数据质量","质量与通讯状态在质量记录页；详细采样时间在测点明细页"},new object[]{"记录上界","导出时固定的本地 SQLite 快照；导出期间新数据不进入本次导出"},new object[]{"名称与单位来源","优先用每条记录写入当时的名称/单位/模式；旧记录缺失时才回退到当前点表，并在明细「元数据来源」列标明"}};
    string[] csvWide=new string[headers.Count];for(int i=0;i<headers.Count;i++)csvWide[i]=headers[i];
    long written=0;
    var files=new List<string>();string stem="实验数据_"+(f.Source=="serial"?"实机":"模拟")+"_"+f.FromUtc.ToLocalTime().ToString("yyyyMMdd-HHmmss")+"_至_"+f.ToUtc.ToLocalTime().ToString("yyyyMMdd-HHmmss");
@@ -104,6 +136,25 @@ namespace ExperimentMonitor {
     foreach(object[] row in infoRows)book.Info.Row(row);foreach(string p in points){Tuple<string,string> meta;pointMeta.TryGetValue(p,out meta);PointInfo info=PointCatalog.Get(p);book.Info.Row(new object[]{"测点契约",p+" | "+(meta==null?"设备":meta.Item1)+" | "+info.Label+" | "+(info.Unit??"")});}
    }}
   static void StreamWide(SQLiteConnection c,int volume,List<string> points,HistoryFilter f,Action<object[]> write,CancellationToken token){string wide="SELECT o.session,o.round,COALESCE(v.start_utc,v.first_utc),o.point,o.number,o.value,o.quality FROM obs o JOIN round_volume v ON v.session=o.session AND v.round=o.round WHERE v.volume=@v ORDER BY COALESCE(v.start_utc,v.first_utc),o.session,o.round,o.seq";using(var q=new SQLiteCommand(wide,c)){q.Parameters.AddWithValue("@v",volume);using(var r=q.ExecuteReader()){string session=null;long round=0,start=0;Dictionary<string,Tuple<double?,string,string>> found=null;Action flush=()=>{if(found==null)return;var cells=new List<object>{Local(start)};foreach(string p in points){Tuple<double?,string,string> x;if(found.TryGetValue(p,out x)&&x.Item3=="good")cells.Add(x.Item1.HasValue?(object)x.Item1.Value:x.Item2);else cells.Add(null);}write(cells.ToArray());};while(r.Read()){token.ThrowIfCancellationRequested();string nextSession=r.GetString(0);long nextRound=r.GetInt64(1);if(found==null||nextSession!=session||nextRound!=round){flush();session=nextSession;round=nextRound;start=r.GetInt64(2);found=new Dictionary<string,Tuple<double?,string,string>>(StringComparer.Ordinal);}found[r.GetString(3)]=Tuple.Create(r.IsDBNull(4)?(double?)null:r.GetDouble(4),r.IsDBNull(5)?"":r.GetString(5),r.IsDBNull(6)?"unknown":r.GetString(6));}flush();}}}
+  /// <summary>每个测点在本批数据里最后一条行内记录的名称与单位。</summary>
+  static Dictionary<string,Tuple<string,string>> HistoricalLabels(string spool,List<string> points){
+   var map=new Dictionary<string,Tuple<string,string>>(StringComparer.Ordinal);
+   if(points==null||points.Count==0)return map;
+   var cs=new SQLiteConnectionStringBuilder{DataSource=spool,Version=3}.ConnectionString;
+   using(var c=new SQLiteConnection(cs)){
+    c.Open();
+    using(var q=new SQLiteCommand("SELECT o.point,o.description,o.unit FROM obs o JOIN (SELECT point,MAX(seq) ms FROM obs GROUP BY point) m ON o.point=m.point AND o.seq=m.ms",c))
+    using(var r=q.ExecuteReader()){
+     while(r.Read()){
+      string point=r.IsDBNull(0)?"":r.GetString(0);
+      if(String.IsNullOrEmpty(point))continue;
+      map[point]=Tuple.Create(r.IsDBNull(1)?"":r.GetString(1),r.IsDBNull(2)?"":r.GetString(2));
+     }
+    }
+   }
+   return map;
+  }
+
   static void WriteCsv(string path,string[] headers,Action<StreamWriter> body){using(var w=new StreamWriter(new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None),new UTF8Encoding(true))){CsvRow(w,headers.Cast<object>().ToArray());body(w);}}
   static void WriteCsvFiles(string spool,int volume,string widePath,string detailPath,string qualityPath,string[] wideHeaders,List<string> points,HistoryFilter f,CancellationToken token){var cs=new SQLiteConnectionStringBuilder{DataSource=spool,Version=3}.ConnectionString;using(var c=new SQLiteConnection(cs)){c.Open();WriteCsv(detailPath,DetailHeaders,w=>{using(var q=new SQLiteCommand("SELECT o.* FROM obs o JOIN round_volume v ON v.session=o.session AND v.round=o.round WHERE v.volume=@v ORDER BY o.seq",c)){q.Parameters.AddWithValue("@v",volume);using(var r=q.ExecuteReader())while(r.Read()){token.ThrowIfCancellationRequested();CsvRow(w,Detail(r));}}});WriteCsv(qualityPath,QualityHeaders,w=>{using(var q=new SQLiteCommand("SELECT o.* FROM obs o JOIN round_volume v ON v.session=o.session AND v.round=o.round WHERE v.volume=@v ORDER BY o.seq",c)){q.Parameters.AddWithValue("@v",volume);using(var r=q.ExecuteReader())while(r.Read()){token.ThrowIfCancellationRequested();CsvRow(w,QualityRows(r));}}});WriteCsv(widePath,wideHeaders,w=>StreamWide(c,volume,points,f,cells=>CsvRow(w,cells),token));}}
  }
