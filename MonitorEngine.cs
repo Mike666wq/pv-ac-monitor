@@ -56,6 +56,10 @@ namespace ExperimentMonitor {
             string source=simulation?"simulation":"serial";
             try{PartitionCycle partition;lock(sync){if(disposed||disconnecting||connected)throw new InvalidOperationException("连接状态已改变，请重试");partition=GetPartition(source);}partition.EnsureInitialized(DateTime.UtcNow);}catch{opened.Dispose();throw;}
             lock(sync){if(disposed||disconnecting||connected){opened.Dispose();throw new InvalidOperationException("连接状态已改变，请重试");}connectedTransport=opened;connected=true;connectedSimulation=simulation;connectedPort=port??"模拟";connectedBaud=baud;}
+            // 连接时按来源重载控制配置：模拟演示配置（ApplySimulationDemoConfig）是一份内存里的
+            // "可写"配置，旧的 Connect 不重载，于是它会活到下一次真实串口连接 —— 演示配置会跟着
+            // 真实设备走。重载同时把控制开关关掉（ReloadControlConfig 里 controlArmed=false）。
+            ReloadControlConfig();
             State((simulation?"模拟":"实机")+"已连接 · "+(simulation?"模拟端口":port)+" · "+baud+" 8N1");Log("连接成功 source="+source+" port="+connectedPort+" baud="+baud);ConnectionState(true,source);
         }
         public void Disconnect(){string source;lock(sync){if(!connected&&!diagnosticBusy)return;if(disconnecting)throw new InvalidOperationException("正在断开连接");disconnecting=true;source=connectedSimulation?"simulation":"serial";if(diagnosticCancel!=null)diagnosticCancel.Cancel();}try{Stop();if(!diagnosticComplete.WaitOne(10000))throw new TimeoutException("等待只读诊断结束超时，连接仍保留");IReadTransport closing=null;lock(sync){closing=connectedTransport;connectedTransport=null;connected=false;connectedPort="";connectedBaud=0;}try{if(closing!=null)closing.Dispose();}finally{State("已断开连接");Log("连接已断开 source="+source);ConnectionState(false,source);}}catch{lock(sync)disconnecting=false;throw;}finally{lock(sync)disconnecting=false;}}

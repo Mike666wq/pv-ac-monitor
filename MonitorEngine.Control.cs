@@ -15,9 +15,17 @@ namespace ExperimentMonitor {
         sealed class PendingControl {
             public ControlCommand Command;
             public bool Verify;
+            /// <summary>发起时分配的写入标识，贯穿 worker 终态与审计行。</summary>
+            public string WriteId = "";
             public readonly ManualResetEventSlim Done = new ManualResetEventSlim();
             public ControlResult Result;
             public volatile bool Cancelled;
+        }
+        /// <summary>写入后的效果确认：等下一轮采集观测到同一个点也一致，才算"设备真的按新值动作了"。</summary>
+        sealed class PendingEffect {
+            public string Point, WriteId;
+            public int Value;
+            public DateTime WrittenUtc;
         }
         readonly object controlSync = new object();
         readonly object controlLogSync = new object();
@@ -30,6 +38,8 @@ namespace ExperimentMonitor {
         DateTime controlArmedUtc = DateTime.MinValue, lastControlWriteUtc = DateTime.MinValue;
         string uncertainPoint = "", uncertainDetail = "";
         int? uncertainOld, uncertainNew;
+        PendingEffect pendingEffect;
+        int controlWriteSequence;
 
         public ControlConfig ControlSettings { get { lock (controlSync) return controlSettings; } }
         public string ControlConfigError { get { lock (controlSync) return controlConfigError; } }
@@ -125,6 +135,47 @@ namespace ExperimentMonitor {
         internal void RememberObservation(Observation o) {
             if (o == null || String.IsNullOrEmpty(o.Point)) return;
             lock (controlSync) lastByPoint[o.Point] = o;
+            CheckPendingEffect(o);
+        }
+
+        /// <summary>
+        /// 写入之后的下一轮采集观测到达时，判定设备效果：
+        /// 观测值 == 写入值 ⇒ applied（设备按新值动作了）；否则 ⇒ reverted（又变回去了）。
+        /// 这 4 个控制点本来就在 37 点采集集内，所以这一步不需要任何新增管线。
+        /// </summary>
+        void CheckPendingEffect(Observation o) {
+            PendingEffect effect;
+            lock (controlSync) {
+                effect = pendingEffect;
+                if (effect == null || !String.Equals(effect.Point, o.Point, StringComparison.Ordinal)) return;
+                if (o.Utc <= effect.WrittenUtc) return; // 必须是写入之后的观测
+                pendingEffect = null;
+            }
+            if (!Quality.IsGood(o.Quality)) return; // 这一轮没读到数：继续等下一轮，不下结论
+            int observed = o.Number.HasValue ? (int)Math.Round(o.Number.Value) : int.MinValue;
+            if (observed == int.MinValue) return;
+            bool applied = observed == effect.Value;
+            var result = new ControlResult {
+                Point = effect.Point, WriteId = effect.WriteId, Status = applied ? "applied" : "reverted",
+                Detail = applied
+                    ? "下一轮采集观测为 " + observed + "，与写入值一致：设备已按新值动作"
+                    : "下一轮采集观测为 " + observed + "，与写入值 " + effect.Value + " 不一致：设备未按新值动作",
+                Utc = DateTime.UtcNow, NewValue = effect.Value
+            };
+            lock (controlSync) {
+                LastControlResult = result;
+            }
+            AppendControlEvent(result, null, null);
+            FireControlState();
+            var handler = ControlCompleted;
+            if (handler != null) foreach (Action<ControlResult> f in handler.GetInvocationList()) try { f(result); } catch { }
+        }
+
+        /// <summary>登记一笔待确认的写入效果。同一时刻只跟踪一笔。</summary>
+        void ArmEffectCheck(string point, int value, string writeId) {
+            lock (controlSync) {
+                pendingEffect = new PendingEffect { Point = point, Value = value, WriteId = writeId ?? "", WrittenUtc = DateTime.UtcNow };
+            }
         }
 
         /// <summary>控制/状态点当前数值。16 位点在显示层保留 U16/I16 双解，不进入趋势数字列，
@@ -150,15 +201,19 @@ namespace ExperimentMonitor {
             lock (controlSync) {
                 var gate = new ControlGateInfo();
                 if (!String.IsNullOrEmpty(controlConfigError)) { gate.Status = "config_error"; gate.Detail = controlConfigError; return gate; }
-                if (controlSettings == null || controlSettings.mode == "disabled") { gate.Status = "disabled"; gate.Detail = "control-config.json 的 mode=disabled：控制被强制关闭"; return gate; }
+                if (controlSettings == null || String.Equals(controlSettings.mode,"disabled",StringComparison.OrdinalIgnoreCase)) { gate.Status = "disabled"; gate.Detail = "control-config.json 的 mode=disabled：控制被强制关闭"; return gate; }
+                if (!controlSettings.WritesEnabled) { gate.Status = "disabled"; gate.Detail = "control-config.json 的 mode=" + controlSettings.mode + " 不是 live：不允许真实写入"; return gate; }
                 if (controlSettings.targets == null || controlSettings.targets.Count == 0) { gate.Status = "disabled"; gate.Detail = "没有控制点定义：control-config.json 缺失或为空"; return gate; }
                 if (!connectedNow) { gate.Status = "disconnected"; gate.Detail = "请先连接数据源"; return gate; }
                 if (!runningNow) { gate.Status = "not_acquiring"; gate.Detail = "请先开始采集；控制要求采集运行中"; return gate; }
                 if (singleNow) { gate.Status = "not_acquiring"; gate.Detail = "单轮采集不处理控制写入，请使用连续采集"; return gate; }
                 ControlTarget target = controlSettings.Find(point);
                 if (target == null) { gate.Status = "no_target"; gate.Detail = "control-config.json 没有这个控制点"; return gate; }
-                if (controlSettings.requireConfirmed && !target.confirmed) { gate.Status = "not_confirmed"; gate.Detail = target.label + " 尚未现场确认（confirmed=false）"; return gate; }
-                if (controlSettings.requireConfirmed && !target.allowWrite) { gate.Status = "not_allow_write"; gate.Detail = target.label + " 未开放写入（allowWrite=false）"; return gate; }
+                // confirmed 与 allowWrite 各自独立生效。
+                // 旧实现把这两个判断挂在 requireConfirmed 条件里，而随包配置 requireConfirmed=false，
+                // 于是两段判断整段被跳过 —— 配置写着"不可写"，程序却照写不误。
+                if (!target.confirmed) { gate.Status = "not_confirmed"; gate.Detail = target.label + " 尚未现场确认（confirmed=false）：请先在 control-config.json 里确认这个点"; return gate; }
+                if (!target.allowWrite) { gate.Status = "not_allow_write"; gate.Detail = target.label + " 未开放写入（allowWrite=false）"; return gate; }
                 if (controlUncertain) { gate.Status = "uncertain"; gate.Detail = "上一次写入结果未知（" + uncertainPoint + "），请先重新读取核对"; return gate; }
                 if (!controlArmed) { gate.Status = "not_armed"; gate.Detail = "控制开关未开启"; return gate; }
                 ControlGateInfo rate = RateGateLocked();
@@ -286,6 +341,10 @@ namespace ExperimentMonitor {
 
         public ControlResult ExecuteControl(string point, int value, string operatorName) {
             var result = NewResult(point, value, operatorName);
+            // 一笔写入一个标识：从这里生成，一路贯穿到 worker 的终态与审计行。
+            // 旧实现里界面与 worker 各写各的终态，同一笔出现过两条 unknown（UtcTicks 差 10 µs，
+            // OldValue 一个 0 一个 3），审计里无法判断哪条是真的。
+            lock (controlSync) { result.WriteId = "w" + (++controlWriteSequence).ToString("D6", CultureInfo.InvariantCulture); }
             ControlGateInfo gate = ControlReadiness(point);
             if (!gate.CanWrite) return Blocked(result, gate.Status, gate.Detail);
             if (String.IsNullOrWhiteSpace(operatorName)) return Blocked(result, "blocked_ack", "缺少操作者；控制写入必须记录操作者");
@@ -293,7 +352,7 @@ namespace ExperimentMonitor {
             string range = RangeProblem(target, value);
             if (range != null) return Blocked(result, "range", range);
             result.Label = target.label; result.Slave = target.slave; result.Address = target.address;
-            var pending = new PendingControl { Command = new ControlCommand { Point = point, Value = value, Operator = operatorName, Confirmed = true } };
+            var pending = new PendingControl { WriteId = result.WriteId, Command = new ControlCommand { Point = point, Value = value, Operator = operatorName, Confirmed = true } };
             lock (controlSync) {
                 if (!controlArmed || worker == null) return Blocked(result, "not_armed", "控制未解锁或采集已停止");
                 controlQueue.Add(pending);
@@ -328,7 +387,14 @@ namespace ExperimentMonitor {
             return pending.Result;
         }
 
-        public ControlResult ResolveControlUncertainty(string operatorName) {
+        public ControlResult ResolveControlUncertainty(string operatorName) { return ResolveControlUncertainty(operatorName, ""); }
+
+        /// <summary>
+        /// 核对上一次结果未知的写入。
+        /// <paramref name="reasonCode"/>：当读数既不是写前旧值、也不是写入新值时，操作者必须给出理由码
+        /// —— 这种"第三值"以前一次点击就静默解锁，现在不解锁，且必须留下独立审计行。
+        /// </summary>
+        public ControlResult ResolveControlUncertainty(string operatorName, string reasonCode) {
             var result = new ControlResult { Point = uncertainPoint, Operator = operatorName ?? "", Utc = DateTime.UtcNow };
             PendingControl pending;
             bool runningNow;
@@ -336,7 +402,7 @@ namespace ExperimentMonitor {
             lock (controlSync) {
                 if (!controlUncertain) return Blocked(result, "no_uncertainty", "当前没有待核对的写入");
                 if (!runningNow) return Blocked(result, "not_acquiring", "请先开始采集，核对需要读取 PLC");
-                pending = new PendingControl { Verify = true, Command = new ControlCommand { Point = uncertainPoint, Operator = operatorName ?? "" } };
+                pending = new PendingControl { Verify = true, Command = new ControlCommand { Point = uncertainPoint, Operator = operatorName ?? "", Reason = reasonCode ?? "" } };
                 controlQueue.Add(pending);
             }
             if (!pending.Done.Wait(10000)) {
@@ -405,6 +471,8 @@ namespace ExperimentMonitor {
         ControlResult ExecuteOne(PendingControl pending, string roundPath, ExperimentStore store, int timeoutMs, CancellationToken token, Action<string> log) {
             var command = pending.Command;
             var result = NewResult(command.Point, command.Value, command.Operator);
+            // 继承发起时分配的 write_id：界面与 worker 的终态、审计行必须是同一笔。
+            result.WriteId = pending.WriteId ?? "";
             ControlGateInfo gate = ControlReadiness(command.Point);
             if (!gate.CanWrite) {
                 result.Status = gate.Status; result.Detail = gate.Detail; result.Utc = DateTime.UtcNow;
@@ -420,19 +488,20 @@ namespace ExperimentMonitor {
             if (pre != null && pre.Number.HasValue) oldValue = (int)Math.Round(pre.Number.Value);
             result.PreReadTx = pre == null ? new byte[0] : (pre.Tx ?? new byte[0]);
             result.PreReadRx = pre == null ? new byte[0] : (pre.Rx ?? new byte[0]);
-            result.OldSource = pre != null && pre.Number.HasValue ? "写前 03 预读" : "采集快照";
+            result.OldSource = pre != null && pre.Number.HasValue ? "写前 03 预读" : "写前 03 预读失败";
             if (!oldValue.HasValue) {
-                Observation old;
-                if (lastByPoint.TryGetValue(target.point, out old)) oldValue = NumericValue(old);
-            }
-            if (!oldValue.HasValue) {
-                result.Status = "stale"; result.Detail = "目标点没有有效读数"; AppendControlEvent(result, store, roundPath); return result;
+                // 预读失败即不发（fail closed）。旧实现在这里回退到采集快照当旧值 ——
+                // 采集快照可能来自更早的一轮，用它算出的"旧值"会让 not_accepted/mismatch 判失真。
+                result.Status = "pre_read_failed";
+                result.Detail = "写前 03 预读失败，目标点没有可信的当前值；已放弃本次写入（未发送任何报文）";
+                AppendControlEvent(result, store, roundPath);
+                return result;
             }
             if (pending.Cancelled) {
                 result.Status = "cancelled"; result.Detail = "已取消（尚未发出）";
                 AppendControlEvent(result, store, roundPath); return result;
             }
-            result.OldValue = oldValue.Value;
+            result.OldValue = oldValue;
             result.NewValue = command.Value;
             result.Tx = Modbus.WriteSingle(target.slave, target.address, command.Value);
             var writeTransport = connectedTransport as IWriteTransport;
@@ -519,7 +588,11 @@ namespace ExperimentMonitor {
             result.ReadbackMs = readback.Milliseconds;
             result.Milliseconds = watch.ElapsedMilliseconds;
             if (result.Readback.Value == command.Value) {
-                result.Status = "applied"; result.Detail = "回读一致：" + result.OldValue + " → " + result.Readback.Value;
+                // 回读一致只能说明"寄存器现在就是这个值"（held），还不能说明"设备按这个值动作了"。
+                // 真正的作用要等下一轮采集观测到同一个点也一致，才算 applied。
+                result.Status = "held";
+                result.Detail = "回读一致：" + result.OldValue + " → " + result.Readback.Value + "（等待下一轮采集观测确认设备效果）";
+                ArmEffectCheck(target.point, command.Value, result.WriteId);
             } else if (result.Readback.Value == result.OldValue) {
                 result.Status = "not_accepted"; result.Detail = "PLC 未接受：回读仍为 " + result.OldValue;
             } else {
@@ -541,15 +614,20 @@ namespace ExperimentMonitor {
             }
             int value = (int)Math.Round(readback.Number.Value);
             result.Readback = value; result.HasReadback = true; result.Label = target.label; result.Slave = target.slave; result.Address = target.address;
+            string reason = command == null ? "" : (command.Reason ?? "");
             bool cleared = false;
             lock (controlSync) {
                 if (uncertainNew.HasValue && value == uncertainNew.Value) { result.Status = "verify_applied"; result.Detail = "核对：写入已生效（当前 " + value + "）"; cleared = true; }
                 else if (uncertainOld.HasValue && value == uncertainOld.Value) { result.Status = "verify_not_applied"; result.Detail = "核对：写入未生效（当前仍为 " + value + "）"; cleared = true; }
-                else {
-                    // 既不是旧值也不是新值：无法判定，但也不能把控制永久锁死。
-                    // 以当前读数建立新基线，操作者在审计里能追到这条手动确认。
+                else if (String.IsNullOrWhiteSpace(reason)) {
+                    // 第三值：不能一次点击就静默清锁。必须给出理由码，否则保持锁定。
+                    result.Status = "verify_reason_required";
+                    result.Detail = "核对：当前值 " + value + " 与写入前/后都不一致；需要填写理由码才能解除锁定（解锁动作已记录为本次核对的一部分）";
+                    cleared = false;
+                } else {
+                    // 有理由码：以当前读数建立新基线，理由码与这次人工确认一起进审计。
                     result.Status = "verify_mismatch_manual";
-                    result.Detail = "核对：当前值 " + value + " 与写入前/后都不一致；已按当前值建立基线，请人工确认设备状态";
+                    result.Detail = "核对：当前值 " + value + " 与写入前/后都不一致；已按当前值建立基线，理由码：" + reason;
                     cleared = true;
                 }
                 if (cleared) { controlUncertain = false; uncertainPoint = ""; uncertainOld = uncertainNew = null; uncertainDetail = ""; }
@@ -634,7 +712,10 @@ namespace ExperimentMonitor {
                 Tx = Modbus.Hex(result.Tx ?? new byte[0]),
                 Rx = Modbus.Hex(result.Rx ?? new byte[0]),
                 ElapsedMs = result.Milliseconds,
-                ConfigVersion = config == null ? "" : config.Version
+                ConfigVersion = config == null ? "" : config.Version,
+                WriteId = result.WriteId ?? "",
+                Target = result.Point ?? "",
+                Evidence = BuildEvidence(result)
             };
             bool ok = true;
             lock (controlLogSync) {
@@ -649,6 +730,27 @@ namespace ExperimentMonitor {
             }
             result.AuditOk = ok;
             return ok;
+        }
+
+        /// <summary>
+        /// 证据串：tx|rx|pre|rb|effect|fb|gate|note|ms|epoch|noise|decision。
+        /// 这些信息同生共死放在一列里，审计表就不必反复 ALTER 加列 ——
+        /// 旧库反复加列会踩到"SQLite 不支持 DROP COLUMN"的坑。
+        /// </summary>
+        static string BuildEvidence(ControlResult result) {
+            if (result == null) return "";
+            var parts = new List<string> {
+                "tx=" + (result.Tx == null || result.Tx.Length == 0 ? "" : Modbus.Hex(result.Tx)),
+                "rx=" + (result.Rx == null || result.Rx.Length == 0 ? "" : Modbus.Hex(result.Rx)),
+                "pre=" + (result.PreReadRx == null || result.PreReadRx.Length == 0 ? "" : Modbus.Hex(result.PreReadRx)),
+                "rb=" + (result.ReadbackRx == null || result.ReadbackRx.Length == 0 ? "" : Modbus.Hex(result.ReadbackRx)),
+                "effect=" + (result.Status ?? ""),
+                "gate=" + (result.OldSource ?? ""),
+                "note=" + (result.Detail ?? ""),
+                "ms=" + result.Milliseconds.ToString(CultureInfo.InvariantCulture),
+                "epoch=" + result.Utc.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture)
+            };
+            return String.Join("|", parts.ToArray());
         }
 
         string SafeSource() {

@@ -14,6 +14,13 @@ namespace ExperimentMonitor {
         public int slave,address;
         public double min,max,step=1;
         public bool confirmed,allowWrite;
+        /// <summary>
+        /// 因果判据：写入这个点之后，真正能证明"设备动作了"的返回信号。
+        /// 空列表 ⇒ 结构上无法判定"设备已动作"（不是靠文案提醒，是数据结构上产不出这个结论）。
+        /// 现场已证伪的联动不要写进来：D2209（写 D2000 并不移动 D2209）、
+        /// D2212（PLC 定时斜坡指令，自己就会变）。写入的是"因果"，不是"看起来会变的点"。
+        /// </summary>
+        public List<string> feedbackPoints=new List<string>();
         public override string ToString(){return point+" "+label;}
     }
     public sealed class ControlInterlocks {
@@ -29,30 +36,53 @@ namespace ExperimentMonitor {
     }
     public sealed class ControlCommand {
         public string Point="",Operator="";public int Value;public bool Confirmed,Preview;
+        /// <summary>人工核对时的理由码：读数既不是写前旧值也不是写入新值时，必填。</summary>
+        public string Reason="";
     }
     public sealed class ControlResult {
-        public string Status="",Detail="",Point="",Label="",Operator="";
-        public int Slave,Address,OldValue,NewValue;public int? Readback;public bool HasReadback;
+        public string Status="",Detail="",Point="",Label="",Operator="",WriteId="";
+        public int Slave,Address,NewValue;public int? OldValue;public int? Readback;public bool HasReadback;
         public byte[] Tx=new byte[0],Rx=new byte[0];public long Milliseconds;public DateTime Utc=DateTime.UtcNow;
         public bool AuditOk=true;
         /// <summary>调试用：写前 03 预读与写后 03 回读的原始请求/响应帧，以及旧值来源。</summary>
         public byte[] PreReadTx=new byte[0],PreReadRx=new byte[0],ReadbackTx=new byte[0],ReadbackRx=new byte[0];
         public string OldSource="";public long ReadbackMs;
         public bool Applied{get{return Status=="applied";}}
+        /// <summary>held = 写后回读确认寄存器已改；applied = 下一轮采集观测也一致；reverted = 下一轮观测又变回去了。</summary>
+        public bool Held{get{return Status=="held"||Status=="applied";}}
     }
     public sealed class ControlEvent {
         public long UtcTicks;public string Source="",Session="",Operator="",Point="",Label="";
         public int Slave,Address,Function=6;public int? OldValue,NewValue,Readback;
         public string Status="",Detail="",Tx="",Rx="",ConfigVersion="";public long ElapsedMs;
+        /// <summary>一笔写入的唯一标识。同一笔写入只允许有一个终态。</summary>
+        public string WriteId="";
+        /// <summary>目标点（与 Point 同义，但 Point 在旧库里是显示名，target 是稳定标识）。</summary>
+        public string Target="";
+        /// <summary>证据串：tx|rx|pre|rb|effect|fb|gate|note|ms|epoch|noise|decision。
+        /// 同一批信息同生共死放进一列，避免给审计表反复加列。</summary>
+        public string Evidence="";
     }
     public sealed class ControlConfig {
         public int schemaVersion=1;
+        /// <summary>
+        /// 控制模式。
+        ///   disabled = 控制完全关闭（默认）。
+        ///   live     = 允许真实写入（0.8 起唯一表示"真的写"的取值）。
+        ///   preview  = 0.7.x 的旧写法。在旧版本里它**等同于真实写入**，所以这里按旧行为继续执行
+        ///               真实写入，并在启动时告警一次，避免老配置静默变成"不写"。
+        /// 预演（只生成 06 报文、不发送）一直都有，是界面上的独立按钮，与 mode 无关。
+        /// </summary>
         public string mode="disabled";
         public bool requireOperatorAck=true;
         public int autoLockIdleSeconds=0;
         /// <summary>联锁不满足时是否拦截发送。默认 false：联锁只做提示，现场联锁语义未确认时不阻断测试。</summary>
         public bool enforceInterlocks=false;
-        /// <summary>是否要求目标点 confirmed &amp;&amp; allowWrite 才允许发送。默认 false（现场确认状态只做提示）。</summary>
+        /// <summary>
+        /// 已废弃（0.8 起不再影响任何门禁）。confirmed 与 allowWrite 现在**各自独立生效**：
+        /// 只要目标点 confirmed=false 或 allowWrite=false，就不允许真实写入，与本字段无关。
+        /// 保留字段只为兼容旧配置文件；界面上会明确标出"已废弃"。
+        /// </summary>
         public bool requireConfirmed=false;
         public ControlInterlocks interlocks=new ControlInterlocks();
         public ControlLimits limits=new ControlLimits();
@@ -62,7 +92,10 @@ namespace ExperimentMonitor {
         [ScriptIgnore] public string Version="none";
 
         public static ControlConfig Disabled(){return new ControlConfig();}
-        public bool PreviewAllowed{get{return String.Equals(mode,"preview",StringComparison.OrdinalIgnoreCase);}}
+        /// <summary>是否允许真实写入。preview 是旧写法，等价于 live。</summary>
+        public bool WritesEnabled{get{return String.Equals(mode,"live",StringComparison.OrdinalIgnoreCase)||String.Equals(mode,"preview",StringComparison.OrdinalIgnoreCase);}}
+        /// <summary>兼容旧配置时需要提示的话；空串表示没有需要提醒的地方。</summary>
+        [ScriptIgnore] public string ModeCompatibilityWarning{get{return String.Equals(mode,"preview",StringComparison.OrdinalIgnoreCase)?"control-config.json 的 mode=preview 是 0.7.x 的旧写法：旧版本里它等同于真实写入，这里按旧行为继续执行真实写入。只想预演请使用界面上的预演按钮，不要依赖 mode。":"";}}
         public ControlTarget Find(string point){
             if(String.IsNullOrEmpty(point)||targets==null)return null;
             return targets.FirstOrDefault(t=>t!=null&&String.Equals(t.point,point,StringComparison.Ordinal));

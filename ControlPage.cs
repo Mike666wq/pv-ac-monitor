@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -33,6 +33,8 @@ namespace ExperimentMonitor {
         bool busy, wasRunning, suppressEdit, compactRows;
 
         sealed class StepRecord {
+            /// <summary>这条记录对应的控制点（用于查它的因果判据）。</summary>
+            public string Point = "";
             public int[] Steps = new int[] { 0, 0, 0, 0 };
             public bool Observing;
             public DateTime ObserveUntil;
@@ -364,7 +366,8 @@ namespace ExperimentMonitor {
             if (r == null) return "还没有发送";
             if (r.Steps[3] == 2) return "设备已动作";
             if (r.Steps[3] == 5) return "同值写：设备状态无变化（正常）";
-            if (r.Steps[3] == 4) return "观察结束：6 个返回信号无变化";
+            if (r.Steps[3] == 6) return "无法判定设备是否动作（未配置因果判据）";
+            if (r.Steps[3] == 4) return "观察结束：因果判据无变化";
             if (r.Steps[3] == 1) { int left = Math.Max(0, (int)Math.Ceiling((r.ObserveUntil - DateTime.UtcNow).TotalSeconds)); return "观察设备中，剩余 " + left + " 秒"; }
             if (r.Steps[2] == 3) return "回读不一致，请核对";
             if (r.Steps[2] == 2) return "回读一致";
@@ -381,6 +384,7 @@ namespace ExperimentMonitor {
             if (r.Steps[3] == 2) return Color.FromArgb(0, 142, 105);
             if (r.Steps[3] == 4) return Color.FromArgb(191, 116, 18);
             if (r.Steps[3] == 5) return Color.FromArgb(130, 145, 160);
+            if (r.Steps[3] == 6) return Color.FromArgb(130, 145, 160);
             if (r.Steps[2] == 3 || r.Steps[1] == 3) return Color.FromArgb(190, 52, 60);
             if (r.Steps[3] == 1) return Color.FromArgb(54, 112, 220);
             if (r.Steps[2] == 2) return Color.FromArgb(0, 142, 105);
@@ -531,6 +535,7 @@ namespace ExperimentMonitor {
         StepRecord Record(string point) {
             StepRecord record;
             if (!steps.TryGetValue(point, out record)) { record = new StepRecord(); steps[point] = record; }
+            record.Point = point ?? "";
             return record;
         }
 
@@ -585,13 +590,36 @@ namespace ExperimentMonitor {
 
 
         void StartObservation(StepRecord record) {
-            record.Observing = true;
             record.Steps[3] = 1;
             int seconds = ObservationSeconds();
             record.ObserveUntil = DateTime.UtcNow.AddSeconds(seconds);
-            record.Baseline.Clear();
-            foreach (string feedback in FeedbackPoints()) record.Baseline[feedback] = engine.ControlNumericValue(feedback);
-            record.Note = "观察设备返回信号 " + seconds + " 秒";
+            // 基线必须在"写之前"采样。record.Baseline 由发送流程在写前填好（见 SendItems 的 snapshot）。
+            // 这里绝不能重新采样 —— 重新采样得到的是写后状态，设备因这次写入而发生的变化会被
+            // 当成"没变化"，观察窗恒为假阴性，界面永远显示"未动作"。
+            var causal = CausalFeedbackPoints(record);
+            if (causal.Count == 0) {
+                // M6：没有确认过因果关系的返回信号，就不能断言"设备已动作"。
+                // 这是结构上的限制，不是文案提醒 —— 观察窗根本不会开。
+                record.Observing = false;
+                record.Steps[3] = 6;
+                record.Note = "未配置因果判据：写入本身已按回读确认，无法判定设备是否动作";
+                return;
+            }
+            record.Note = "观察设备返回信号 " + seconds + " 秒（判据：" + String.Join("、", causal.ToArray()) + "）";
+            record.Observing = true;
+        }
+
+        /// <summary>本控制点已确认的因果判据（target.feedbackPoints ∩ 配置的观察列表）。</summary>
+        List<string> CausalFeedbackPoints(StepRecord record) {
+            var result = new List<string>();
+            if (record == null) return result;
+            ControlTarget target = null;
+            var config = engine.ControlSettings;
+            if (config != null && config.targets != null) target = config.Find(record.Point);
+            if (target == null || target.feedbackPoints == null || target.feedbackPoints.Count == 0) return result;
+            var observed = new List<string>(FeedbackPoints());
+            foreach (string point in target.feedbackPoints) if (observed.Contains(point)) result.Add(point);
+            return result;
         }
 
         int ObservationSeconds() {
@@ -606,20 +634,31 @@ namespace ExperimentMonitor {
             foreach (var pair in steps) {
                 StepRecord record = pair.Value;
                 if (!record.Observing) continue;
-                bool changed = false;
-                foreach (var baseline in record.Baseline) {
-                    int? now = engine.ControlNumericValue(baseline.Key);
-                    if (baseline.Value.HasValue && now.HasValue && baseline.Value.Value != now.Value) { changed = true; break; }
+                var causal = CausalFeedbackPoints(record);
+                if (causal.Count == 0) {
+                    record.Observing = false; record.Steps[3] = 6;
+                    record.Note = "未配置因果判据：无法判定设备是否动作"; dirty = true; continue;
                 }
-                if (changed) {
+                // 逐点判定：只看已确认因果关系的点，并记录是哪一个点变了。
+                // 旧实现"任一反馈点变化即已动作"，于是会自己跳变的点（D2212 是 PLC 定时斜坡）
+                // 可以凭空造出"设备已动作"。
+                var changedPoints = new List<string>();
+                foreach (string point in causal) {
+                    int? before;
+                    if (!record.Baseline.TryGetValue(point, out before)) continue;
+                    int? now = engine.ControlNumericValue(point);
+                    if (before.HasValue && now.HasValue && before.Value != now.Value)
+                        changedPoints.Add(point + " " + before.Value + "→" + now.Value);
+                }
+                if (changedPoints.Count > 0) {
                     record.Observing = false;
                     record.Steps[3] = 2;
-                    record.Note = "设备返回信号有变化（已动作）";
+                    record.Note = "设备返回信号有变化（已动作）：" + String.Join("；", changedPoints.ToArray());
                     dirty = true;
                 } else if (DateTime.UtcNow >= record.ObserveUntil) {
                     record.Observing = false;
                     record.Steps[3] = 4;
-                    record.Note = "观察窗口结束，设备返回信号无变化（未动作）";
+                    record.Note = "观察窗口结束，" + causal.Count + " 个因果判据无变化（未动作）";
                     dirty = true;
                 }
             }

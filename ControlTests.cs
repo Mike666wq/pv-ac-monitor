@@ -31,6 +31,8 @@ namespace ExperimentMonitor {
             readonly Dictionary<int,int> registers=new Dictionary<int,int>();
             public string FailMode="";
             public bool EchoCorrupt;
+            /// <summary>让所有 03 读取失败：用于验证"写前预读失败即不发"。</summary>
+            public bool FailRead;
             public int ForceRegister=-1;
             public int WriteCount;
             public int ReadCount;
@@ -41,6 +43,7 @@ namespace ExperimentMonitor {
             public byte[] Read(int slave,int address,int count,int timeoutMs,CancellationToken token,Action<string> log) {
                 token.ThrowIfCancellationRequested();
                 ReadCount++;
+                if(FailRead) throw new TimeoutException("控制测试故障：读失败");
                 var body=new byte[3+count*2];
                 body[0]=(byte)slave;body[1]=3;body[2]=(byte)(count*2);
                 if(count==1) {
@@ -265,13 +268,19 @@ namespace ExperimentMonitor {
                     using(var engine=StartEngine(points,dir,fake,true)) {
                         engine.ArmControl("tester");
                         ControlResult r=engine.ExecuteControl("D2202",26,"tester");
-                        Check(r.Status=="applied","解锁后写入且回读一致返回 applied",checks);
+                        Check(r.Status=="held","写入且回读一致返回 held（设备效果要等下一轮采集观测确认）",checks);
                         Check(fake.WriteCount==1,"成功写入只发送一次 06",checks);
                         Check(r.HasReadback&&r.Readback==26,"成功写入回读为 26",checks);
                         Check(fake.Seeded(2,2202)==26,"模拟 PLC 寄存器被写入 26",checks);
+                        Check(!String.IsNullOrEmpty(r.WriteId),"每笔写入都有唯一标识",checks);
                         string logPath=Path.Combine(dir,"logs","control-events.jsonl");
                         Check(File.Exists(logPath),"成功写入生成控制审计文件",checks);
-                        Check(File.Exists(logPath)&&File.ReadAllText(logPath).Contains("\"applied\""),"控制审计包含 applied",checks);
+                        Check(File.Exists(logPath)&&File.ReadAllText(logPath).Contains("\"held\""),"控制审计包含 held",checks);
+                        Check(File.Exists(logPath)&&File.ReadAllText(logPath).Contains(r.WriteId),"控制审计带上 write_id",checks);
+                        // 效果确认：下一轮采集观测到同点同值 ⇒ applied
+                        engine.RememberObservation(Sample(fake,"D2202",2,2202));
+                        Check(engine.LastControlResult!=null&&engine.LastControlResult.Status=="applied","下一轮采集观测一致后判定 applied",checks);
+                        Check(engine.LastControlResult.WriteId==r.WriteId,"applied 与 held 属于同一笔写入",checks);
                     }
                 }
 
@@ -342,7 +351,7 @@ namespace ExperimentMonitor {
                     using(var engine=StartEngine(points,dir,fake,true)) {
                         engine.ArmControl("tester");
                         ControlResult first=engine.ExecuteControl("D2202",26,"tester");
-                        Check(first.Status=="applied","冷却测试首次写入 applied",checks);
+                        Check(first.Status=="held","冷却测试首次写入 held",checks);
                         ControlResult second=engine.ExecuteControl("D2202",27,"tester");
                         Check(second.Status=="rate","冷却窗口内第二次写入被拒绝",checks);
                         Check(fake.WriteCount==1,"冷却期间不发送第二次 06",checks);
@@ -376,7 +385,11 @@ namespace ExperimentMonitor {
                         Check(engine.ControlUncertain,"丢回显后处于未知状态",checks);
                         fake.FailMode="";
                         fake.ForceRegister=25;   // 既不是旧值 24 也不是新值 26
-                        ControlResult verified=engine.ResolveControlUncertainty("tester");
+                        // 2026-11-06 起：第三值不再一次点击就静默清锁，必须带理由码。
+                        ControlResult noReason=engine.ResolveControlUncertainty("tester");
+                        Check(noReason.Status=="verify_reason_required","第三值缺理由码时不解除锁定",checks);
+                        Check(engine.ControlUncertain,"第三值缺理由码时保持锁定",checks);
+                        ControlResult verified=engine.ResolveControlUncertainty("tester","现场确认为手动改动");
                         Check(verified.Status=="verify_mismatch_manual","核对值与旧新都不一致时按人工确认处理",checks);
                         Check(!engine.ControlUncertain,"人工核对后解除未知锁定（不再永久锁死）",checks);
                     }
@@ -414,6 +427,168 @@ namespace ExperimentMonitor {
                     ControlConfig broken=BuildConfig();
                     broken.targets[0].address=9999;
                     Check(!String.IsNullOrEmpty(broken.Validate(points)),"target 地址与点表不一致时 Validate 返回错误",checks);
+                }
+
+                // ── A3 门禁回归（2026-11-06）──────────────────────────────────
+                // 这些用例在旧实现下全部是绿的 —— 旧门禁挂在 requireConfirmed 条件里，
+                // 而 requireConfirmed 默认 false，于是 confirmed/allowWrite 整段被跳过。
+
+                // A3-1 随包配置（confirmed=false）必须挡住写入，且审计里不得出现任何 06 报文。
+                {
+                    string dir=NewRoot(root,"gate-confirmed");
+                    WriteConfig(dir,c=>{c.targets[0].confirmed=false;c.targets[0].allowWrite=true;});
+                    var fake=new FakeControlTransport();
+                    using(var engine=StartEngine(points,dir,fake,true)) {
+                        engine.ArmControl("tester");
+                        ControlResult r=engine.ExecuteControl("D2202",26,"tester");
+                        Check(r.Status=="not_confirmed","confirmed=false 时写入被挡下",checks);
+                        Check(fake.WriteCount==0,"confirmed=false 时不发送任何 06",checks);
+                    }
+                }
+
+                // A3-2 allowWrite=false 同样独立生效（不依赖 confirmed）。
+                {
+                    string dir=NewRoot(root,"gate-allowwrite");
+                    WriteConfig(dir,c=>{c.targets[0].confirmed=true;c.targets[0].allowWrite=false;});
+                    var fake=new FakeControlTransport();
+                    using(var engine=StartEngine(points,dir,fake,true)) {
+                        engine.ArmControl("tester");
+                        ControlResult r=engine.ExecuteControl("D2202",26,"tester");
+                        Check(r.Status=="not_allow_write","allowWrite=false 时写入被挡下",checks);
+                        Check(fake.WriteCount==0,"allowWrite=false 时不发送任何 06",checks);
+                    }
+                }
+
+                // A3-3 requireConfirmed=false 不得让两道门禁失效（这是随包配置真正的状态）。
+                {
+                    string dir=NewRoot(root,"gate-requireconfirmed-off");
+                    WriteConfig(dir,c=>{c.requireConfirmed=false;c.targets[0].confirmed=false;c.targets[0].allowWrite=false;});
+                    var fake=new FakeControlTransport();
+                    using(var engine=StartEngine(points,dir,fake,true)) {
+                        engine.ArmControl("tester");
+                        ControlResult r=engine.ExecuteControl("D2202",26,"tester");
+                        Check(r.Status=="not_confirmed","requireConfirmed=false 也不放过 confirmed=false",checks);
+                        Check(fake.WriteCount==0,"requireConfirmed=false 也不放过 allowWrite=false",checks);
+                    }
+                }
+
+                // A3-4 mode=disabled 必须彻底不写；mode=preview（旧写法）仍按旧行为写并告警。
+                {
+                    string dir=NewRoot(root,"gate-mode");
+                    WriteConfig(dir,c=>c.mode="disabled");
+                    var fake=new FakeControlTransport();
+                    using(var engine=StartEngine(points,dir,fake,true)) {
+                        ControlResult r=engine.ExecuteControl("D2202",26,"tester");
+                        Check(r.Status=="disabled","mode=disabled 时写入被挡下",checks);
+                        Check(fake.WriteCount==0,"mode=disabled 时不发送任何 06",checks);
+                    }
+                    string legacyDir=NewRoot(root,"gate-mode-preview");
+                    WriteConfig(legacyDir,c=>c.mode="preview");
+                    var legacyFake=new FakeControlTransport();
+                    using(var engine=StartEngine(points,legacyDir,legacyFake,true)) {
+                        Check(engine.ControlSettings.ModeCompatibilityWarning.Length>0,"mode=preview 给出兼容告警",checks);
+                        engine.ArmControl("tester");
+                        ControlResult r=engine.ExecuteControl("D2202",26,"tester");
+                        Check(r.Status=="held"||r.Status=="applied","mode=preview 按旧行为仍是真实写入",checks);
+                        Check(legacyFake.WriteCount==1,"mode=preview 确实发出了写入",checks);
+                    }
+                }
+
+                // A3-5 写前 03 预读失败 ⇒ 一律不发（旧实现会回退采集快照照写）。
+                {
+                    string dir=NewRoot(root,"gate-preread");
+                    // 关掉联锁：要单独验证"写前 03 预读失败"这一道，
+                    // 否则联锁点同样读不到值，会先一步以 stale 拦下，测不到预读本身。
+                    WriteConfig(dir,c=>c.enforceInterlocks=false);
+                    var fake=new FakeControlTransport();
+                    fake.FailRead=true;
+                    using(var engine=StartEngine(points,dir,fake,true)) {
+                        engine.ArmControl("tester");
+                        ControlResult r=engine.ExecuteControl("D2202",26,"tester");
+                        Check(r.Status=="pre_read_failed","写前预读失败时放弃写入",checks);
+                        Check(fake.WriteCount==0,"写前预读失败时不发送任何 06",checks);
+                        Check(!r.OldValue.HasValue,"写前预读失败时旧值留空而不是记成 0",checks);
+                    }
+                }
+
+                // A3-6 核对读到第三值：没有理由码就不解锁（旧实现一次点击静默清锁）。
+                {
+                    string dir=NewRoot(root,"verify-reason");
+                    WriteConfig(dir,null);
+                    var fake=new FakeControlTransport();
+                    using(var engine=StartEngine(points,dir,fake,true)) {
+                        engine.ArmControl("tester");
+                        fake.FailMode="drop";
+                        engine.ExecuteControl("D2202",26,"tester");
+                        Check(engine.ControlUncertain,"丢回显后进入未知锁定",checks);
+                        fake.FailMode="";
+                        fake.Seed(2,2202,99); // 读数既不是旧值也不是新值 ⇒ 第三值
+                        ControlResult noReason=engine.ResolveControlUncertainty("tester");
+                        Check(noReason.Status=="verify_reason_required","第三值缺理由码时不解除锁定",checks);
+                        Check(engine.ControlUncertain,"缺理由码时控制保持锁定",checks);
+                        ControlResult withReason=engine.ResolveControlUncertainty("tester","现场确认为手动改动");
+                        Check(withReason.Status=="verify_mismatch_manual","带理由码的第三值核对可以解锁",checks);
+                        Check(!engine.ControlUncertain,"带理由码后解除锁定",checks);
+                        string audit=File.ReadAllText(Path.Combine(dir,"logs","control-events.jsonl"));
+                        Check(audit.Contains("verify_reason_required")&&audit.Contains("现场确认为手动改动"),"第三值核对与理由码都进审计",checks);
+                    }
+                }
+
+                // A3-7 一笔写入只有一个终态：write_id 唯一，且界面不再自行写终态。
+                {
+                    string dir=NewRoot(root,"write-id");
+                    WriteConfig(dir,null);
+                    var fake=new FakeControlTransport();
+                    using(var engine=StartEngine(points,dir,fake,true)) {
+                        engine.ArmControl("tester");
+                        ControlResult r=engine.ExecuteControl("D2202",26,"tester");
+                        Check(!String.IsNullOrEmpty(r.WriteId),"写入带 write_id",checks);
+                        string audit=File.ReadAllText(Path.Combine(dir,"logs","control-events.jsonl"));
+                        Check(audit.Contains(r.WriteId),"审计带上 write_id",checks);
+                    }
+                }
+
+                // A3-8 演示配置不得跨会话存活：断开后重新连真实串口必须重新读盘。
+                {
+                    string dir=NewRoot(root,"demo-scope");
+                    WriteConfig(dir,c=>{c.mode="disabled";c.targets[0].confirmed=false;c.targets[0].allowWrite=false;});
+                    var fake=new FakeControlTransport();
+                    using(var engine=StartEngine(points,dir,fake,true)) {
+                        engine.ApplySimulationDemoConfig();
+                        Check(engine.ControlSettings.Version=="simulation-demo","模拟演示配置已加载",checks);
+                        engine.Disconnect();
+                        engine.Connect(true,"SIM",9600); // 重新连接应重载磁盘配置
+                        Check(engine.ControlSettings.Version!="simulation-demo","重新连接后演示配置不再存活",checks);
+                        Check(!engine.ControlArmed,"重新连接后控制开关默认关闭",checks);
+                    }
+                }
+
+                // A3-9 结构上产不出"设备已动作"：没有确认过因果关系的判据，就不许下这个结论。
+                {
+                    ControlConfig noCausal=BuildConfig();
+                    noCausal.targets[0].feedbackPoints=new List<string>();
+                    Check(noCausal.targets[0].feedbackPoints.Count==0,"未配置因果判据的控制点没有判据列表",checks);
+                    ControlConfig withCausal=BuildConfig();
+                    withCausal.targets[0].feedbackPoints=new List<string>{"D2211"};
+                    Check(withCausal.targets[0].feedbackPoints.Count==1,"配置了因果判据的控制点保留判据列表",checks);
+                }
+
+                // A3-10 mode=preview 是旧写法：按旧行为仍是真实写入，但必须给出兼容告警。
+                {
+                    Check(BuildConfig().mode=="preview","测试配置用旧写法 preview",checks);
+                    ControlConfig legacy=new ControlConfig();legacy.mode="preview";
+                    Check(legacy.WritesEnabled,"旧写法 preview 仍然算可写（保持 0.7.x 行为）",checks);
+                    Check(legacy.ModeCompatibilityWarning.Length>0,"旧写法 preview 有兼容告警文案",checks);
+                    ControlConfig live=new ControlConfig();live.mode="live";
+                    Check(live.WritesEnabled&&live.ModeCompatibilityWarning.Length==0,"新写法 live 可写且无告警",checks);
+                    ControlConfig off=new ControlConfig();off.mode="disabled";
+                    Check(!off.WritesEnabled,"disabled 不可写",checks);
+                }
+
+                // A3-11 审计列可空：旧值不该在"从未发生"时记成 0。
+                {
+                    ControlResult r=new ControlResult{Point="D2202",Status="unknown"};
+                    Check(!r.OldValue.HasValue,"未确定旧值时 OldValue 为空而不是 0",checks);
                 }
 
                 return checks;

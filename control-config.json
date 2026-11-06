@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "mode": "preview",
+  "mode": "live",
   "requireOperatorAck": true,
-  "autoLockIdleSeconds": 0,
+  "autoLockIdleSeconds": 1800,
   "enforceInterlocks": false,
   "requireConfirmed": false,
   "interlocks": {
@@ -19,7 +19,7 @@
     "verifyWindowMs": 1500,
     "observeFeedbackSeconds": 10
   },
-  "feedbackPoints": ["D2208", "D2209", "D2210", "D2211", "D2212", "D2213"],
+  "feedbackPoints": ["D2208", "D2210", "D2211", "D2213"],
   "targets": [
     {
       "point": "D2202",
@@ -33,7 +33,8 @@
       "step": 1,
       "confirmed": false,
       "allowWrite": false,
-      "note": "HRS2203→零基2202；单位/量程无工程依据（2026-10-03 实机读数 0）；范围按常见℃设定放宽，现场确认后收紧"
+      "feedbackPoints": [],
+      "note": "HRS2203→零基2202；单位/量程无工程依据（2026-10-03 实机读数 0）；范围按常见℃设定放宽，现场确认后收紧。feedbackPoints 留空：主机温度设定与哪一路返回信号有因果关系尚未确认，程序因此不会声称“设备已动作”"
     },
     {
       "point": "D2001",
@@ -47,6 +48,7 @@
       "step": 1,
       "confirmed": false,
       "allowWrite": false,
+      "feedbackPoints": [],
       "note": "HRS2202→零基2201；⚠ 点名写的是 2001，但连接项是 HRS2202（零基 2201），疑为原工程笔误 D2201，现场按名字核对会找错寄存器；模式码枚举无证据；2026-11-06 决定：暂按 2201 采集/显示、禁止写入（allowWrite=false），现场切模式时同时读 2001 与 2201 后再定，判定前不动地址"
     },
     {
@@ -61,7 +63,8 @@
       "step": 1,
       "confirmed": false,
       "allowWrite": false,
-      "note": "HRS2001→零基2000；单位/范围未确认"
+      "feedbackPoints": [],
+      "note": "HRS2001→零基2000；单位/范围未确认。⚠ D2209（风机档位）已从观察列表移除：现场已证伪“写 D2000 会移动 D2209”这条联动，它只能被动观察，不能作为因果判据"
     },
     {
       "point": "D2207",
@@ -75,6 +78,7 @@
       "step": 1,
       "confirmed": false,
       "allowWrite": false,
+      "feedbackPoints": [],
       "note": "HRS2208→零基2207；语义未确认"
     }
   ]
