@@ -41,7 +41,11 @@ namespace ExperimentMonitor {
         readonly Dictionary<string,bool> columnVisible=new Dictionary<string,bool>(StringComparer.Ordinal);
         Label emptyHint;
         // 默认列子集:常用三组(温度/实验电表/市电);用户在「列选择」里的勾选优先。
-        bool ColumnVisible(string name){bool v;if(columnVisible.TryGetValue(name,out v))return v;string g=PointCatalog.Get(name).Group;return g=="温度"||g=="实验电表"||g=="市电";}
+        // 默认列:所有"测量"角色的点。以前按分组名白名单(温度/实验电表/市电)，
+        // 结果太阳能 3 点在界面上看不到、导出里却有 —— 用户看不见自己要导出的东西。
+        // 现在界面与导出统一用角色判定，分组只负责显示排序。
+        internal static bool DefaultColumnVisible(string name){return PointRole.IsMeasurement(PointCatalog.Get(name).Role);}
+        bool ColumnVisible(string name){bool v;if(columnVisible.TryGetValue(name,out v))return v;return DefaultColumnVisible(name);}
         readonly Label storageStatus=new Label{AutoSize=true,MaximumSize=new Size(1000,0),ForeColor=Color.FromArgb(75,96,120)};
         readonly DataGridView inventory=new DataGridView{Dock=DockStyle.Fill,ReadOnly=true,AllowUserToAddRows=false,RowHeadersVisible=false,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill,BackgroundColor=Color.White,BorderStyle=BorderStyle.None,EnableHeadersVisualStyles=false};
         readonly Panel storageBody=new Panel{Dock=DockStyle.Fill,Visible=false,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink};

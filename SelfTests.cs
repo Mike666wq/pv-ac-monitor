@@ -187,6 +187,15 @@ namespace ExperimentMonitor {
             Check("排除保留寄存器后站6多出一块",reservedFree.Count(b=>b.Slave==6)==blocks.Count(b=>b.Slave==6)+1);
             Check("排除保留寄存器后仍零空洞",reservedFree.All(b=>b.Holes==0)&&BlockPlanner.Validate(reservedFree,withoutReserved).Count==0);
 
+            // 界面默认列与导出点集必须完全一致：曾经按分组名过滤，结果太阳能 3 点
+            // 在界面上看不到、导出里却有 —— 用户看不见自己要导出的东西。
+            var uiOnly=points.Where(p=>HistoryPage.DefaultColumnVisible(p.name)&&!ExperimentExport.ExportablePoint(p.name)).ToList();
+            var exportOnly=points.Where(p=>!HistoryPage.DefaultColumnVisible(p.name)&&ExperimentExport.ExportablePoint(p.name)).ToList();
+            Check("界面默认列与导出点集完全一致（界面多出 "+uiOnly.Count+"、导出多出 "+exportOnly.Count+"）",uiOnly.Count==0&&exportOnly.Count==0);
+            Check("太阳能点同时出现在界面与导出里",HistoryPage.DefaultColumnVisible("ZU6682")&&ExperimentExport.ExportablePoint("ZU6682"));
+            Check("设定值不同时出现在界面默认列与导出里",!HistoryPage.DefaultColumnVisible("D2202")&&!ExperimentExport.ExportablePoint("D2202"));
+            Check("状态点不同时出现在界面默认列与导出里",!HistoryPage.DefaultColumnVisible("D2212")&&!ExperimentExport.ExportablePoint("D2212"));
+
             string testRoot=Path.Combine(root,".testing",DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N").Substring(0,6));
             Directory.CreateDirectory(testRoot);
             using(var form=new MonitorForm(points,testRoot)) {form.SetSimulationForTest(true);form.TestSimulationRun(false);}

@@ -68,6 +68,7 @@ namespace ExperimentMonitor {
                     var history=new HistoryPage(points,root,form.Engine);form.HistoryHost.Controls.Add(history);form.AttachHistoryPage(history);
                     form.AttachCloudPage(new CloudPage(root,form.Engine));
                     if(args.Contains("--diag-cpu")) return Diag.Cpu(points,root,(string[])args);
+                if(args.Contains("--diag-page")) return Diag.Page(points,root,(string[])args);
                 if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
                     Application.Run(form);
                 }
@@ -80,6 +81,79 @@ namespace ExperimentMonitor {
         }
     }
     static partial class Diag {
+        /// <summary>
+        /// 页面事实诊断：进程内切到指定页签，等它加载完，把关键事实写成 JSON。
+        /// 数据记录页的 DataGridView 会让 UI Automation 枚举超过 30 秒上限，
+        /// 那条路径读不出来就只能换进程内驱动 —— 结论一样硬，还不受 UIA 性能干扰。
+        /// </summary>
+        internal static int Page(List<Point> points,string root,string[] args) {
+            int tab=3; foreach(string a in args) if(a!=null&&a.StartsWith("--tab=",StringComparison.Ordinal)) { int v; if(Int32.TryParse(a.Substring(6),out v)) tab=v; }
+            bool captureFirst=Array.IndexOf(args,"--capture-first")>=0;
+            var facts=new Dictionary<string,object>();
+            using(var form=new DashboardForm(points,root)) {
+                // 真实入口会挂 HistoryPage / CloudPage；诊断必须复现同样的装配，
+                // 否则"数据记录"页是空的，量到的表格是别的页面的。
+                try {
+                    var historyPage=new HistoryPage(points,root,form.Engine);
+                    form.HistoryHost.Controls.Add(historyPage);
+                    form.AttachHistoryPage(historyPage);
+                    form.AttachCloudPage(new CloudPage(root,form.Engine));
+                } catch(Exception ex) { facts["attachError"]=ex.Message; }
+                form.ShowInTaskbar=false;
+                var timer=new System.Windows.Forms.Timer{Interval=200};
+                int ticks=0;
+                form.Shown+=(s,e)=>{
+                    if(captureFirst) { try {
+                        form.Engine.TransportFactory=(sim,port,baud)=>new SimulationTransport();
+                        form.Engine.Connect(true,"SIM",9600);
+                        form.Engine.SetPeriodSeconds(1);
+                        form.Engine.Start(1,1,points.Select(p=>p.name).ToArray());
+                    } catch(Exception ex) { facts["connectError"]=ex.Message; } }
+                    timer.Tick+=(s2,e2)=>{
+                        ticks++;
+                        if(ticks==5) { if(captureFirst) { try { form.Engine.Stop(); } catch { } } form.MainNavigation.SelectedIndex=tab; }
+                        if(ticks>=30) {
+                            timer.Stop();
+                            try { Collect(form,tab,facts); } catch(Exception ex) { facts["collectError"]=ex.Message; }
+                            form.Close();
+                        }
+                    };
+                    timer.Start();
+                };
+                Application.Run(form);
+            }
+            File.WriteAllText(Path.Combine(root,"diag-page.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
+            Console.Out.WriteLine("DIAG page tab="+tab+" facts="+facts.Count);
+            return 0;
+        }
+        static void Collect(DashboardForm form,int tab,Dictionary<string,object> facts) {
+            facts["tab"]=tab;
+            facts["tabTitle"]=form.MainNavigation.SelectedTab==null?"":form.MainNavigation.SelectedTab.Text;
+            Control page=form.MainNavigation.SelectedTab;
+            if(page==null) return;
+            // 表格事实
+            var grids=AllOf<DataGridView>(page).ToList();
+            if(grids.Count==0) grids=AllOf<DataGridView>(form).ToList();   // HistoryPage 挂在 form 的宿主里，不一定在选中页签下
+            facts["gridCount"]=grids.Count;
+            for(int i=0;i<grids.Count;i++) {
+                var g=grids[i];
+                facts["grid"+i+"_rows"]=g.Rows.Count;
+                facts["grid"+i+"_cols"]=g.Columns.Count;
+                var headers=new List<string>(); foreach(DataGridViewColumn c in g.Columns) headers.Add(c.HeaderText??"");
+                if(headers.Count>8) headers=headers.GetRange(0,8);
+                facts["grid"+i+"_headers"]=headers;
+            }
+            // 所有可见标签文本里较长的几条（摘要、状态、提示）
+            var texts=AllOf<Label>(page).Where(l=>l.Visible&&!String.IsNullOrWhiteSpace(l.Text))
+                .OrderByDescending(l=>l.Text.Length).Take(8).Select(l=>l.Text).ToList();
+            facts["labels"]=texts;
+            var buttons=AllOf<Button>(page).Where(b=>b.Visible).Select(b=>b.Text??"").Where(t=>t.Length>0).Take(12).ToList();
+            if(buttons.Count==0) buttons=AllOf<Button>(form).Where(b=>b.Visible).Select(b=>b.Text??"").Where(t=>t.Length>0).Take(12).ToList();
+            facts["buttons"]=buttons;
+        }
+        static IEnumerable<T> AllOf<T>(Control root) where T:Control {
+            foreach(Control c in root.Controls){ var t=c as T; if(t!=null) yield return t; foreach(var n in AllOf<T>(c)) yield return n; }
+        }
         internal static int Cpu(List<Point> points,string root,string[] args) {
             int tab=3;
             foreach(string a in args) if(a!=null&&a.StartsWith("--tab=",StringComparison.Ordinal)) { int v; if(Int32.TryParse(a.Substring(6),out v)) tab=v; }

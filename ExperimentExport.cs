@@ -28,7 +28,9 @@ namespace ExperimentMonitor {
   static string QLabel(string q,string status){if(Quality.IsGood(q))return "正常";return String.IsNullOrEmpty(status)?Quality.Label(q):status;}
   static string Num(double? d){return d.HasValue?d.Value.ToString("G17",CultureInfo.InvariantCulture):"";}
   static string Local(long ticks){return new DateTime(ticks,DateTimeKind.Utc).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff zzz",CultureInfo.InvariantCulture);}
-  internal static bool ExportablePoint(string point){string group=PointCatalog.Get(point).Group;return point!="0006H"&&group!="运行状态"&&group!="控制/设定";}
+  // 可导出的点只用"角色"判定，不用分组名 —— 分组是显示用的，会随命名调整而漂移。
+  // 必须与 HistoryPage.DefaultColumnVisible 保持一致，否则界面与导出会给出不同的点集。
+  internal static bool ExportablePoint(string point){return PointRole.IsMeasurement(PointCatalog.Get(point).Role);}
   static object[] Detail(SQLiteDataReader r){long utc=r.GetInt64(1);string point=Txt(r,7);PointInfo info=PointCatalog.Get(point);
     // 元数据三级回退：行内（写入当时的名称/单位/模式）优先，当前点表只作为旧行的兜底。
     // 用今天的点表解释去年的行，会把旧数据的名称、单位、倍率一起改掉 —— 那等于篡改历史。

@@ -142,7 +142,9 @@ namespace ExperimentMonitor {
             StyledActionButton headerAction=Field<StyledActionButton>(form,"headerAction");
             Button start=Field<Button>(form,"start"),once=Field<Button>(form,"once"),stop=Field<Button>(form,"stop");
             // 宽表默认只显示常用三组(温度/实验电表/市电)的列。
-            int expectedWideColumns=points.Count(p=>{string g=PointCatalog.Get(p.name).Group;return g=="温度"||g=="实验电表"||g=="市电";})+2;
+            // 用产品自己的判定函数算期望列数，而不是在这里重写一份分组白名单 ——
+            // 写死过一份，产品改成按角色过滤之后这里就假失败了。
+            int expectedWideColumns=points.Count(p=>HistoryPage.DefaultColumnVisible(p.name))+2;
             CheckBox simulation=Field<CheckBox>(form,"simulation");simulation.Checked=true;
             Field<NumericUpDown>(form,"period").Value=1;
             Trace("LIFECYCLE BEGIN "+title);

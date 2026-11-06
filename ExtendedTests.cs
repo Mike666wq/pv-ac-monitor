@@ -44,6 +44,7 @@ namespace ExperimentMonitor {
             Check(PointCatalog.Get("D2212").Role==PointRole.Status&&PointCatalog.Get("0006H").Role==PointRole.Diagnostic,"状态点与诊断点角色正确",checks);
             Check(PointCatalog.Get("D2202").PairedWith=="T1"&&PointCatalog.Get("T1").PairedWith=="D2202","设定值与受控实测值双向配对",checks);
             Check(PointCatalog.Get("D2000").PairedWith=="D2209","D2000 配对 D2209（该联动已被数据证伪，配对保留以便界面显示偏差）",checks);
+
             Check(PointCatalog.Version.StartsWith("catalog-4-")&&PointCatalog.Version.Length>18,"点表版本是内容指纹而不是手写常量",checks);
             string folder=Path.Combine(root,".testing","integrated-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);File.Copy(Path.Combine(root,"protocol.json"),Path.Combine(folder,"protocol.json"));
             var observed=new List<Observation>();
