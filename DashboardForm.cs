@@ -62,6 +62,9 @@ namespace ExperimentMonitor {
             FormClosing+=(s,e)=>{SaveSettings();try{if(Engine.IsRunning)Engine.Stop();Engine.Disconnect();closed=true;freshness.Stop();}catch(Exception ex){e.Cancel=true;MessageBox.Show(this,"正在等待采集线程和本地记录安全关闭，请稍后重试。\r\n"+ex.Message,"关闭程序",MessageBoxButtons.OK,MessageBoxIcon.Warning);}};
             FormClosed+=(s,e)=>{freshness.Dispose();tips.Dispose();Engine.Dispose();};
             RefreshPorts();LoadSettings();UiTheme.Apply(this);if(headerTitle!=null)headerTitle.ForeColor=Color.White;RefreshControls();
+            // 点表启动校验的结果必须让人看见，不能只写进 JSON 文件。
+            // 没有横幅的"静默拒绝"会让人以为程序坏了，而不是以为点表漏登记了。
+            if(!String.IsNullOrEmpty(PointCatalogValidation.StartupNotice)){AppendLog("点表校验 · "+PointCatalogValidation.StartupNotice);counts.Text="! 点表校验 · "+PointCatalogValidation.StartupNotice;counts.ForeColor=UiTheme.Warning;}
         }
 
         void BuildShell() {
