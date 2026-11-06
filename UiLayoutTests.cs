@@ -162,6 +162,11 @@ namespace ExperimentMonitor {
             headerAction.PerformClick();
             await WaitAsync(()=>!form.Engine.IsConnected,5000,"UI disconnect did not release");
             await WaitAsync(()=>Field<Label>(form,"connectionState").Text.Contains("未连接")&&headerAction.Text=="连接",5000,"UI connection state did not reflect disconnect");
+            // 状态栏四段必须各自标明语义：四个同样颜色的圆点会让人以为它们是同一类信号。
+            Check(Field<Label>(form,"connectionState").Text.Contains("链路")
+                &&Field<Label>(form,"captureState").Text.Contains("采集")
+                &&Field<Label>(form,"recordState").Text.Contains("记录")
+                &&Field<Label>(form,"cloudState").Text.Contains("云端"),title+" 状态栏四段各自标明语义（链路/采集/记录/云端）");
             TabPage page=form.MainNavigation.TabPages[3];
             form.MainNavigation.SelectedTab=page;
             HistoryPage history=Find<HistoryPage>(page);

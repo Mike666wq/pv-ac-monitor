@@ -92,7 +92,10 @@ namespace ExperimentMonitor {
             // 底部状态栏:状态灯与点表/采集统计合并为一行。
             var statusBar=new Panel { Dock=DockStyle.Fill,BackColor=Color.FromArgb(229,237,246),Padding=new Padding(10,0,10,0) };
             var states=new FlowLayoutPanel { Dock=DockStyle.Left,AutoSize=true,WrapContents=false,AutoScroll=false,Margin=Padding.Empty,Padding=new Padding(0,2,0,0),BackColor=Color.Transparent };
-            states.Controls.Add(connectionState);states.Controls.Add(captureState);states.Controls.Add(recordState);states.Controls.Add(cloudState);
+            // 四个圆点语义不同，不能连排：前两个是"现在"（链路、采集），后两个是"沉淀"（记录、云端）。
+            // 四个一样颜色的圆点等于告诉使用者"这四件事一样重要、一样可靠"。
+            var divider=new Label { Text="│",AutoSize=true,ForeColor=Color.FromArgb(180,196,214),Padding=new Padding(4,4,4,0),Margin=Padding.Empty,BackColor=Color.Transparent };
+            states.Controls.Add(connectionState);states.Controls.Add(captureState);states.Controls.Add(divider);states.Controls.Add(recordState);states.Controls.Add(cloudState);
             counts.AutoSize=true;counts.Dock=DockStyle.Right;counts.TextAlign=ContentAlignment.MiddleLeft;counts.Padding=new Padding(8,6,4,0);counts.Margin=Padding.Empty;counts.ForeColor=UiTheme.Muted;counts.BackColor=Color.Transparent;
             statusBar.Controls.Add(states);statusBar.Controls.Add(counts);shell.Controls.Add(statusBar,0,3);
         }
@@ -192,10 +195,10 @@ namespace ExperimentMonitor {
             CloudPublisherStatus snapshot=cloudPage==null?null:cloudPage.CurrentStatus;
             string state=snapshot==null?(value??""):snapshot.State;
             bool disabled=String.IsNullOrWhiteSpace(state)||state.Contains("未启用");
-            cloudState.Text=disabled?"○ 云端未启用":"云端 · "+value;
+            cloudState.Text=disabled?"☁ 云端 · 未启用":"☁ 云端 · "+value;
             cloudState.ForeColor=disabled?UiTheme.Muted:state.Contains("在线")?UiTheme.Green:(state.Contains("失败")||state.Contains("错误")||state.Contains("认证")||state.Contains("TLS"))?UiTheme.Danger:UiTheme.Muted;
         });}
-        public void SetCloudStatus(string value){Dispatch(()=>cloudState.Text=String.IsNullOrWhiteSpace(value)?"云端未启用":"云端 · "+value);}
+        public void SetCloudStatus(string value){Dispatch(()=>cloudState.Text=String.IsNullOrWhiteSpace(value)?"☁ 云端 · 未启用":"☁ 云端 · "+value);}
         public void CapturePreview(string path){ShowInTaskbar=false;Opacity=0;Show();Application.DoEvents();using(var bitmap=new Bitmap(Width,Height)){DrawToBitmap(bitmap,new Rectangle(0,0,Width,Height));bitmap.Save(path);}Hide();Opacity=1;}
         public void CapturePreview(string path,int width,int height){ClientSize=new Size(width,height);CapturePreview(path);}
 
@@ -233,6 +236,26 @@ namespace ExperimentMonitor {
         /// <summary>超过这个秒数就把卡片上的旧值清空（陈旧第二档）。</summary>
         const double StaleLimitSeconds=60;
 
+        /// <summary>
+        /// 设备分母：本轮真正有数据回来的设备数 / 点表里一共几台设备。
+        /// 只说"已连接"是不够的 —— 串口开着、4 台设备里 2 台没响应，那还是"已连接"。
+        /// 这个分母是"链路通"与"设备都在"的分界线。
+        /// </summary>
+        string DeviceHealth() {
+            var total=new HashSet<int>();
+            var alive=new HashSet<int>();
+            DateTime now=DateTime.UtcNow;
+            double limit=Math.Max(10,(double)period.Value*3);
+            foreach(Point p in points) {
+                if(p==null||p.binding==null) continue;
+                total.Add(p.binding.slave);
+                DateTime last;
+                if(lastGood.TryGetValue(p.name,out last)&&(now-last).TotalSeconds<=limit) alive.Add(p.binding.slave);
+            }
+            if(total.Count==0) return "0/0 设备";
+            return alive.Count+"/"+total.Count+" 设备";
+        }
+
         /// <summary>陈旧时长的人读文案。</summary>
         static string AgeText(double seconds) {
             if(seconds<90) return ((int)Math.Max(0,seconds))+"s";
@@ -246,13 +269,13 @@ namespace ExperimentMonitor {
             return current.HasValue&&current.Value<0.5;
         }
         void Dispatch(Action action){if(closed||IsDisposed)return;try{if(IsHandleCreated)BeginInvoke(action);}catch(InvalidOperationException){} }
-        void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"○ 本地记录已停止":"○ 本地记录待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;headerAction.Text=connected?"断开连接":"连接";headerAction.Enabled=connected||!running;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;connectionState.Text=connected?(Engine.ConnectedSimulation?"● 模拟已连接":"● 串口已连接 · "+Engine.ConnectedPort):"○ 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"● 正在采集":"○ 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
+        void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"▤ 记录 · 已停止":"▤ 记录 · 待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;headerAction.Text=connected?"断开连接":"连接";headerAction.Enabled=connected||!running;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;connectionState.Text=connected?(Engine.ConnectedSimulation?"● 链路 · 模拟 · "+DeviceHealth():"● 链路 · 已连接 · "+Engine.ConnectedPort+" · "+DeviceHealth()):"○ 链路 · 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"▶ 采集 · 运行中":"⏸ 采集 · 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
         void ConnectCaptureSource(){try{if(!simulation.Checked&&String.IsNullOrWhiteSpace(port.Text))throw new InvalidOperationException("没有可用串口。请接入 USB-RS485 转换器后点击刷新。");Engine.Connect(simulation.Checked,port.Text,9600);SaveSettings();RefreshControls();}catch(Exception ex){MessageBox.Show(this,"连接失败："+ex.Message,"连接",MessageBoxButtons.OK,MessageBoxIcon.Error);}}
-        void SetConnection(bool connected,string source){string key=source??Engine.ActiveSource;if(connected){if(displayedSource!=null&&key!=displayedSource)ResetDisplay();displayedSource=key;connectionState.Text=key=="simulation"?"● 模拟设备已连接":"● 串口已连接 · "+Engine.ConnectedPort+" · 9600 8N1";connectionState.ForeColor=UiTheme.Green;AppendLog("连接状态："+connectionState.Text);if(historyPage!=null)historyPage.SetActiveSource(key);}else{connectionState.Text="○ 未连接";connectionState.ForeColor=UiTheme.Muted;MarkLastValuesStale("连接已断开");AppendLog("连接已断开 · 最后采样保留");}RefreshControls();}
+        void SetConnection(bool connected,string source){string key=source??Engine.ActiveSource;if(connected){if(displayedSource!=null&&key!=displayedSource)ResetDisplay();displayedSource=key;connectionState.Text=key=="simulation"?"● 链路 · 模拟 · "+DeviceHealth():"● 链路 · 已连接 · "+Engine.ConnectedPort+" · 9600 8N1 · "+DeviceHealth();connectionState.ForeColor=UiTheme.Green;AppendLog("连接状态："+connectionState.Text);if(historyPage!=null)historyPage.SetActiveSource(key);}else{connectionState.Text="○ 未连接";connectionState.ForeColor=UiTheme.Muted;MarkLastValuesStale("连接已断开");AppendLog("连接已断开 · 最后采样保留");}RefreshControls();}
         void MarkLastValuesStale(string label){foreach(var p in lastGood){Label[] c;if(cards.TryGetValue(p.Key,out c)){c[3].Text=label+" · "+p.Value.ToLocalTime().ToString("HH:mm:ss");c[3].ForeColor=UiTheme.Warning;}DataRow r;if(rows.TryGetValue(p.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期 · "+label;}}
-        void StartCapture(bool single){try{if(!Engine.IsConnected)throw new InvalidOperationException("请先连接数据源");SaveSettings();shownStoreError=null;good=bad=0;Engine.SetPeriodSeconds((int)period.Value);if(single)Engine.StartOnce((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));else Engine.Start((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));RefreshControls();captureState.Text=single?"● 正在采集一轮":"● 正在采集";}catch(Exception ex){ShowError(single?"单轮采集失败":"开始采集失败",ex);}}
-        void StopCapture(){try{Engine.Stop();captureState.Text="○ 已停止 · 连接保持 · 本地记录已排空";MarkLastValuesStale("采集已停止");RefreshControls();}catch(Exception ex){ShowError("停止采集失败",ex);}}
-        void RefreshFreshness(){RefreshControls();string fatal=Engine.LastStoreError;if(!String.IsNullOrWhiteSpace(fatal)){recordState.Text="! 本地记录失败 · "+fatal;recordState.ForeColor=UiTheme.Danger;if(shownStoreError!=fatal){shownStoreError=fatal;AppendLog("本地记录失败："+fatal);MessageBox.Show(this,"本地记录出现错误，采集已停止或正在停止。请检查数据目录和磁盘空间。\r\n\r\n"+fatal,"本地记录失败",MessageBoxButtons.OK,MessageBoxIcon.Error);}}else if(Engine.Store!=null){var s=Engine.Store.Status;if(s!=null){recordState.Text=s.Recording?"● 本地记录正常 · "+s.Committed.ToString("N0")+" 条":"本地记录已停止";if(!String.IsNullOrEmpty(s.LastError))recordState.Text="! 本地记录错误 · "+s.LastError;recordState.ForeColor=String.IsNullOrEmpty(s.LastError)?(s.Recording?UiTheme.Green:UiTheme.Muted):UiTheme.Danger;}}else recordState.Text=Engine.CompletedCaptures>0?"○ 本地记录已停止":"○ 本地记录待机";
+        void StartCapture(bool single){try{if(!Engine.IsConnected)throw new InvalidOperationException("请先连接数据源");SaveSettings();shownStoreError=null;good=bad=0;Engine.SetPeriodSeconds((int)period.Value);if(single)Engine.StartOnce((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));else Engine.Start((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));RefreshControls();captureState.Text=single?"▶ 采集 · 运行中（单轮）":"▶ 采集 · 运行中";}catch(Exception ex){ShowError(single?"单轮采集失败":"开始采集失败",ex);}}
+        void StopCapture(){try{Engine.Stop();captureState.Text="⏸ 采集 · 已停止 · 连接保持";MarkLastValuesStale("采集已停止");RefreshControls();}catch(Exception ex){ShowError("停止采集失败",ex);}}
+        void RefreshFreshness(){RefreshControls();string fatal=Engine.LastStoreError;if(!String.IsNullOrWhiteSpace(fatal)){recordState.Text="! 记录 · 失败 · "+fatal;recordState.ForeColor=UiTheme.Danger;if(shownStoreError!=fatal){shownStoreError=fatal;AppendLog("本地记录失败："+fatal);MessageBox.Show(this,"本地记录出现错误，采集已停止或正在停止。请检查数据目录和磁盘空间。\r\n\r\n"+fatal,"本地记录失败",MessageBoxButtons.OK,MessageBoxIcon.Error);}}else if(Engine.Store!=null){var s=Engine.Store.Status;if(s!=null){recordState.Text=s.Recording?"▤ 记录 · "+s.Committed.ToString("N0")+" 条":"▤ 记录 · 已停止";if(!String.IsNullOrEmpty(s.LastError))recordState.Text="! 记录 · 错误 · "+s.LastError;recordState.ForeColor=String.IsNullOrEmpty(s.LastError)?(s.Recording?UiTheme.Green:UiTheme.Muted):UiTheme.Danger;}}else recordState.Text=Engine.CompletedCaptures>0?"▤ 记录 · 已停止":"▤ 记录 · 待机";
             foreach(var pair in lastGood){double staleNow=(DateTime.UtcNow-pair.Value).TotalSeconds;if(staleNow>Math.Max(10,(double)period.Value*3)){Label[] c;if(cards.TryGetValue(pair.Key,out c)&&!c[3].Text.Contains("陈旧")&&!c[3].Text.Contains("采集已停止")&&!c[3].Text.Contains("连接已断开")){PointInfo staleMeta=PointCatalog.Get(pair.Key);c[3].Text=((!staleMeta.SemanticConfirmed||!String.IsNullOrEmpty(staleMeta.UnitQualifier))?"△ ":"")+"陈旧 "+AgeText(staleNow);c[3].ForeColor=UiTheme.Warning;if(staleNow>StaleLimitSeconds)c[1].Text="—";}DataRow r;if(rows.TryGetValue(pair.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期";}}}
         public void UpdateObservation(Observation o){if(o==null)return;if(!String.IsNullOrEmpty(o.SessionId)&&countedSession!=o.SessionId){countedSession=o.SessionId;good=bad=0;}bool valid=Quality.IsGood(o.Quality);if(valid)good++;else if(Quality.IsFailure(o.Quality))bad++;DateTime previous;bool hasOld=lastGood.TryGetValue(o.Point,out previous);
             DataRow r;if(rows.TryGetValue(o.Point,out r)){if(valid){r["实时值"]=DisplayNumber(o);r["采样时间"]=o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture);}r["质量"]=valid?"正常":QualityLabel(o.Quality)+(hasOld?" · 保留旧值":" · 尚无有效值");r["耗时(ms)"]=o.Milliseconds.ToString(CultureInfo.InvariantCulture);}
