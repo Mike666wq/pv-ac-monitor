@@ -42,7 +42,9 @@ namespace ExperimentMonitor {
 
     /// <summary>实时监控 → 总览页:分组流式卡片网格 + 总览趋势图。</summary>
     internal static class OverviewPageBuilder {
-        const int CardMinWidth=200,CardHeight=110;
+        // 188 = 1440 宽下 7 列正好放得下（7*188 + 6*8 边距 = 1364 <= 1377 净宽，已扣 17px 滚动条）。
+        // 180 = 1440 宽下 7 列稳定成立（7*(180+8) = 1316 <= 净宽约 1365，已扣 17px 滚动条）。
+        const int CardMinWidth=180,CardHeight=96;
 
         /// <summary>
         /// 数值标签按实际宽度收缩字号，保证任何 DPI/字体下都不溢出卡片（E 记数法尤其需要）。
@@ -72,11 +74,15 @@ namespace ExperimentMonitor {
         internal static void Build(TabPage page,List<Point> points,Dictionary<string,Label[]> cards,ToolTip tips,ExperimentChart overviewChart,Font baseFont) {
             var viewport=new Panel { Dock=DockStyle.Fill,AutoScroll=true,BackColor=UiTheme.Canvas };page.Controls.Add(viewport);
             var stack=new TableLayoutPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=0,Padding=new Padding(2) };viewport.Controls.Add(stack);
-            string[] groupOrder={"温度","实验电表","市电","太阳能","运行状态","诊断"};
+            // "控制/设定"以前不在这个列表里，于是整组掉到最后（Index=99）——
+            // 指令值被排到诊断之后，是"值不对位"的成因之一。
+            string[] groupOrder={"温度","实验电表","市电","太阳能","控制/设定","运行状态","诊断"};
             foreach(var group in points.GroupBy(p=>PointCatalog.Get(p).Group).OrderBy(g=>Array.IndexOf(groupOrder,g.Key)<0?99:Array.IndexOf(groupOrder,g.Key))) {
                 var section=new RoundedPanel { Dock=DockStyle.Top,Height=140,Padding=Padding.Empty,Margin=new Padding(2,2,2,8) };
                 var header=new Panel { Dock=DockStyle.Top,Height=34,BackColor=UiTheme.Surface,Padding=new Padding(12,7,12,0) };
-                var title=new Label { Text=group.Key+"  ·  "+group.Count(),AutoSize=true,ForeColor=UiTheme.Ink,Font=new Font(baseFont.FontFamily,10,FontStyle.Bold),BackColor=UiTheme.Surface };
+                // 指令/设定不只改排序：它在这一区里是"命令"，不是"读数"，标题也要说清楚。
+                string groupTitle=group.Key=="控制/设定"?"指令 / 设定":group.Key;
+                var title=new Label { Text=groupTitle+"  ·  "+group.Count(),AutoSize=true,ForeColor=UiTheme.Ink,Font=new Font(baseFont.FontFamily,10,FontStyle.Bold),BackColor=UiTheme.Surface };
                 header.Controls.Add(title);section.Controls.Add(header);
                 var flow=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=true,AutoScroll=false,Padding=new Padding(8,0,8,6),Margin=Padding.Empty,BackColor=UiTheme.Surface };
                 section.Controls.Add(flow);
@@ -89,11 +95,12 @@ namespace ExperimentMonitor {
                 if(group.Key=="运行状态"||group.Key=="控制/设定") ordered = group.OrderBy(x=>x.binding.address_zero_based);
                 foreach(Point p in ordered) {
                     PointInfo info=PointCatalog.Get(p);
-                    var card=new RoundedPanel { Width=CardMinWidth,Height=CardHeight,Margin=new Padding(4),Padding=new Padding(10,8,10,8) };
+                    // 卡片高 96：内部三行必须一起收紧，否则 17pt 数值行只剩 38px 而它需要 45px。
+                    var card=new RoundedPanel { Width=CardMinWidth,Height=CardHeight,Margin=new Padding(4),Padding=new Padding(10,6,10,6) };
                     var grid=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Margin=Padding.Empty,Padding=Padding.Empty,BackColor=UiTheme.Surface };
                     // 显式 Percent 列:缺省列样式在宽度收缩时可能让 Fill 子控件溢出容器。
                     grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
-                    grid.RowStyles.Add(new RowStyle(SizeType.Absolute,22));grid.RowStyles.Add(new RowStyle(SizeType.Percent,100));grid.RowStyles.Add(new RowStyle(SizeType.Absolute,20));
+                    grid.RowStyles.Add(new RowStyle(SizeType.Absolute,18));grid.RowStyles.Add(new RowStyle(SizeType.Percent,100));grid.RowStyles.Add(new RowStyle(SizeType.Absolute,16));
                     var label=new Label { Text=info.Label+"  "+p.name,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Muted,Font=new Font(baseFont.FontFamily,8.5f),AutoEllipsis=true,BackColor=UiTheme.Surface,Margin=Padding.Empty,Padding=Padding.Empty };
                     float valueSize = info.Mode=="U16 / I16" ? 9.5f : 17f;
                     var value=new Label { Text="—",Dock=DockStyle.Fill,TextAlign=ContentAlignment.BottomLeft,ForeColor=UiTheme.Ink,Font=new Font(baseFont.FontFamily,valueSize,FontStyle.Bold),AutoEllipsis=false,UseCompatibleTextRendering=true,BackColor=UiTheme.Surface };
@@ -132,7 +139,9 @@ namespace ExperimentMonitor {
                             if(innerWidth<=0)return;
                             int marginWidth=flow.Controls.Count==0?0:flow.Controls[0].Margin.Horizontal;
                             // 以首张卡当前宽度为基准:DPI 缩放后卡片已被放大,字体也同比放大,二者保持一致。
-                            int naturalWidth=flow.Controls.Count==0?CardMinWidth:flow.Controls[0].Width;
+                            // 必须以"最小宽度"为基准，不能用首张卡的当前宽度 —— 后者在第一次排布后已被拉开，
+                            // 于是列数被自己锁死（1440 宽下永远停在 6 列，7 个温度点被迫换行）。DPI 缩放由 AutoScaleMode 统一处理。
+                            int naturalWidth=CardMinWidth;
                             int columns=Math.Max(1,(innerWidth+marginWidth)/Math.Max(1,naturalWidth+marginWidth));
                             int cardWidth=Math.Max(1,(innerWidth-columns*marginWidth)/columns);
                             foreach(Control card in flow.Controls)if(card.Width!=cardWidth)card.Width=cardWidth;

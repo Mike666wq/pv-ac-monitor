@@ -128,7 +128,7 @@ namespace ExperimentMonitor {
                 if(e.ColumnIndex<0||e.ColumnIndex>=grid.Columns.Count||grid.Columns[e.ColumnIndex].DataPropertyName!="质量"||e.Value==null)return;
                 string q=e.Value.ToString();Color fore=UiTheme.Muted,back=UiTheme.Surface;
                 if(q.StartsWith("正常")){fore=UiTheme.Green;back=Color.FromArgb(226,244,238);}
-                else if(q.StartsWith("过期")||q.Contains("旧值")){fore=UiTheme.Warning;back=Color.FromArgb(252,241,222);}
+                else if(q.StartsWith("过期")||q.Contains("旧值")||q.Contains("陈旧")){fore=UiTheme.Warning;back=Color.FromArgb(252,241,222);}
                 else if(q.Contains("超时")||q.Contains("异常")||q.Contains("错误")||q.Contains("失败")){fore=UiTheme.Danger;back=Color.FromArgb(251,231,232);}
                 e.CellStyle.ForeColor=fore;e.CellStyle.BackColor=back;e.CellStyle.SelectionBackColor=back;e.CellStyle.SelectionForeColor=fore;
             };
@@ -230,6 +230,16 @@ namespace ExperimentMonitor {
             return "实测 "+actual.Value.ToString("0.#",CultureInfo.InvariantCulture)+"（偏差 "+deviation.ToString("+0.#;-0.#;0",CultureInfo.InvariantCulture)+"）· "+why;
         }
 
+        /// <summary>超过这个秒数就把卡片上的旧值清空（陈旧第二档）。</summary>
+        const double StaleLimitSeconds=60;
+
+        /// <summary>陈旧时长的人读文案。</summary>
+        static string AgeText(double seconds) {
+            if(seconds<90) return ((int)Math.Max(0,seconds))+"s";
+            if(seconds<5400) return ((int)(seconds/60))+"m";
+            return ((int)(seconds/3600))+"h";
+        }
+
         /// <summary>执行器是否停机：压缩机电流接近空载。</summary>
         bool ActuatorIdle() {
             double? current=Engine.ControlNumericValue("D2");
@@ -243,7 +253,7 @@ namespace ExperimentMonitor {
         void StartCapture(bool single){try{if(!Engine.IsConnected)throw new InvalidOperationException("请先连接数据源");SaveSettings();shownStoreError=null;good=bad=0;Engine.SetPeriodSeconds((int)period.Value);if(single)Engine.StartOnce((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));else Engine.Start((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));RefreshControls();captureState.Text=single?"● 正在采集一轮":"● 正在采集";}catch(Exception ex){ShowError(single?"单轮采集失败":"开始采集失败",ex);}}
         void StopCapture(){try{Engine.Stop();captureState.Text="○ 已停止 · 连接保持 · 本地记录已排空";MarkLastValuesStale("采集已停止");RefreshControls();}catch(Exception ex){ShowError("停止采集失败",ex);}}
         void RefreshFreshness(){RefreshControls();string fatal=Engine.LastStoreError;if(!String.IsNullOrWhiteSpace(fatal)){recordState.Text="! 本地记录失败 · "+fatal;recordState.ForeColor=UiTheme.Danger;if(shownStoreError!=fatal){shownStoreError=fatal;AppendLog("本地记录失败："+fatal);MessageBox.Show(this,"本地记录出现错误，采集已停止或正在停止。请检查数据目录和磁盘空间。\r\n\r\n"+fatal,"本地记录失败",MessageBoxButtons.OK,MessageBoxIcon.Error);}}else if(Engine.Store!=null){var s=Engine.Store.Status;if(s!=null){recordState.Text=s.Recording?"● 本地记录正常 · "+s.Committed.ToString("N0")+" 条":"本地记录已停止";if(!String.IsNullOrEmpty(s.LastError))recordState.Text="! 本地记录错误 · "+s.LastError;recordState.ForeColor=String.IsNullOrEmpty(s.LastError)?(s.Recording?UiTheme.Green:UiTheme.Muted):UiTheme.Danger;}}else recordState.Text=Engine.CompletedCaptures>0?"○ 本地记录已停止":"○ 本地记录待机";
-            foreach(var pair in lastGood)if((DateTime.UtcNow-pair.Value).TotalSeconds>Math.Max(10,(double)period.Value*3)){Label[] c;if(cards.TryGetValue(pair.Key,out c)&&!c[3].Text.Contains("旧值")&&!c[3].Text.Contains("采集已停止")&&!c[3].Text.Contains("连接已断开")){c[3].Text="旧值 · "+pair.Value.ToLocalTime().ToString("HH:mm:ss");c[3].ForeColor=UiTheme.Warning;}DataRow r;if(rows.TryGetValue(pair.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期";}}
+            foreach(var pair in lastGood){double staleNow=(DateTime.UtcNow-pair.Value).TotalSeconds;if(staleNow>Math.Max(10,(double)period.Value*3)){Label[] c;if(cards.TryGetValue(pair.Key,out c)&&!c[3].Text.Contains("陈旧")&&!c[3].Text.Contains("采集已停止")&&!c[3].Text.Contains("连接已断开")){PointInfo staleMeta=PointCatalog.Get(pair.Key);c[3].Text=((!staleMeta.SemanticConfirmed||!String.IsNullOrEmpty(staleMeta.UnitQualifier))?"△ ":"")+"陈旧 "+AgeText(staleNow);c[3].ForeColor=UiTheme.Warning;if(staleNow>StaleLimitSeconds)c[1].Text="—";}DataRow r;if(rows.TryGetValue(pair.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期";}}}
         public void UpdateObservation(Observation o){if(o==null)return;if(!String.IsNullOrEmpty(o.SessionId)&&countedSession!=o.SessionId){countedSession=o.SessionId;good=bad=0;}bool valid=Quality.IsGood(o.Quality);if(valid)good++;else if(Quality.IsFailure(o.Quality))bad++;DateTime previous;bool hasOld=lastGood.TryGetValue(o.Point,out previous);
             DataRow r;if(rows.TryGetValue(o.Point,out r)){if(valid){r["实时值"]=DisplayNumber(o);r["采样时间"]=o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture);}r["质量"]=valid?"正常":QualityLabel(o.Quality)+(hasOld?" · 保留旧值":" · 尚无有效值");r["耗时(ms)"]=o.Milliseconds.ToString(CultureInfo.InvariantCulture);}
             Label[] c;if(cards.TryGetValue(o.Point,out c)){if(valid){c[1].Text=DisplayCardValue(o);OverviewPageBuilder.FitValueFont(c[1]);lastGood[o.Point]=o.Utc;}DateTime timestamp=valid?o.Utc:previous;
@@ -251,7 +261,24 @@ namespace ExperimentMonitor {
                 // 否则使用者会把"设定 8"当成"实测 8"。
                 string roleText=SetpointCardStatus(o,valid,hasOld,timestamp);
                 if(roleText!=null){c[3].Text=roleText;}
-                else {c[3].Text=valid?"正常 · "+timestamp.ToLocalTime().ToString("HH:mm:ss"):QualityLabel(o.Quality)+(hasOld?" · 旧值 "+timestamp.ToLocalTime().ToString("HH:mm:ss"):" · 尚无有效值");}
+                else {
+                    PointInfo cardMeta=PointCatalog.Get(o.Point);
+                    // 存疑标记：语义未裁决，或单位带限定语（如"二次侧"）。这类值可以显示，但不能当结论用。
+                    string doubt=(!cardMeta.SemanticConfirmed||!String.IsNullOrEmpty(cardMeta.UnitQualifier))?"△ ":"";
+                    if(valid) {
+                        c[3].Text=doubt+"正常 · "+timestamp.ToLocalTime().ToString("HH:mm:ss");
+                    } else if(!hasOld) {
+                        // 从来没有读到过：不能显示"正常"，也不该显示数字。
+                        c[3].Text=doubt+"○ 未接入";
+                    } else {
+                        double staleSeconds=(DateTime.UtcNow-previous).TotalSeconds;
+                        // 陈旧分两档：短时间内保留最后有效值（可能只是这一轮没读到），
+                        // 超过 60 秒就清空 —— 一个 10 分钟前的数字看起来和现在的数字一模一样，
+                        // 那是最容易误导人的形态。
+                        if(staleSeconds>StaleLimitSeconds) c[1].Text="—";
+                        c[3].Text=doubt+QualityLabel(o.Quality)+" · 陈旧 "+AgeText(staleSeconds);
+                    }
+                }
                 c[3].ForeColor=valid?UiTheme.Green:(Quality.IsFailure(o.Quality)?UiTheme.Danger:UiTheme.Muted);tips.SetToolTip(c[1],valid?"实际值："+(o.Value??DisplayNumber(o))+"\r\n采样时间："+o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"):o.Value);}
             overviewChart.Add(o);counts.Text="本次采集累计成功 "+good+" / 异常 "+bad+"　·　"+(o.Source=="serial"?"实机":"模拟")+"　·　最新测点 "+o.Point+"　·　本地记录按实际采样时间保存";
         }

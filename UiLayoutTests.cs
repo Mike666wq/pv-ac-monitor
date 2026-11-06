@@ -284,7 +284,8 @@ namespace ExperimentMonitor {
                 } else Check(maxWidth<=value.ClientSize.Width+2&&lineHeight*lines.Length<=value.ClientSize.Height+3,title+" "+entry.Key+" 数值绘制边界未裁切（"+value.Text.Replace(Environment.NewLine," / ")+"，测量"+maxWidth+"×"+(lineHeight*lines.Length)+"，区域"+value.ClientSize.Width+"×"+value.ClientSize.Height+"） · "+DescribeBounds(value));
             }
             Label d3=map["D3"][1];Check(d3.Text.Contains("E-08")||d3.Text.Contains("e-08"),title+" 微小非零值没有显示为零");
-            Point p=points.First(x=>x.name=="D3");string before=d3.Text;form.UpdateObservation(new Observation{Point=p.name,Description=PointCatalog.Get(p).Label,Device=p.binding.device,Source="simulation",Mode=PointCatalog.Get(p).Mode,Quality="timeout",Status="timeout",Value="timeout",Number=null,Utc=DateTime.UtcNow,Unit=PointCatalog.Get(p).Unit});Check(d3.Text==before&&map["D3"][3].Text.Contains("旧值"),title+" 通信故障时保留最后有效显示并标记旧值");
+            Point p=points.First(x=>x.name=="D3");string before=d3.Text;form.UpdateObservation(new Observation{Point=p.name,Description=PointCatalog.Get(p).Label,Device=p.binding.device,Source="simulation",Mode=PointCatalog.Get(p).Mode,Quality="timeout",Status="timeout",Value="timeout",Number=null,Utc=DateTime.UtcNow,Unit=PointCatalog.Get(p).Unit});// 2026-11-06 起文案统一为"陈旧 Ns"（比"旧值"更能说明"这是多久以前的值"）。
+            Check(d3.Text==before&&map["D3"][3].Text.Contains("陈旧"),title+" 通信故障时保留最后有效显示并标记陈旧（实际："+map["D3"][3].Text+"）");
             // 设定值是"命令"不是"读数"：卡片上必须同时给出实测与偏差，不能只有一个裸数字。
             Label setpointStatus=map["D2202"][3];
             Check(PointRole.IsSetpoint(PointCatalog.Get("D2202").Role),title+" D2202 在点表里是设定值角色");
