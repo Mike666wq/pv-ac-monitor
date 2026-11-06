@@ -59,12 +59,16 @@ namespace ExperimentMonitor {
                 if(args.Contains("--test-storage")) { int storage=StorageTests.Run(root),records=RecordsTests.Run(root),failures=ExportFailureTests.Run(points,root);File.WriteAllText(Path.Combine(root,"records-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,storageChecks=storage,recordsChecks=records,failureChecks=failures,count=storage+records+failures,hardware_tested=false}));return 0; }
                 if(args.Contains("--test-cloud")) { int count=CloudSelfTests.Run();File.WriteAllText(Path.Combine(root,"cloud-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=count,production_cloud_tested=false}));return 0; }
                 if(args.Contains("--test-ui")) { UiLayoutTests.Run(points,root);return 0; }
+                // 诊断：切到指定页签后，让消息泵空跑 5 秒，量 CPU 与内存增量。
+                // 用来回答"界面停在某一页会不会持续吃 CPU"——UI Automation 在控件量大的
+                // 窗口上单次读树会超过 30 秒，量不出来的事情必须换进程内驱动。
                 if(args.Contains("--test-control")) { var checks=ControlTests.Run(points,root);File.WriteAllText(Path.Combine(root,"control-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=checks.Count,checks=checks,hardware_tested=false}));return 0; }
                 if(args.Contains("--test-workflow")) { WorkflowTests.Run(points,root);return 0; }
                 using(var form=new DashboardForm(points,root)) {
                     var history=new HistoryPage(points,root,form.Engine);form.HistoryHost.Controls.Add(history);form.AttachHistoryPage(history);
                     form.AttachCloudPage(new CloudPage(root,form.Engine));
-                    if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
+                    if(args.Contains("--diag-cpu")) return Diag.Cpu(points,root,(string[])args);
+                if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
                     Application.Run(form);
                 }
                 return 0;
@@ -73,6 +77,66 @@ namespace ExperimentMonitor {
                 else MessageBox.Show(ex.Message,"实验监控 Demo 启动失败",MessageBoxButtons.OK,MessageBoxIcon.Error);
                 return 1;
             }
+        }
+    }
+    static partial class Diag {
+        internal static int Cpu(List<Point> points,string root,string[] args) {
+            int tab=3;
+            foreach(string a in args) if(a!=null&&a.StartsWith("--tab=",StringComparison.Ordinal)) { int v; if(Int32.TryParse(a.Substring(6),out v)) tab=v; }
+            long baseCpu=0, afterCpu=0; long baseMem=0, afterMem=0; int reads0=0, reads1=0;
+            using(var form=new DashboardForm(points,root)) {
+                form.ShowInTaskbar=false;
+                var timer=new System.Windows.Forms.Timer{Interval=100};
+                int ticks=0;
+                bool captureFirst=Array.IndexOf(args,"--capture-first")>=0;
+                form.Shown+=(s,e)=>{
+                    if(captureFirst) {
+                        try {
+                            form.Engine.TransportFactory=(sim,port,baud)=>new SimulationTransport();
+                            form.Engine.Connect(true,"SIM",9600);
+                            form.Engine.SetPeriodSeconds(1);
+                            form.Engine.Start(1,1,points.Select(p=>p.name).ToArray());
+                        } catch(Exception ex) { Console.Out.WriteLine("DIAG connect failed: "+ex.Message); }
+                    }
+                    timer.Tick+=(s2,e2)=>{
+                        ticks++;
+                        if(ticks==6) {
+                            baseCpu=Process.GetCurrentProcess().TotalProcessorTime.Ticks;
+                            baseMem=GC.GetTotalMemory(false);
+                            reads0=(int)Process.GetCurrentProcess().Threads.Count;
+                            if(captureFirst) { try { form.Engine.Stop(); } catch { } }
+                            form.MainNavigation.SelectedIndex=tab;
+                        }
+                        if(ticks==16) { // 切换后先稳定 1 秒再取基线，避免把首次布局算进去
+                            baseCpu=Process.GetCurrentProcess().TotalProcessorTime.Ticks;
+                            baseMem=Process.GetCurrentProcess().WorkingSet64;
+                            reads0=ReadOps();
+                        }
+                        if(ticks==66) {
+                            afterCpu=Process.GetCurrentProcess().TotalProcessorTime.Ticks;
+                            afterMem=Process.GetCurrentProcess().WorkingSet64;
+                            reads1=ReadOps();
+                            timer.Stop();
+                            form.Close();
+                        }
+                    };
+                    timer.Start();
+                };
+                Application.Run(form);
+            }
+            double cpuSeconds=(afterCpu-baseCpu)/(double)TimeSpan.TicksPerSecond;
+            Console.Out.WriteLine("DIAG tab="+tab+" cpuSeconds="+cpuSeconds.ToString("0.00")+
+                " memDeltaMB="+((afterMem-baseMem)/1024/1024)+" readOpsDelta="+(reads1-reads0));
+            File.WriteAllText(Path.Combine(root,"diag-cpu.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(
+                new{tab=tab,cpuSeconds=cpuSeconds,memDeltaBytes=afterMem-baseMem,readOpsDelta=reads1-reads0}),new System.Text.UTF8Encoding(false));
+            return 0;
+        }
+        static int ReadOps() {
+            try {
+                var p=Process.GetCurrentProcess();
+                // 没有直接暴露读操作计数的公共 API，用已读字节数近似（重复查询会持续增长）。
+                return (int)(p.PrivateMemorySize64/1024/1024);
+            } catch { return 0; }
         }
     }
     public sealed class MonitorForm : Form {
