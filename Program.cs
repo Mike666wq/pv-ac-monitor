@@ -20,6 +20,26 @@ namespace ExperimentMonitor {
             if(rootArgument!=null) root=Path.GetFullPath(rootArgument.Substring(7));
             try {
                 var points=Configuration.Load(Path.Combine(root,"protocol.json"));
+                // 未登记点的逃生开关：默认拒绝采集点表里没有的点（否则它会以 RAW/无单位的
+                // 身份悄悄流进趋势、历史和导出），但绝不能做成"起不来"。
+                PointCatalog.AllowUnknown=args.Contains("--allow-unknown-points");
+                // 点表启动校验：每条都对应一种"用户会直接看到"的故障形态。
+                // 问题写进 point-catalog-validation.json 作为证据，压成一行横幅给界面。
+                try {
+                    var catalogIssues=PointCatalogValidation.Check(points);
+                    if(catalogIssues.Count>0) {
+                        PointCatalogValidation.StartupNotice=PointCatalogValidation.Summary(catalogIssues);
+                        try{File.WriteAllText(Path.Combine(root,"point-catalog-validation.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{catalogVersion=PointCatalog.Version,allowUnknown=PointCatalog.AllowUnknown,issues=catalogIssues.Select(i=>new{code=i.Code,blocking=i.Blocking,message=i.Message}).ToArray()}));}catch{}
+                    }
+                    // 未登记的点默认不采集：它会以 RAW/无单位的形式混进趋势、历史与导出。
+                    // 但如果全部点都没登记（多半是点表整体换过了），那就别把采集清空，
+                    // 宁可先跑起来再提示 —— 现场一次漏改不该让整机不可用。
+                    var unknown=points.Where(p=>PointCatalog.Get(p).Unknown).ToList();
+                    if(unknown.Count>0&&!PointCatalog.AllowUnknown&&unknown.Count<points.Count) {
+                        points=points.Where(p=>!PointCatalog.Get(p).Unknown).ToList();
+                        PointCatalogValidation.StartupNotice="已跳过 "+unknown.Count+" 个点表未登记的点："+String.Join("、",unknown.Take(6).Select(p=>p.name).ToArray())+(unknown.Count>6?"…":"")+"（加 --allow-unknown-points 可强制采集）";
+                    }
+                } catch(Exception ex) { PointCatalogValidation.StartupNotice="点表校验失败："+ex.Message; }
                 // 受限环境（某些沙箱、企业安全软件）禁止 File.Replace 的替换语义。生产运行不降级；
                 // 只有测试入口才安装"原子替换失败时退到备份后覆盖"的实现，并把降级如实记入结果。
                 bool isTestRun=args.Any(a=>a.StartsWith("--test")||a=="--self-test"||a.StartsWith("--capture-ui"));

@@ -28,7 +28,15 @@ namespace ExperimentMonitor {
             int cloudChecks=CloudSelfTests.Run();File.WriteAllText(Path.Combine(root,"cloud-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=cloudChecks,production_cloud_tested=false}));checks.Add("Cloud lease / credentials / retry / HTTP integration: "+cloudChecks);
             var trendChecks=TrendTests.Run();File.WriteAllText(Path.Combine(root,"trend-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=trendChecks.Count,checks=trendChecks,hardware_tested=false,production_cloud_tested=false}));checks.Add("Trend compression / continuity regression: "+trendChecks.Count);
             var controlChecks=ControlTests.Run(points,root);File.WriteAllText(Path.Combine(root,"control-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=controlChecks.Count,checks=controlChecks,hardware_tested=false}));checks.Add("Control write path / gates / readback / audit: "+controlChecks.Count);
-            Check(PointCatalog.Get("D6").Label=="功率因数"&&PointCatalog.Get("T1").Label=="水箱","labels from field screenshot",checks);
+            // 2026-11-06 点语义裁决：D6 是功率因数（力控 DESC 写错）；T1 的身份未裁决，
+            // 既不能再叫"水箱"（推测），也不能叫"相变2"（那个名字属于 D2206）。
+            Check(PointCatalog.Get("D6").Label=="功率因数"&&PointCatalog.Get("T1").Label=="主机罐温度","labels from field screenshot",checks);
+            Check(PointCatalog.Get("D2206").Label=="温度4","D2206 用回力控原名温度4",checks);
+            Check(PointCatalog.Get("D2212").Label.IndexOf("频率")<0&&PointCatalog.Get("D2212").Label.IndexOf("负载")<0,"D2212 标签里的频率/负载已删除（它不是测量量）",checks);
+            Check(PointCatalog.Get("ZI6682").Unit=="A"&&PointCatalog.Get("ZI6682").UnitQualifier=="二次侧","限定语从单位串里拆出来",checks);
+            Check(PointCatalog.Get("ZW66822").Unit=="W"&&PointCatalog.Get("ZW66822").Label=="直流有功功率","直流表 0x000F 是有功功率，单位 W",checks);
+            Check(PointCatalog.Get("T1").SemanticConfirmed==false&&PointCatalog.Get("D1").SemanticConfirmed,"未裁决点与已裁决点在点表里可区分",checks);
+            Check(PointCatalog.Version.StartsWith("catalog-4-")&&PointCatalog.Version.Length>18,"点表版本是内容指纹而不是手写常量",checks);
             string folder=Path.Combine(root,".testing","integrated-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);File.Copy(Path.Combine(root,"protocol.json"),Path.Combine(folder,"protocol.json"));
             var observed=new List<Observation>();
             using(var engine=new MonitorEngine(points,folder)) {
