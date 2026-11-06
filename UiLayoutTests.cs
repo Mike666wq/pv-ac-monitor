@@ -167,6 +167,23 @@ namespace ExperimentMonitor {
                 &&Field<Label>(form,"captureState").Text.Contains("采集")
                 &&Field<Label>(form,"recordState").Text.Contains("记录")
                 &&Field<Label>(form,"cloudState").Text.Contains("云端"),title+" 状态栏四段各自标明语义（链路/采集/记录/云端）");
+            // 全局搜索：点名 / 名称 / 力控原名(alias) / 地址 四路都要能命中，且循环不越界。
+            TextBox search=Field<TextBox>(form,"searchBox");
+            MethodInfo searchNext=typeof(DashboardForm).GetMethod("SearchNext",BindingFlags.Instance|BindingFlags.NonPublic);
+            search.Text="T1";                 string byName=(string)searchNext.Invoke(form,null);
+            Check(byName.Contains("T1"),title+" 搜索按点名命中（"+byName+"）");
+            search.Text="主机罐温度";           string byLabel=(string)searchNext.Invoke(form,null);
+            Check(byLabel.Contains("T1"),title+" 搜索按名称命中（"+byLabel+"）");
+            search.Text="303相变温度2";        string byAlias=(string)searchNext.Invoke(form,null);
+            Check(byAlias.Contains("T1"),title+" 搜索按力控原名命中（"+byAlias+"）");
+            search.Text="302";                 string byAddress=(string)searchNext.Invoke(form,null);
+            Check(byAddress.Contains("T1"),title+" 搜索按寄存器地址命中（"+byAddress+"）");
+            search.Text="绝不存在的点名";       string miss=(string)searchNext.Invoke(form,null);
+            Check(miss.Contains("没有匹配"),title+" 搜索无命中时给出明确提示");
+            search.Text="温度";                string first=(string)searchNext.Invoke(form,null);
+            string second=(string)searchNext.Invoke(form,null);
+            Check(first!=second&&first.Contains("第 1/")&&second.Contains("第 2/"),title+" 搜索在多个命中项之间循环");
+            search.Text="";
             TabPage page=form.MainNavigation.TabPages[3];
             form.MainNavigation.SelectedTab=page;
             HistoryPage history=Find<HistoryPage>(page);

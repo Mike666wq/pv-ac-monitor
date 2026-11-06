@@ -33,6 +33,7 @@ namespace ExperimentMonitor {
         readonly StyledActionButton stop=new StyledActionButton { Text="停止",Width=80 };
         readonly StyledActionButton headerAction=new StyledActionButton { Text="连接",Width=104,BackColor=UiTheme.Blue };
         Label headerTitle;
+        readonly TextBox searchBox=new TextBox{Width=150};readonly Button searchButton=new Button{Text="查找",AutoSize=true};
         readonly Label connectionState=StatusLabel("未连接"),captureState=StatusLabel("未采集"),recordState=StatusLabel("本地记录待机"),cloudState=StatusLabel("云端未启用");
         readonly Label counts=new Label { AutoSize=true,Text="点表已载入 · 4 台设备 / 37 个测点" };
         readonly TextBox log=new TextBox { Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Both,WordWrap=false,Font=new Font("Consolas",9) };
@@ -75,7 +76,14 @@ namespace ExperimentMonitor {
             var header=new Panel { Dock=DockStyle.Fill,Height=56,BackColor=UiTheme.Ink,Padding=new Padding(16,10,12,10) };
             headerTitle=new Label { Text="实验监控  /  全实验数据工作台",AutoSize=true,Location=new DrawingPoint(16,12),Font=new Font("Microsoft YaHei UI",13,FontStyle.Bold),ForeColor=Color.White,BackColor=Color.Transparent };
             header.Controls.Add(headerTitle);
+            searchButton.Click+=(s,e)=>{AppendLog("查找 · "+SearchNext());searchBox.Focus();searchBox.SelectAll();};
             headerAction.Dock=DockStyle.Right;headerAction.Margin=new Padding(0,0,4,0);header.Controls.Add(headerAction);
+            // 37 个点靠肉眼在卡片墙上找，等于训练使用者背位置。搜索放在标题栏（工具栏已经满了，
+            // 挤到第二行会吃掉纵向空间）。四路匹配：点名 / 名称 / 力控原名(alias) / 地址。
+            var searchHost=new FlowLayoutPanel { Dock=DockStyle.Right,AutoSize=true,WrapContents=false,AutoScroll=false,BackColor=Color.Transparent,Margin=Padding.Empty,Padding=new Padding(0,12,10,0) };
+            var searchCaption=new Label { Text="查找",AutoSize=true,ForeColor=Color.FromArgb(198,214,232),BackColor=Color.Transparent,Padding=new Padding(0,6,6,0),Margin=Padding.Empty };
+            searchHost.Controls.Add(searchCaption);searchHost.Controls.Add(new RoundedInputHost(searchBox) { Width=150,Margin=new Padding(0,3,6,0) });searchHost.Controls.Add(searchButton);
+            header.Controls.Add(searchHost);
             shell.Controls.Add(header,0,0);
             // 单行紧凑工具栏:连接/断开已移入标题栏;窗口过窄时允许折行。
             var toolbar=new FlowLayoutPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,AutoScroll=false,Margin=Padding.Empty,BackColor=Color.FromArgb(247,250,253),Padding=new Padding(10,6,10,6) };
@@ -254,6 +262,82 @@ namespace ExperimentMonitor {
             }
             if(total.Count==0) return "0/0 设备";
             return alive.Count+"/"+total.Count+" 设备";
+        }
+
+        /// <summary>
+        /// 全局搜索：按 点名 / 名称 / 力控原名(alias) / 寄存器地址 四路匹配，
+        /// 定位并高亮对应卡片，Enter 或再点一次"查找"就在命中项之间循环。
+        ///
+        /// 刻意**不重建卡片墙** —— 重建会丢掉滚动位置和"我原本在哪一组"的上下文，
+        /// 使用者的感受是"整页闪了一下，我不知道被带到哪"。
+        /// </summary>
+        int searchCursor=-1;
+        string searchTerm="";
+        Panel searchViewport;
+        readonly Dictionary<Control,Timer> searchHighlights=new Dictionary<Control,Timer>();
+
+        string SearchNext() {
+            string term=(searchBox.Text??"").Trim();
+            if(term.Length==0) return "请输入点名、名称或地址";
+            if(term!=searchTerm) { searchTerm=term; searchCursor=-1; }
+            var hits=new List<string>();
+            foreach(Point p in points) {
+                if(p==null||p.binding==null) continue;
+                PointInfo meta=PointCatalog.Get(p);
+                string address=p.binding.address_zero_based.ToString(CultureInfo.InvariantCulture);
+                bool match=(p.name??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
+                    ||(meta.Label??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
+                    ||(meta.Alias??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
+                    ||address==term;
+                if(match) hits.Add(p.name);
+            }
+            if(hits.Count==0) return "没有匹配「"+term+"」的测点";
+            searchCursor=(searchCursor+1)%hits.Count;
+            string target=hits[searchCursor];
+            if(!FocusCard(target)) return "找到了 "+target+"，但它当前不在总览页";
+            string suffix=hits.Count>1?"（第 "+(searchCursor+1)+"/"+hits.Count+" 个）":"";
+            return "定位 "+target+" "+PointCatalog.Get(target).Label+suffix;
+        }
+
+        /// <summary>把某张卡片滚到可见区域并短暂高亮。</summary>
+        bool FocusCard(string point) {
+            Label[] cardLabels;
+            if(!cards.TryGetValue(point,out cardLabels)||cardLabels==null||cardLabels.Length==0) return false;
+            Control card=cardLabels[1];
+            while(card!=null&&!(card is RoundedPanel)) card=card.Parent;
+            if(card==null) return false;
+            if(searchViewport==null) searchViewport=FindControl<Panel>(MainNavigation,c=>c.AutoScroll);
+            if(searchViewport!=null&&!searchViewport.IsDisposed) {
+                // AutoScrollPosition 的 setter 传的是**正值**：传负值会落到 0 而不是目标位置。
+                int top=card.Parent!=null?card.Parent.Top+card.Top:card.Top;
+                searchViewport.AutoScrollPosition=new DrawingPoint(0,Math.Max(0,top-24));
+            }
+            HighlightCard(card);
+            return true;
+        }
+
+        void HighlightCard(Control card) {
+            Timer existing;
+            if(searchHighlights.TryGetValue(card,out existing)) { try{existing.Stop();existing.Dispose();}catch{} searchHighlights.Remove(card); }
+            Color original=card.BackColor;
+            card.BackColor=Color.FromArgb(255,244,214);
+            var timer=new Timer{Interval=1500};
+            timer.Tick+=(s,e)=>{try{timer.Stop();if(!card.IsDisposed)card.BackColor=original;}catch{}try{timer.Dispose();}catch{}searchHighlights.Remove(card);};
+            searchHighlights[card]=timer;
+            timer.Start();
+        }
+
+        static T FindControl<T>(Control root,Func<T,bool> match) where T:Control {
+            if(root==null) return null;
+            foreach(Control child in root.Controls){T v=child as T;if(v!=null&&(match==null||match(v)))return v;T nested=FindControl(child,match);if(nested!=null)return nested;}
+            return null;
+        }
+
+        /// <summary>Ctrl+F 聚焦搜索框。用 ProcessCmdKey 而不是 KeyDown：焦点在任何子控件时都要生效。</summary>
+        protected override bool ProcessCmdKey(ref Message msg,Keys keyData) {
+            if(keyData==(Keys.Control|Keys.F)) { searchBox.Focus();searchBox.SelectAll();return true; }
+            if(keyData==Keys.Enter&&searchBox.Focused) { AppendLog("查找 · "+SearchNext());return true; }
+            return base.ProcessCmdKey(ref msg,keyData);
         }
 
         /// <summary>陈旧时长的人读文案。</summary>
