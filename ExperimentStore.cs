@@ -5,6 +5,7 @@ using System.Data.SQLite;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -41,10 +42,13 @@ namespace ExperimentMonitor {
   public void RecordControl(ControlEvent e,string databasePath){if(e==null)throw new ArgumentNullException("e");e.Source=source;e.Session=SessionId;if(e.UtcTicks==0)e.UtcTicks=DateTime.UtcNow.Ticks;Add(new Work{Control=e,DatabasePath=databasePath});}
   static int Estimate(Work w){
    long bytes=256+(w.Unit??"").Length*2L+(w.Note??"").Length*2L;
-   if(w.O!=null){var o=w.O;bytes+=o.Tx.Length+(long)o.Rx.Length+o.Payload.Length;foreach(string text in new[]{o.Point,o.Description,o.Device,o.Mode,o.Source,o.Status,o.Value,o.Unit,o.Quality,o.ConfigVersion,o.SessionId})bytes+=(text??"").Length*2L;}
-   if(w.Control!=null){var c=w.Control;foreach(string text in new[]{c.Source,c.Session,c.Operator,c.Point,c.Label,c.Status,c.Detail,c.Tx,c.Rx,c.ConfigVersion})bytes+=(text??"").Length*2L;}
+   if(w.O!=null){var o=w.O;bytes+=o.Tx.Length+(long)o.Rx.Length+o.Payload.Length;foreach(string text in new[]{o.Point,o.Description,o.Device,o.Mode,o.Source,o.Status,o.Value,o.Unit,o.Quality,o.ConfigVersion,o.SessionId})bytes+=Utf8Bytes(text);}
+   if(w.Control!=null){var c=w.Control;foreach(string text in new[]{c.Source,c.Session,c.Operator,c.Point,c.Label,c.Status,c.Detail,c.Tx,c.Rx,c.ConfigVersion})bytes+=Utf8Bytes(text);}
    if(bytes>BytesLimit)throw new IOException("单条记录超过16 MiB载荷预算");return (int)bytes;
   }
+  /// <summary>文本按 UTF-8 的真实字节数计。旧实现一律按"字符数×2"估，
+  /// 对纯 ASCII 高估整整一倍 —— 队列预算是按这个值算的，于是实际只用掉一半预算就被判超限。</summary>
+  static long Utf8Bytes(string text){return text==null?0L:Encoding.UTF8.GetByteCount(text);}
   void Add(Work w){
    if(closed)throw new ObjectDisposedException("ExperimentStore");if(error.Length>0)throw new IOException(error);
    try{w.Bytes=Estimate(w);}catch(Exception e){error="记录已停止："+e.Message;throw;}
@@ -58,14 +62,35 @@ namespace ExperimentMonitor {
   public void EndExperiment(){if(experiment.Length==0)return;Add(new Work{Event="end",Experiment=experiment});experiment="";}
   string FileFor(DateTime utc){if(pathResolver!=null)return pathResolver(utc.ToUniversalTime());long day=(long)(utc.Date-new DateTime(2020,1,1,0,0,0,DateTimeKind.Utc)).TotalDays;long bucket=(long)Math.Floor(day/(double)days);DateTime start=new DateTime(2020,1,1).AddDays(bucket*days);return Path.Combine(root,source+"-"+start.ToString("yyyyMMdd")+"-"+days+"d.db");}
   static void Execute(SQLiteConnection c,SQLiteTransaction t,string sql,params object[] a){using(var q=new SQLiteCommand(sql,c,t)){for(int i=0;i<a.Length;i++)q.Parameters.AddWithValue("@p"+i,a[i]??DBNull.Value);q.ExecuteNonQuery();}}
-  SQLiteConnection Open(DateTime utc){string file=FileFor(utc);Directory.CreateDirectory(Path.GetDirectoryName(file));var b=new SQLiteConnectionStringBuilder{DataSource=file,Version=3};var c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;Synchronous=Full;");c.Open();using(var t=c.BeginTransaction()){Execute(c,t,"CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,source TEXT,started_utc TEXT,config_json TEXT);CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY,name TEXT,note TEXT,started_utc TEXT,ended_utc TEXT);CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY AUTOINCREMENT,utc_ticks INTEGER NOT NULL,source TEXT,session TEXT,experiment TEXT,round INTEGER,point TEXT,description TEXT,device TEXT,slave INTEGER,address INTEGER,count INTEGER,unit TEXT,mode TEXT,status TEXT,value TEXT,number REAL,elapsed_ms INTEGER,tx TEXT,rx TEXT,payload TEXT,raw_number REAL,quality TEXT,config_version TEXT,round_started_utc_ticks INTEGER);CREATE INDEX IF NOT EXISTS ix_obs_time ON observations(utc_ticks,id);CREATE INDEX IF NOT EXISTS ix_obs_point_time ON observations(point,utc_ticks);CREATE INDEX IF NOT EXISTS ix_obs_experiment ON observations(experiment,utc_ticks);CREATE INDEX IF NOT EXISTS ix_obs_round ON observations(session,round,utc_ticks);CREATE TABLE IF NOT EXISTS control_events(id INTEGER PRIMARY KEY AUTOINCREMENT,utc_ticks INTEGER NOT NULL,source TEXT,session TEXT,operator TEXT,point TEXT,label TEXT,slave INTEGER,address INTEGER,function INTEGER,old_value INTEGER,new_value INTEGER,readback INTEGER,status TEXT,detail TEXT,tx TEXT,rx TEXT,elapsed_ms INTEGER,config_version TEXT);CREATE INDEX IF NOT EXISTS ix_control_time ON control_events(utc_ticks,id)");
-    using(var q=new SQLiteCommand("PRAGMA table_info(observations)",c,t))using(var r=q.ExecuteReader()){bool found=false;while(r.Read())if(String.Equals(Convert.ToString(r["name"]),"round_started_utc_ticks",StringComparison.OrdinalIgnoreCase))found=true;if(!found)Execute(c,t,"ALTER TABLE observations ADD COLUMN round_started_utc_ticks INTEGER");}
+  SQLiteConnection Open(DateTime utc){return OpenAt(FileFor(utc));}
+  /// <summary>
+  /// 打开指定文件并确保 schema 就绪。
+  /// 旧实现里只有 Open(DateTime)，而写入路径要的是"引擎传进来的那个分区文件"，
+  /// 不是"按时间算出来的那个文件" —— 两者不一致时，行会静默落进另一个分区库，
+  /// "一轮一库"就不成立了。这里把"按时间推导"和"按文件打开"拆成两件事。
+  /// </summary>
+  SQLiteConnection OpenAt(string file){Directory.CreateDirectory(Path.GetDirectoryName(file));var b=new SQLiteConnectionStringBuilder{DataSource=file,Version=3};var c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;Synchronous=Full;");c.Open();
+   try{using(SQLiteCommand q=new SQLiteCommand("PRAGMA journal_mode=WAL",c))q.ExecuteNonQuery();}catch{}// WAL：读写不再互相阻塞。失败时退回原来的回滚日志模式，不影响正确性。
+   using(var t=c.BeginTransaction()){Execute(c,t,"CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,source TEXT,started_utc TEXT,config_json TEXT);CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY,name TEXT,note TEXT,started_utc TEXT,ended_utc TEXT);CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY AUTOINCREMENT,utc_ticks INTEGER NOT NULL,source TEXT,session TEXT,experiment TEXT,round INTEGER,point TEXT,description TEXT,device TEXT,slave INTEGER,address INTEGER,count INTEGER,unit TEXT,mode TEXT,status TEXT,value TEXT,number REAL,elapsed_ms INTEGER,tx TEXT,rx TEXT,payload TEXT,raw_number REAL,quality TEXT,config_version TEXT,round_started_utc_ticks INTEGER);CREATE INDEX IF NOT EXISTS ix_obs_time ON observations(utc_ticks,id);CREATE INDEX IF NOT EXISTS ix_obs_point_time ON observations(point,utc_ticks);CREATE INDEX IF NOT EXISTS ix_obs_experiment ON observations(experiment,utc_ticks);CREATE INDEX IF NOT EXISTS ix_obs_round ON observations(session,round,utc_ticks);CREATE TABLE IF NOT EXISTS control_events(id INTEGER PRIMARY KEY AUTOINCREMENT,utc_ticks INTEGER NOT NULL,source TEXT,session TEXT,operator TEXT,point TEXT,label TEXT,slave INTEGER,address INTEGER,function INTEGER,old_value INTEGER,new_value INTEGER,readback INTEGER,status TEXT,detail TEXT,tx TEXT,rx TEXT,elapsed_ms INTEGER,config_version TEXT);CREATE INDEX IF NOT EXISTS ix_control_time ON control_events(utc_ticks,id)");
+    // 迁移一律"只加可空列"，不动历史行、不删索引、不 VACUUM —— UPGRADE.md 对旧库的承诺。
+    EnsureColumn(c,t,"observations","round_started_utc_ticks","ALTER TABLE observations ADD COLUMN round_started_utc_ticks INTEGER");
+    EnsureColumn(c,t,"control_events","write_id","ALTER TABLE control_events ADD COLUMN write_id TEXT");
+    EnsureColumn(c,t,"control_events","target","ALTER TABLE control_events ADD COLUMN target TEXT");
+    EnsureColumn(c,t,"control_events","evidence","ALTER TABLE control_events ADD COLUMN evidence TEXT");
     Execute(c,t,"INSERT OR IGNORE INTO sessions VALUES(@p0,@p1,@p2,@p3)",SessionId,source,DateTime.UtcNow.ToString("o"),config);t.Commit();}path=file;return c;}
+  /// <summary>加列前先查列是否存在。老库反复 ALTER 会踩到 SQLite 不支持 DROP COLUMN 的坑，
+  /// 所以这里只做"加"，并且只在列真的缺失时才执行。</summary>
+  static void EnsureColumn(SQLiteConnection c,SQLiteTransaction t,string table,string column,string ddl){
+   using(var q=new SQLiteCommand("PRAGMA table_info("+table+")",c,t))using(var r=q.ExecuteReader()){
+    while(r.Read())if(String.Equals(Convert.ToString(r["name"]),column,StringComparison.OrdinalIgnoreCase))return;
+   }
+   Execute(c,t,ddl);
+  }
   void CheckDisk(){var d=new DriveInfo(Path.GetPathRoot(root));long free=d.AvailableFreeSpace;Interlocked.Exchange(ref diskBytes,free);diskWarning=free<1024L*1024*1024;if(free<100L*1024*1024)throw new IOException("记录磁盘可用空间低于100 MiB，停止记录");}
   void SaveExperimentEvent(Work w){
    if(w.Event==null)return;
    var b=new SQLiteConnectionStringBuilder{DataSource=CatalogPath,Version=3};
-   using(var c=new SQLiteConnection(b.ConnectionString)){c.Open();using(var t=c.BeginTransaction()){
+   using(var c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;")){c.Open();using(var t=c.BeginTransaction()){
     Execute(c,t,"CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY,name TEXT,note TEXT,started_utc TEXT,ended_utc TEXT)");
     if(w.Event=="begin")Execute(c,t,"INSERT INTO experiments VALUES(@p0,@p1,@p2,@p3,NULL)",w.Experiment,w.Unit,w.Note,DateTime.UtcNow.ToString("o"));
     else Execute(c,t,"UPDATE experiments SET ended_utc=@p0 WHERE id=@p1",DateTime.UtcNow.ToString("o"),w.Experiment);
@@ -84,27 +109,65 @@ namespace ExperimentMonitor {
       while(offset<batch.Count) {
        if((DateTime.UtcNow-last).TotalSeconds>30){CheckDisk();last=DateTime.UtcNow;}
        Work lead=batch[offset];DateTime at=lead.O==null?DateTime.UtcNow:lead.O.Utc;string target=!String.IsNullOrEmpty(lead.DatabasePath)?lead.DatabasePath:FileFor(at);
-       if(target!=path){c.Dispose();c=Open(at);}
+       if(!String.Equals(target,path,StringComparison.OrdinalIgnoreCase)){c.Dispose();c=OpenAt(target);}
        int end=offset+1;
        while(end<batch.Count&&(String.IsNullOrEmpty(batch[end].DatabasePath)?FileFor(batch[end].O==null?DateTime.UtcNow:batch[end].O.Utc):batch[end].DatabasePath)==target)end++;
        using(var t=c.BeginTransaction()) {
-        for(int i=offset;i<end;i++){Work w=batch[i];if(w.O!=null){var o=w.O;Execute(c,t,"INSERT INTO observations(utc_ticks,source,session,experiment,round,point,description,device,slave,address,count,unit,mode,status,value,number,elapsed_ms,tx,rx,payload,raw_number,quality,config_version,round_started_utc_ticks) VALUES(@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,@p14,@p15,@p16,@p17,@p18,@p19,@p20,@p21,@p22,@p23)",o.Utc.Ticks,source,SessionId,w.Experiment,w.Round,o.Point,o.Description,o.Device,o.Slave,o.Address,o.Count,w.Unit,o.Mode,o.Status,o.Value,o.Number.HasValue?(object)o.Number.Value:DBNull.Value,o.Milliseconds,Modbus.Hex(o.Tx),Modbus.Hex(o.Rx),Modbus.Hex(o.Payload),o.RawNumber.HasValue?(object)o.RawNumber.Value:DBNull.Value,o.Quality??"unknown",o.ConfigVersion??"",o.RoundStartedUtc==DateTime.MinValue?(object)DBNull.Value:o.RoundStartedUtc.Ticks);}else if(w.Event=="begin")Execute(c,t,"INSERT INTO experiments VALUES(@p0,@p1,@p2,@p3,NULL)",w.Experiment,w.Unit,w.Note,DateTime.UtcNow.ToString("o"));else if(w.Event=="end")Execute(c,t,"UPDATE experiments SET ended_utc=@p0 WHERE id=@p1",DateTime.UtcNow.ToString("o"),w.Experiment);else if(w.Event=="policy"){Execute(c,t,"CREATE TABLE IF NOT EXISTS recording_policy(utc_ticks INTEGER NOT NULL,type TEXT,detail TEXT,round INTEGER)");Execute(c,t,"INSERT INTO recording_policy VALUES(@p0,@p1,@p2,@p3)",DateTime.UtcNow.Ticks,w.Unit,w.Note,w.Round);}else if(w.Control!=null){var k=w.Control;Execute(c,t,"INSERT INTO control_events(utc_ticks,source,session,operator,point,label,slave,address,function,old_value,new_value,readback,status,detail,tx,rx,elapsed_ms,config_version) VALUES(@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,@p14,@p15,@p16,@p17)",k.UtcTicks,source,SessionId,k.Operator,k.Point,k.Label,k.Slave,k.Address,k.Function,k.OldValue.HasValue?(object)k.OldValue.Value:DBNull.Value,k.NewValue.HasValue?(object)k.NewValue.Value:DBNull.Value,k.Readback.HasValue?(object)k.Readback.Value:DBNull.Value,k.Status,k.Detail??"",k.Tx??"",k.Rx??"",k.ElapsedMs,k.ConfigVersion??"");}}
+        for(int i=offset;i<end;i++){Work w=batch[i];if(w.O!=null){var o=w.O;Execute(c,t,"INSERT INTO observations(utc_ticks,source,session,experiment,round,point,description,device,slave,address,count,unit,mode,status,value,number,elapsed_ms,tx,rx,payload,raw_number,quality,config_version,round_started_utc_ticks) VALUES(@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,@p14,@p15,@p16,@p17,@p18,@p19,@p20,@p21,@p22,@p23)",o.Utc.Ticks,source,SessionId,w.Experiment,w.Round,o.Point,o.Description,o.Device,o.Slave,o.Address,o.Count,w.Unit,o.Mode,o.Status,o.Value,o.Number.HasValue?(object)o.Number.Value:DBNull.Value,o.Milliseconds,Modbus.Hex(o.Tx),Modbus.Hex(o.Rx),Modbus.Hex(o.Payload),o.RawNumber.HasValue?(object)o.RawNumber.Value:DBNull.Value,o.Quality??"unknown",o.ConfigVersion??"",o.RoundStartedUtc==DateTime.MinValue?(object)DBNull.Value:o.RoundStartedUtc.Ticks);}else if(w.Event=="begin")Execute(c,t,"INSERT INTO experiments VALUES(@p0,@p1,@p2,@p3,NULL)",w.Experiment,w.Unit,w.Note,DateTime.UtcNow.ToString("o"));else if(w.Event=="end")Execute(c,t,"UPDATE experiments SET ended_utc=@p0 WHERE id=@p1",DateTime.UtcNow.ToString("o"),w.Experiment);else if(w.Event=="policy"){Execute(c,t,"CREATE TABLE IF NOT EXISTS recording_policy(utc_ticks INTEGER NOT NULL,type TEXT,detail TEXT,round INTEGER)");Execute(c,t,"INSERT INTO recording_policy VALUES(@p0,@p1,@p2,@p3)",DateTime.UtcNow.Ticks,w.Unit,w.Note,w.Round);}else if(w.Control!=null){var k=w.Control;Execute(c,t,"INSERT INTO control_events(utc_ticks,source,session,operator,point,label,slave,address,function,old_value,new_value,readback,status,detail,tx,rx,elapsed_ms,config_version,write_id,target,evidence) VALUES(@p0,@p1,@p2,@p3,@p4,@p5,@p6,@p7,@p8,@p9,@p10,@p11,@p12,@p13,@p14,@p15,@p16,@p17,@p18,@p19,@p20)",k.UtcTicks,source,SessionId,k.Operator,k.Point,k.Label,k.Slave,k.Address,k.Function,k.OldValue.HasValue?(object)k.OldValue.Value:DBNull.Value,k.NewValue.HasValue?(object)k.NewValue.Value:DBNull.Value,k.Readback.HasValue?(object)k.Readback.Value:DBNull.Value,k.Status,k.Detail??"",k.Tx??"",k.Rx??"",k.ElapsedMs,k.ConfigVersion??"",k.WriteId??"",k.Target??"",k.Evidence??"");}}
         t.Commit();
        }
        for(int i=offset;i<end;i++){Work w=batch[i];SaveExperimentEvent(w);if(w.O!=null)Interlocked.Increment(ref committed);if(w.Barrier!=null)w.Barrier.TrySetResult(true);}
        offset=end;
       }
-     }catch(Exception e){foreach(var w in batch)if(w.Barrier!=null)w.Barrier.TrySetException(e);throw;}
+      }catch(Exception e){
+       // 瞬时错误（库被占用、磁盘忙）不该杀死写线程 —— 一旦写线程退出，
+       // 队列很快写满，采集随即被迫停止，几十小时的实验数据从这一刻起全部丢失。
+       // 真正的致命错误（磁盘满、文件损坏）才向上抛。
+       if(IsTransient(e)){
+        Log("记录暂时失败，已跳过本批（"+e.Message+"）");
+        foreach(var w in batch)if(w.Barrier!=null)w.Barrier.TrySetException(e);
+        continue;
+       }
+       foreach(var w in batch)if(w.Barrier!=null)w.Barrier.TrySetException(e);throw;
+      }
     }
    }catch(Exception e){error="本地记录失败："+e.Message;ready.TrySetException(e);Work w;while(queue.TryTake(out w)){Interlocked.Add(ref queuedBytes,-w.Bytes);if(w.Barrier!=null)w.Barrier.TrySetException(e);}}
-   finally{if(c!=null)c.Dispose();}
+    finally{if(c!=null){try{using(SQLiteCommand q=new SQLiteCommand("PRAGMA wal_checkpoint(TRUNCATE)",c))q.ExecuteNonQuery();}catch{}c.Dispose();}}
   }
-  public void Dispose(){if(closed)return;closed=true;queue.CompleteAdding();worker.Join();queue.Dispose();}
+  /// <summary>库被占用/忙这类瞬时错误：可以重试，不该终止记录。</summary>
+  static bool IsTransient(Exception e){
+   var sqlite=e as SQLiteException;
+   if(sqlite!=null){
+    string message=sqlite.Message??"";
+    int code=sqlite.ErrorCode;
+    if(code==5||code==6)return true;                        // SQLITE_BUSY / SQLITE_LOCKED
+    if(message.IndexOf("locked",StringComparison.OrdinalIgnoreCase)>=0)return true;
+    if(message.IndexOf("busy",StringComparison.OrdinalIgnoreCase)>=0)return true;
+   }
+   var io=e as IOException;
+   if(io!=null&&io.Message!=null&&io.Message.IndexOf("being used by another process",StringComparison.OrdinalIgnoreCase)>=0)return true;
+   return false;
+  }
+  /// <summary>记录线程的诊断信息（瞬时失败、写线程退出超时等），由引擎转写到会话日志。</summary>
+  public event Action<string> Logged;
+  void Log(string message){var handler=Logged;if(handler!=null)foreach(Action<string> f in handler.GetInvocationList())try{f(message);}catch{}}
+  public void Dispose(){if(closed)return;closed=true;queue.CompleteAdding();if(!worker.Join(5000))Log("记录线程未在 5 秒内结束，已放弃等待（队列数据可能未落盘）");queue.Dispose();}
  }
  public static class ExperimentHistory {
   public static IEnumerable<string> Databases(string root,string source){if(source!="serial"&&source!="simulation")throw new ArgumentException("来源无效");if(!Directory.Exists(root))return new string[0];var files=Directory.GetFiles(root,source+"-*.db").ToList();string nested=Path.Combine(root,source);if(Directory.Exists(nested))files.AddRange(Directory.GetFiles(nested,"*.db",SearchOption.TopDirectoryOnly));return files.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x=>x,StringComparer.OrdinalIgnoreCase).ToArray();}
-  internal static SQLiteConnection OpenRead(string path){var b=new SQLiteConnectionStringBuilder{DataSource=path,Version=3,ReadOnly=true};var c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;");
-   try{c.Open();
+  internal static SQLiteConnection OpenRead(string path){
+   var b=new SQLiteConnectionStringBuilder{DataSource=path,Version=3};SQLiteConnection c=null;
+   try{
+    // WAL 库需要一个可写的 -shm 索引文件，纯 ReadOnly 连接打不开它。
+    // 因此优先以"能连接但 query_only"的方式打开：SQL 层仍然只读，但 SQLite 能自己维护 WAL 索引；
+    // 目录确实不可写时再退回纯 ReadOnly。
+    c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;");c.Open();
+    using(SQLiteCommand q=new SQLiteCommand("PRAGMA query_only=1",c))q.ExecuteNonQuery();
+   }catch{
+    if(c!=null)try{c.Dispose();}catch{}
+    c=new SQLiteConnection(b.ConnectionString+";BusyTimeout=5000;ReadOnly=true;");c.Open();
+   }
+   try{
     // 大范围 GROUP BY(轮次分组)需要 SQLite 临时 B 树;系统临时目录对该进程不可用时SQLite 抛 SQLITE_CANTOPEN("unable to open database file"),而导出的 spool 因带 (session,round) 索引不受影响。
     // 连接级把查询排序/分组临时存储放进内存:不写库、不改 schema、不依赖系统 TEMP,对旧迁移库同样生效。
     using(SQLiteCommand q=new SQLiteCommand("PRAGMA temp_store=MEMORY",c))q.ExecuteNonQuery();
