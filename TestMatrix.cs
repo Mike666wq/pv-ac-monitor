@@ -49,7 +49,7 @@ namespace ExperimentMonitor {
                 Write(root, "core-test-result.json", checks.Count, checks);
             });
             Run(entries, "storage+records+export", root, "records-test-result.json", () => {
-                int storage = StorageTests.Run(), records = RecordsTests.Run(), failures = ExportFailureTests.Run(points, root);
+                int storage = StorageTests.Run(root), records = RecordsTests.Run(root), failures = ExportFailureTests.Run(points, root);
                 WriteCounts(root, "records-test-result.json", storage, records, failures);
             });
             Run(entries, "cloud", root, "cloud-test-result.json", () => {

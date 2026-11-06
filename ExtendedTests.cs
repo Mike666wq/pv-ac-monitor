@@ -22,8 +22,8 @@ namespace ExperimentMonitor {
             var coreChecks=CoreTests.Run(points,root);
             File.WriteAllText(Path.Combine(root,"core-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=coreChecks.Count,checks=coreChecks,hardware_tested=false}));
             checks.Add("Core lifecycle / partition integration: "+coreChecks.Count);
-            int count=StorageTests.Run();checks.Add("SQLite / XLSX / CSV integration: "+count);
-            int recordsChecks=RecordsTests.Run(),failureChecks=ExportFailureTests.Run(points,root);checks.Add("Round-based history / export records: "+recordsChecks);
+            int count=StorageTests.Run(root);checks.Add("SQLite / XLSX / CSV integration: "+count);
+            int recordsChecks=RecordsTests.Run(root),failureChecks=ExportFailureTests.Run(points,root);checks.Add("Round-based history / export records: "+recordsChecks);
             File.WriteAllText(Path.Combine(root,"records-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,storageChecks=count,recordsChecks=recordsChecks,failureChecks=failureChecks,count=count+recordsChecks+failureChecks,hardware_tested=false}));
             int cloudChecks=CloudSelfTests.Run();File.WriteAllText(Path.Combine(root,"cloud-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=cloudChecks,production_cloud_tested=false}));checks.Add("Cloud lease / credentials / retry / HTTP integration: "+cloudChecks);
             var trendChecks=TrendTests.Run();File.WriteAllText(Path.Combine(root,"trend-test-result.json"),new JavaScriptSerializer().Serialize(new{passed=true,count=trendChecks.Count,checks=trendChecks,hardware_tested=false,production_cloud_tested=false}));checks.Add("Trend compression / continuity regression: "+trendChecks.Count);

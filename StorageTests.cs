@@ -10,7 +10,17 @@ namespace ExperimentMonitor {
  public sealed class StorageTestHarness:MarshalByRefObject {public int Execute(){return StorageTests.Run();}}
  public static class StorageTests {
   static void Check(bool ok,string name){if(!ok)throw new Exception("存储测试失败："+name);}
- public static int Run(){string root=Path.Combine(Path.GetTempPath(),"experiment-storage-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);int tests=0;try{DateTime utc=DateTime.UtcNow;var filter=new HistoryFilter{FromUtc=utc.AddDays(-90),ToUtc=utc.AddMinutes(1),Source="simulation"};// 分区归属：引擎明确指定了落哪个库，行就必须落在那个库里。
+ /// <summary>在 baseRoot 下建独立工作目录。优先用调用方给的根目录（仓库内），
+    /// 只有拿不到时才退回系统临时目录 —— 受限环境里进程可能无权在 %TEMP% 下建目录，
+    /// 那样整套存储测试会因为"建不了目录"而假失败，掩盖真正的缺陷。</summary>
+    static string Scratch(string baseRoot,string name){
+        string parent=String.IsNullOrWhiteSpace(baseRoot)?Path.GetTempPath():baseRoot;
+        string dir=Path.Combine(parent,name+"-"+Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+    public static int Run(){return Run(null);}
+    public static int Run(string baseRoot){string root=Scratch(baseRoot,".storage-tests");Directory.CreateDirectory(root);int tests=0;try{DateTime utc=DateTime.UtcNow;var filter=new HistoryFilter{FromUtc=utc.AddDays(-90),ToUtc=utc.AddMinutes(1),Source="simulation"};// 分区归属：引擎明确指定了落哪个库，行就必须落在那个库里。
   // 旧实现按"记录时间"重新推导文件，跨周期边界时同一轮的行会被拆进两个库，写线程还会为同一轮来回切换文件。
   {
    string partitionRoot=Path.Combine(root,"partitioned");
@@ -39,7 +49,7 @@ Environment.SetEnvironmentVariable("TEMP",blockedTemp);Environment.SetEnvironmen
 try{long roundTotal;List<List<StoredObservation>> bigRounds=ExperimentHistory.QueryRoundPage(tempDbDir,new HistoryFilter{FromUtc=new DateTime(2026,10,4,0,0,0,DateTimeKind.Utc),ToUtc=new DateTime(2026,10,7,0,0,0,DateTimeKind.Utc),Source="simulation"},0,5,out roundTotal,false);Check(roundTotal==400&&bigRounds.Count==5&&bigRounds.All(g=>g.Count==150),"大范围分组查询不依赖系统临时目录(60000行/400轮)");tests++;}catch(SQLiteException e){Check(false,"大范围分组查询不依赖系统临时目录(实际: "+e.Message+")");}finally{Environment.SetEnvironmentVariable("TEMP",oldTemp);Environment.SetEnvironmentVariable("TMP",oldTmp);}
 using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new SQLiteCommand("PRAGMA temp_store",probe))Check(Convert.ToInt32(q.ExecuteScalar())==2,"历史只读连接分组临时存储在内存");tests++;}
  // 记录页新取数路径:键集翻页首屏不扫全范围,翻遍全库的轮次键与旧分组实现完全一致。
- string pagingRoot=Path.Combine(Path.GetTempPath(),"experiment-paging-tests-"+Guid.NewGuid().ToString("N"));
+ string pagingRoot=Scratch(root,".paging-tests");
  Directory.CreateDirectory(Path.Combine(pagingRoot,"simulation"));
  string pagingDb=Path.Combine(pagingRoot,"simulation","simulation_cycle_20261005T000000000_30d_000001_001.db");
  using(var bc=new SQLiteConnection("Data Source="+pagingDb+";Version=3;")){bc.Open();using(var t=bc.BeginTransaction()){using(var q=new SQLiteCommand("CREATE TABLE observations(id INTEGER PRIMARY KEY AUTOINCREMENT,utc_ticks INTEGER NOT NULL,source TEXT,session TEXT,experiment TEXT,round INTEGER,point TEXT,description TEXT,device TEXT,slave INTEGER,address INTEGER,count INTEGER,unit TEXT,mode TEXT,status TEXT,value TEXT,number REAL,elapsed_ms INTEGER,tx TEXT,rx TEXT,payload TEXT,raw_number REAL,quality TEXT,config_version TEXT,round_started_utc_ticks INTEGER);CREATE INDEX ix_obs_time ON observations(utc_ticks,id);CREATE INDEX ix_obs_point_time ON observations(point,utc_ticks);",bc,t))q.ExecuteNonQuery();DateTime baseUtc=new DateTime(2026,10,5,0,0,0,DateTimeKind.Utc);using(var ins=new SQLiteCommand("INSERT INTO observations(utc_ticks,source,session,experiment,round,point,description,device,slave,address,count,unit,mode,status,value,number,elapsed_ms,tx,rx,payload,raw_number,quality,config_version,round_started_utc_ticks) VALUES(@u,'simulation',@se,'',@r,@p,'水箱','PLC',1,125,2,'℃','FLOAT ABCD','正常','1',1.0,3,'','','',1.0,'good','test',@rs)",bc,t)){for(int round=1;round<=400;round++)for(int i=0;i<3;i++){ins.Parameters.Clear();long ru=baseUtc.AddMinutes(round).Ticks;ins.Parameters.AddWithValue("@u",ru+i);ins.Parameters.AddWithValue("@se",round%2==0?"s-even":"s-odd");ins.Parameters.AddWithValue("@r",round);ins.Parameters.AddWithValue("@p","T"+i);ins.Parameters.AddWithValue("@rs",ru);ins.ExecuteNonQuery();}}t.Commit();}}
@@ -79,7 +89,7 @@ using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new 
  Check(!ExperimentHistory.HasRoundBefore(pagingRoot,winFilter,baseAnchor.AddMinutes(1)),"范围最早端之前没有更早的采集轮");tests++;
  Check(ExperimentHistory.HasRoundBefore(pagingRoot,winFilter,baseAnchor.AddMinutes(2)),"范围中间存在更早的采集轮");tests++;
  // 跨分期库的一轮只算一轮:同一 session+round 的记录分片落在两个库文件里。
- string splitRoot=Path.Combine(Path.GetTempPath(),"experiment-split-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(Path.Combine(splitRoot,"serial"));
+ string splitRoot=Scratch(root,".split-tests");Directory.CreateDirectory(Path.Combine(splitRoot,"serial"));
  string splitA=Path.Combine(splitRoot,"serial-split-a.db"),splitB=Path.Combine(splitRoot,"serial","split-b.db");
  string createObservations="CREATE TABLE observations(id INTEGER PRIMARY KEY AUTOINCREMENT,utc_ticks INTEGER NOT NULL,source TEXT,session TEXT,experiment TEXT,round INTEGER,point TEXT,description TEXT,device TEXT,slave INTEGER,address INTEGER,count INTEGER,unit TEXT,mode TEXT,status TEXT,value TEXT,number REAL,elapsed_ms INTEGER,tx TEXT,rx TEXT,payload TEXT,raw_number REAL,quality TEXT,config_version TEXT,round_started_utc_ticks INTEGER);CREATE INDEX ix_obs_time ON observations(utc_ticks,id);";
  foreach(string splitFile in new[]{splitA,splitB})using(var c=new SQLiteConnection("Data Source="+splitFile+";Version=3;")){c.Open();using(var q=new SQLiteCommand(createObservations,c))q.ExecuteNonQuery();}
@@ -97,7 +107,7 @@ using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new 
  long splitTotal;List<List<StoredObservation>> splitOld=ExperimentHistory.QueryRoundPage(splitRoot,splitFilter,0,10,out splitTotal,false);
  Check(splitTotal==2&&splitOld.Count==2&&splitOld.Sum(g=>g.Count)==13,"旧分组实现对跨库轮次结论一致");tests++;
  // 实验段与测点统计:会话分段、缺口、超时轮、越限计数。
- string statsRoot=Path.Combine(Path.GetTempPath(),"experiment-stats-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(Path.Combine(statsRoot,"serial"));
+ string statsRoot=Scratch(root,".stats-tests");Directory.CreateDirectory(Path.Combine(statsRoot,"serial"));
  string statsDb=Path.Combine(statsRoot,"serial-stats.db");
  using(var c=new SQLiteConnection("Data Source="+statsDb+";Version=3;")){c.Open();using(var t=c.BeginTransaction()){
   using(var q=new SQLiteCommand(createObservations,c))q.ExecuteNonQuery();
@@ -126,14 +136,22 @@ using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new 
  Check(t0.Good==10&&t0.Timeout==2&&t0.OverLimit==4,"测点统计的有效点与越限点正确");tests++;
  Check(t0.Min==1&&t0.Max==10&&Math.Abs(t0.Mean.Value-5.4)<1e-9,"测点统计的最值与均值正确");tests++;
  Check(points.Single(x=>x.Point=="T1").OverLimit==-1,"未配置阈值的测点不做越限判定");tests++;
- string limitRoot=Path.Combine(Path.GetTempPath(),"experiment-limits-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(limitRoot);
+ string limitRoot=Scratch(root,".limit-tests");Directory.CreateDirectory(limitRoot);
  LimitStore.Save(limitRoot,new Dictionary<string,Limit>(StringComparer.Ordinal){ {"T1",new Limit{Lo=5,Hi=40}} });
  var reloaded=LimitStore.Load(limitRoot);
  Check(reloaded.Count==1&&reloaded["T1"].Lo==5&&reloaded["T1"].Hi==40,"阈值表落盘后可重新读回");tests++;
  bool rejected=false;try{LimitStore.Save(limitRoot,new Dictionary<string,Limit>(StringComparer.Ordinal){ {"T1",new Limit{Lo=40,Hi=5}} });}catch(ArgumentException){rejected=true;}
  Check(rejected&&LimitStore.Load(limitRoot)["T1"].Lo==5,"下限大于等于上限的阈值被拒绝且保留原文件");tests++;
  for(int attempt=0;attempt<20;attempt++){try{if(Directory.Exists(pagingRoot))Directory.Delete(pagingRoot,true);if(Directory.Exists(splitRoot))Directory.Delete(splitRoot,true);if(Directory.Exists(statsRoot))Directory.Delete(statsRoot,true);if(Directory.Exists(limitRoot))Directory.Delete(limitRoot,true);}catch{}if(!Directory.Exists(pagingRoot)&&!Directory.Exists(splitRoot)&&!Directory.Exists(statsRoot)&&!Directory.Exists(limitRoot))break;System.Threading.Thread.Sleep(50);}
- return tests;}finally{ExperimentExport.RowsPerVolume=100000;Directory.Delete(root,true);}}
+ return tests;}finally{ExperimentExport.RowsPerVolume=100000;
+      // 清理属于收尾，不该决定成败：SQLite 连接池可能让文件句柄晚一步释放。
+      // 先重试（每次之间强制 GC 并让步），彻底删不掉也不抛 —— 断言已经跑完了。
+      for(int attempt=0;attempt<20;attempt++){
+       try{if(Directory.Exists(root))Directory.Delete(root,true);break;}
+       catch(IOException){GC.Collect();GC.WaitForPendingFinalizers();Thread.Sleep(50*(attempt+1));}
+       catch(UnauthorizedAccessException){GC.Collect();GC.WaitForPendingFinalizers();Thread.Sleep(50*(attempt+1));}
+      }
+     }}
  }
 }
 

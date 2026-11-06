@@ -183,6 +183,18 @@ namespace ExperimentMonitor {
             search.Text="温度";                string first=(string)searchNext.Invoke(form,null);
             string second=(string)searchNext.Invoke(form,null);
             Check(first!=second&&first.Contains("第 1/")&&second.Contains("第 2/"),title+" 搜索在多个命中项之间循环");
+            // 只断言"找到了"是不够的：真正的要求是**把目标滚进可视区**。
+            // 定位算法曾用 card.Parent.Top+card.Top，漏掉 section 在 stack 里的偏移，
+            // 越靠后的分组偏得越多 —— 表现就是"查找了但什么都没动"。
+            var overviewViewport=typeof(DashboardForm).GetField("overviewViewport",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(form) as Panel;
+            var cardMap=typeof(DashboardForm).GetField("cards",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(form) as Dictionary<string,Label[]>;
+            Check(overviewViewport!=null&&cardMap!=null&&cardMap.ContainsKey("0006H"),title+" 搜索定位所需的视口与卡片映射可用");
+            search.Text="0006H"; searchNext.Invoke(form,null);
+            Control lastCard=cardMap["0006H"][1];
+            while(lastCard!=null&&!(lastCard is RoundedPanel)) lastCard=lastCard.Parent;
+            System.Drawing.Point where=overviewViewport.PointToClient(lastCard.PointToScreen(System.Drawing.Point.Empty));
+            Check(where.Y>=0&&where.Y<overviewViewport.ClientSize.Height,
+                title+" 搜索把末尾分组的卡片滚进可视区（y="+where.Y+"，视口高 "+overviewViewport.ClientSize.Height+"）");
             search.Text="";
             TabPage page=form.MainNavigation.TabPages[3];
             form.MainNavigation.SelectedTab=page;

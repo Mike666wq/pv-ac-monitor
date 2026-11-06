@@ -124,7 +124,11 @@ namespace ExperimentMonitor {
         }
         /// <summary>结构校验；返回空串表示可用。校验失败时调用方必须按 disabled 处理。</summary>
         public string Validate(List<Point> points){
-            if(mode!="disabled"&&mode!="preview")return "mode 只能为 disabled 或 preview（armed 是会话内状态，不写入文件）";
+            // 0.8.0 起 mode 有三个合法值：disabled / live / preview（preview 是旧写法，等价于 live）。
+            // 白名单漏掉 live 会让随包配置被判为"无法解析"，门禁直接进 config_error ——
+            // 写入确实是挡住了，但提示词变成"mode 只能为 disabled 或 preview"，与随包文件自相矛盾。
+            if(mode!="disabled"&&mode!="live"&&mode!="preview")
+                return "mode 只能为 disabled / live / preview，收到「"+mode+"」（armed 是会话内状态，不写入文件）";
             if(String.IsNullOrWhiteSpace(interlocks.remotePoint)||String.IsNullOrWhiteSpace(interlocks.faultPoint))return "联锁点不能为空";
             if(interlocks.maxAgeSeconds<1||interlocks.maxAgeSeconds>3600)return "maxAgeSeconds 必须在 1..3600 秒";
             if(interlocks.remoteExpected.HasValue&&(interlocks.remoteExpected.Value<0||interlocks.remoteExpected.Value>65535))return "remoteExpected 超出 16 位范围";

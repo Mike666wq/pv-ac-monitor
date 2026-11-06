@@ -427,6 +427,15 @@ namespace ExperimentMonitor {
                     ControlConfig broken=BuildConfig();
                     broken.targets[0].address=9999;
                     Check(!String.IsNullOrEmpty(broken.Validate(points)),"target 地址与点表不一致时 Validate 返回错误",checks);
+                    // 随包配置用的是 mode=live。校验白名单一度漏掉 live，导致随包配置被判为
+                    // "无法解析"，门禁进 config_error —— 提示词还写着"只能为 disabled 或 preview"。
+                    ControlConfig liveConfig=BuildConfig();liveConfig.mode="live";
+                    Check(liveConfig.Validate(points)=="","mode=live 必须通过配置校验（随包配置就是它）",checks);
+                    ControlConfig previewConfig=BuildConfig();previewConfig.mode="preview";
+                    Check(previewConfig.Validate(points)=="","mode=preview 作为旧写法仍通过校验",checks);
+                    ControlConfig badMode=BuildConfig();badMode.mode="armed";
+                    Check(!String.IsNullOrEmpty(badMode.Validate(points)),"未知 mode 被拒绝",checks);
+                    string shipError;ControlConfig shipped=ControlConfig.Load(root,points,out shipError);Check(shipped!=null&&String.IsNullOrEmpty(shipError),"随包 control-config.json 能通过校验（错误："+(shipError??"")+"）",checks);Check(shipped.WritesEnabled,"随包 mode 为 live 即可写（但目标点全部不可写）",checks);
                 }
 
                 // ── A3 门禁回归（2026-11-06）──────────────────────────────────

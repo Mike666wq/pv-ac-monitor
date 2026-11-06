@@ -23,8 +23,10 @@ namespace ExperimentMonitor {
             return doc;
         }
 
-        public static int Run() {
-            string root = Path.Combine(Path.GetTempPath(), "experiment-record-tests-" + Guid.NewGuid().ToString("N"));
+        public static int Run() { return Run(null); }
+        public static int Run(string baseRoot) {
+            string parent = String.IsNullOrWhiteSpace(baseRoot) ? Path.GetTempPath() : baseRoot;
+            string root = Path.Combine(parent, ".record-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
             int checks = 0;
             int previousVolumeSize = ExperimentExport.RowsPerVolume;

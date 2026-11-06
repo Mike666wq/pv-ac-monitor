@@ -71,7 +71,9 @@ namespace ExperimentMonitor {
             }
         }
 
-        internal static void Build(TabPage page,List<Point> points,Dictionary<string,Label[]> cards,ToolTip tips,ExperimentChart overviewChart,Font baseFont) {
+        /// <summary>构建总览页。返回纵向滚动视口，供"查找"定位时使用 ——
+        /// 用 FindControl 在整棵 TabControl 里找 AutoScroll 面板会命中别的页面，滚动了也看不见。</summary>
+        internal static Panel Build(TabPage page,List<Point> points,Dictionary<string,Label[]> cards,ToolTip tips,ExperimentChart overviewChart,Font baseFont) {
             var viewport=new Panel { Dock=DockStyle.Fill,AutoScroll=true,BackColor=UiTheme.Canvas };page.Controls.Add(viewport);
             var stack=new TableLayoutPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=0,Padding=new Padding(2) };viewport.Controls.Add(stack);
             // "控制/设定"以前不在这个列表里，于是整组掉到最后（Index=99）——
@@ -169,6 +171,7 @@ namespace ExperimentMonitor {
             overviewChart.Dock=DockStyle.Fill;overviewChart.MinimumSize=new Size(280,220);overviewChart.Height=Math.Max(230,overviewChart.RequiredHeight);
             stack.RowCount++;stack.RowStyles.Add(new RowStyle(SizeType.Absolute,Math.Max(230,overviewChart.RequiredHeight)));stack.Controls.Add(overviewChart,0,stack.RowCount-1);
             viewport.SizeChanged+=(s,e)=>{int width=Math.Max(320,viewport.ClientSize.Width-8);stack.Width=width;overviewChart.Width=width-8;};
+            return viewport;
         }
     }
 }

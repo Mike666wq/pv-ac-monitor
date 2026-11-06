@@ -126,7 +126,8 @@ namespace ExperimentMonitor {
         }
         TabPage AddPage(string name){var p=new TabPage(name){BackColor=UiTheme.Canvas,Padding=new Padding(7)};MainNavigation.TabPages.Add(p);return p;}
 
-        void BuildOverview(TabPage page) { OverviewPageBuilder.Build(page,points,cards,tips,overviewChart,Font); }
+        void BuildOverview(TabPage page) { overviewViewport=OverviewPageBuilder.Build(page,points,cards,tips,overviewChart,Font); }
+        Panel overviewViewport;
 
         void BuildDetails(TabPage page) {
             foreach(string col in new[]{"测点","名称","设备","站号","零基地址","单位","实时值","质量","采样时间","耗时(ms)"})table.Columns.Add(col);
@@ -306,11 +307,15 @@ namespace ExperimentMonitor {
             Control card=cardLabels[1];
             while(card!=null&&!(card is RoundedPanel)) card=card.Parent;
             if(card==null) return false;
-            if(searchViewport==null) searchViewport=FindControl<Panel>(MainNavigation,c=>c.AutoScroll);
+            if(searchViewport==null) searchViewport=overviewViewport;
             if(searchViewport!=null&&!searchViewport.IsDisposed) {
-                // AutoScrollPosition 的 setter 传的是**正值**：传负值会落到 0 而不是目标位置。
-                int top=card.Parent!=null?card.Parent.Top+card.Top:card.Top;
-                searchViewport.AutoScrollPosition=new DrawingPoint(0,Math.Max(0,top-24));
+                // 用屏幕坐标把卡片换算成视口的内容坐标，再设滚动位置。
+                // 直接加 card.Parent.Top + card.Top 会漏掉 section 在 stack 里的偏移，
+                // 越靠后的分组偏得越多 —— 表现就是"查找了但没滚到"。
+                // AutoScrollPosition 的 setter 收正值（getter 返回负值）。
+                DrawingPoint inViewport=searchViewport.PointToClient(card.PointToScreen(DrawingPoint.Empty));
+                int contentY=(-searchViewport.AutoScrollPosition.Y)+inViewport.Y;
+                searchViewport.AutoScrollPosition=new DrawingPoint(0,Math.Max(0,contentY-24));
             }
             HighlightCard(card);
             return true;
