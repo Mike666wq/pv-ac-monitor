@@ -285,6 +285,11 @@ namespace ExperimentMonitor {
             }
             Label d3=map["D3"][1];Check(d3.Text.Contains("E-08")||d3.Text.Contains("e-08"),title+" 微小非零值没有显示为零");
             Point p=points.First(x=>x.name=="D3");string before=d3.Text;form.UpdateObservation(new Observation{Point=p.name,Description=PointCatalog.Get(p).Label,Device=p.binding.device,Source="simulation",Mode=PointCatalog.Get(p).Mode,Quality="timeout",Status="timeout",Value="timeout",Number=null,Utc=DateTime.UtcNow,Unit=PointCatalog.Get(p).Unit});Check(d3.Text==before&&map["D3"][3].Text.Contains("旧值"),title+" 通信故障时保留最后有效显示并标记旧值");
+            // 设定值是"命令"不是"读数"：卡片上必须同时给出实测与偏差，不能只有一个裸数字。
+            Label setpointStatus=map["D2202"][3];
+            Check(PointRole.IsSetpoint(PointCatalog.Get("D2202").Role),title+" D2202 在点表里是设定值角色");
+            Check(setpointStatus.Text.Contains("实测")||setpointStatus.Text.Contains("设定"),
+                title+" D2202 设定值卡片给出实测/偏差而不是裸数字（实际："+setpointStatus.Text+"）");
         }
         static bool FitsOverviewContainers(Control child,Panel viewport){
             bool foundViewport=false;

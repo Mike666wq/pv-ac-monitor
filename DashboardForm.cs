@@ -207,6 +207,34 @@ namespace ExperimentMonitor {
             Engine.PolicyChanged+=p=>Dispatch(()=>AppendLog("策略更新 · "+p.Type+" · "+p.Detail));
         }
         void ResetDisplay(){good=bad=0;lastGood.Clear();overviewChart.Clear();foreach(Label[] c in cards.Values){c[1].Text="—";c[3].Text="待机";c[3].ForeColor=UiTheme.Muted;}foreach(DataRow r in table.Rows){r["实时值"]="—";r["质量"]="尚未采集";r["采样时间"]="";r["耗时(ms)"]="";}counts.Text="已切换数据来源 · 等待首轮采样";}
+
+        /// <summary>
+        /// 设定值卡片的第三行：不给"正常 · 时间"，而是给出"实测 / 偏差 / 是否被跟踪"。
+        /// 这是本程序区分"命令值"与"实测值"的唯一位置，改这里就等于改整个语义。
+        /// 返回 null 表示这不是设定值，走普通卡片的呈现。
+        /// </summary>
+        string SetpointCardStatus(Observation o,bool valid,bool hasOld,DateTime timestamp) {
+            if(o==null) return null;
+            PointInfo meta=PointCatalog.Get(o.Point);
+            if(!PointRole.IsSetpoint(meta.Role)) return null;
+            if(!valid) return QualityLabel(o.Quality)+(hasOld?" · 设定旧值 "+timestamp.ToLocalTime().ToString("HH:mm:ss"):" · 尚无设定值");
+            string unit=String.IsNullOrEmpty(meta.Unit)?"":" "+meta.Unit;
+            if(String.IsNullOrEmpty(meta.PairedWith)||!o.Number.HasValue)
+                return "设定"+unit+"（无配对实测点）";
+            double? actual=Engine.ControlNumericValue(meta.PairedWith);
+            if(!actual.HasValue) return "设定"+unit+" · 实测点 "+meta.PairedWith+" 无读数";
+            double deviation=actual.Value-o.Number.Value;
+            if(Math.Abs(deviation)<=1.0) return "实测 "+actual.Value.ToString("0.#",CultureInfo.InvariantCulture)+" · 已跟踪";
+            // 偏差大时必须区分"正在趋近"和"根本没启动"——后者才是要报警的状态。
+            string why=ActuatorIdle()?"设定未被跟踪":"正在趋近";
+            return "实测 "+actual.Value.ToString("0.#",CultureInfo.InvariantCulture)+"（偏差 "+deviation.ToString("+0.#;-0.#;0",CultureInfo.InvariantCulture)+"）· "+why;
+        }
+
+        /// <summary>执行器是否停机：压缩机电流接近空载。</summary>
+        bool ActuatorIdle() {
+            double? current=Engine.ControlNumericValue("D2");
+            return current.HasValue&&current.Value<0.5;
+        }
         void Dispatch(Action action){if(closed||IsDisposed)return;try{if(IsHandleCreated)BeginInvoke(action);}catch(InvalidOperationException){} }
         void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"○ 本地记录已停止":"○ 本地记录待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;headerAction.Text=connected?"断开连接":"连接";headerAction.Enabled=connected||!running;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;connectionState.Text=connected?(Engine.ConnectedSimulation?"● 模拟已连接":"● 串口已连接 · "+Engine.ConnectedPort):"○ 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"● 正在采集":"○ 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
         void ConnectCaptureSource(){try{if(!simulation.Checked&&String.IsNullOrWhiteSpace(port.Text))throw new InvalidOperationException("没有可用串口。请接入 USB-RS485 转换器后点击刷新。");Engine.Connect(simulation.Checked,port.Text,9600);SaveSettings();RefreshControls();}catch(Exception ex){MessageBox.Show(this,"连接失败："+ex.Message,"连接",MessageBoxButtons.OK,MessageBoxIcon.Error);}}
@@ -218,7 +246,13 @@ namespace ExperimentMonitor {
             foreach(var pair in lastGood)if((DateTime.UtcNow-pair.Value).TotalSeconds>Math.Max(10,(double)period.Value*3)){Label[] c;if(cards.TryGetValue(pair.Key,out c)&&!c[3].Text.Contains("旧值")&&!c[3].Text.Contains("采集已停止")&&!c[3].Text.Contains("连接已断开")){c[3].Text="旧值 · "+pair.Value.ToLocalTime().ToString("HH:mm:ss");c[3].ForeColor=UiTheme.Warning;}DataRow r;if(rows.TryGetValue(pair.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期";}}
         public void UpdateObservation(Observation o){if(o==null)return;if(!String.IsNullOrEmpty(o.SessionId)&&countedSession!=o.SessionId){countedSession=o.SessionId;good=bad=0;}bool valid=Quality.IsGood(o.Quality);if(valid)good++;else if(Quality.IsFailure(o.Quality))bad++;DateTime previous;bool hasOld=lastGood.TryGetValue(o.Point,out previous);
             DataRow r;if(rows.TryGetValue(o.Point,out r)){if(valid){r["实时值"]=DisplayNumber(o);r["采样时间"]=o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff",CultureInfo.InvariantCulture);}r["质量"]=valid?"正常":QualityLabel(o.Quality)+(hasOld?" · 保留旧值":" · 尚无有效值");r["耗时(ms)"]=o.Milliseconds.ToString(CultureInfo.InvariantCulture);}
-            Label[] c;if(cards.TryGetValue(o.Point,out c)){if(valid){c[1].Text=DisplayCardValue(o);OverviewPageBuilder.FitValueFont(c[1]);lastGood[o.Point]=o.Utc;}DateTime timestamp=valid?o.Utc:previous;c[3].Text=valid?"正常 · "+timestamp.ToLocalTime().ToString("HH:mm:ss"):QualityLabel(o.Quality)+(hasOld?" · 旧值 "+timestamp.ToLocalTime().ToString("HH:mm:ss"):" · 尚无有效值");c[3].ForeColor=valid?UiTheme.Green:(Quality.IsFailure(o.Quality)?UiTheme.Danger:UiTheme.Muted);tips.SetToolTip(c[1],valid?"实际值："+(o.Value??DisplayNumber(o))+"\r\n采样时间："+o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"):o.Value);}
+            Label[] c;if(cards.TryGetValue(o.Point,out c)){if(valid){c[1].Text=DisplayCardValue(o);OverviewPageBuilder.FitValueFont(c[1]);lastGood[o.Point]=o.Utc;}DateTime timestamp=valid?o.Utc:previous;
+                // 设定值是"命令"不是"读数"：卡片上必须同时给出实测值与偏差，
+                // 否则使用者会把"设定 8"当成"实测 8"。
+                string roleText=SetpointCardStatus(o,valid,hasOld,timestamp);
+                if(roleText!=null){c[3].Text=roleText;}
+                else {c[3].Text=valid?"正常 · "+timestamp.ToLocalTime().ToString("HH:mm:ss"):QualityLabel(o.Quality)+(hasOld?" · 旧值 "+timestamp.ToLocalTime().ToString("HH:mm:ss"):" · 尚无有效值");}
+                c[3].ForeColor=valid?UiTheme.Green:(Quality.IsFailure(o.Quality)?UiTheme.Danger:UiTheme.Muted);tips.SetToolTip(c[1],valid?"实际值："+(o.Value??DisplayNumber(o))+"\r\n采样时间："+o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"):o.Value);}
             overviewChart.Add(o);counts.Text="本次采集累计成功 "+good+" / 异常 "+bad+"　·　"+(o.Source=="serial"?"实机":"模拟")+"　·　最新测点 "+o.Point+"　·　本地记录按实际采样时间保存";
         }
         static string DisplayNumber(Observation o){if(o.Number.HasValue){double value=o.Number.Value;if(value==0)return "0";string s=value.ToString("G6",CultureInfo.InvariantCulture);if(s=="0"||s=="-0")s=value.ToString("G9",CultureInfo.InvariantCulture);return s;}return o.Value??"—";}

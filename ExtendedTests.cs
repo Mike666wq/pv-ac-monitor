@@ -36,6 +36,14 @@ namespace ExperimentMonitor {
             Check(PointCatalog.Get("ZI6682").Unit=="A"&&PointCatalog.Get("ZI6682").UnitQualifier=="二次侧","限定语从单位串里拆出来",checks);
             Check(PointCatalog.Get("ZW66822").Unit=="W"&&PointCatalog.Get("ZW66822").Label=="直流有功功率","直流表 0x000F 是有功功率，单位 W",checks);
             Check(PointCatalog.Get("T1").SemanticConfirmed==false&&PointCatalog.Get("D1").SemanticConfirmed,"未裁决点与已裁决点在点表里可区分",checks);
+            Check(PointCatalog.Get("D2202").Unit=="℃","D2202 主机温度设定按 ℃ 显示（由 T1 跟随推断）",checks);
+            // 命令值与读数必须能区分开：这 4 个是设定值，不是测量值。
+            Check(PointRole.IsSetpoint(PointCatalog.Get("D2202").Role)&&PointRole.IsSetpoint(PointCatalog.Get("D2000").Role)
+                &&PointRole.IsSetpoint(PointCatalog.Get("D2001").Role)&&PointRole.IsSetpoint(PointCatalog.Get("D2207").Role),"四个控制点被标记为设定值角色",checks);
+            Check(PointRole.IsMeasurement(PointCatalog.Get("T1").Role)&&PointRole.IsMeasurement(PointCatalog.Get("D3").Role)&&PointRole.IsMeasurement(PointCatalog.Get("ZU6682").Role),"温度/电表/直流点被标记为测量角色",checks);
+            Check(PointCatalog.Get("D2212").Role==PointRole.Status&&PointCatalog.Get("0006H").Role==PointRole.Diagnostic,"状态点与诊断点角色正确",checks);
+            Check(PointCatalog.Get("D2202").PairedWith=="T1"&&PointCatalog.Get("T1").PairedWith=="D2202","设定值与受控实测值双向配对",checks);
+            Check(PointCatalog.Get("D2000").PairedWith=="D2209","D2000 配对 D2209（该联动已被数据证伪，配对保留以便界面显示偏差）",checks);
             Check(PointCatalog.Version.StartsWith("catalog-4-")&&PointCatalog.Version.Length>18,"点表版本是内容指纹而不是手写常量",checks);
             string folder=Path.Combine(root,".testing","integrated-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);File.Copy(Path.Combine(root,"protocol.json"),Path.Combine(folder,"protocol.json"));
             var observed=new List<Observation>();

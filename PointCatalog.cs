@@ -7,6 +7,22 @@ using System.Text;
 
 namespace ExperimentMonitor {
     /// <summary>
+    /// 测点的角色。这一维解决的是"这个数字是读到的，还是命令的"——
+    /// 两者混在一起展示，使用者会把"设定 8"误读成"实测 8"。
+    /// </summary>
+    public static class PointRole {
+        /// <summary>传感器/仪表实测值（温度、电压、电流、功率、电能、频率）。</summary>
+        public const string Measurement="measurement";
+        /// <summary>控制指令/设定值。由 PLC 自己持有并执行，PC 端只读；数值是"要求多少"，不是"现在多少"。</summary>
+        public const string Setpoint="setpoint";
+        /// <summary>状态/反馈位（故障、档位、模式、就绪、计时）。</summary>
+        public const string Status="status";
+        /// <summary>诊断用位串。</summary>
+        public const string Diagnostic="diagnostic";
+        public static bool IsSetpoint(string role) { return String.Equals(role,Setpoint,StringComparison.Ordinal); }
+        public static bool IsMeasurement(string role) { return String.Equals(role,Measurement,StringComparison.Ordinal); }
+    }
+    /// <summary>
     /// 点表的元数据。字段全部只读（私有 setter）：点表一旦建好就不允许任何调用方就地改写。
     /// 旧实现把字段做成公开可变，`Get(Point)` 里还会就地改写共享实例的 Label/Mode ——
     /// 一次调用就能污染整个进程里的点表，多线程下还会撕裂 Mode 与 Name 的对应关系。
@@ -33,15 +49,24 @@ namespace ExperimentMonitor {
         /// （告警、统计、联锁、阈值、导出"生效数"），界面上要带存疑标记。
         /// </summary>
         public bool SemanticConfirmed { get; private set; }
+        /// <summary>角色：measurement / setpoint / status / diagnostic。见 PointRole。</summary>
+        public string Role { get; private set; }
+        /// <summary>
+        /// 配对点：对设定值来说，是"反映这条指令效果的实测点"；
+        /// 对实测点来说，是"驱动它的设定值"。同一对的两个点互相指向对方。
+        /// 有这个配对，才能把"设定 vs 实测 vs 偏差"三者一起算出来。
+        /// </summary>
+        public string PairedWith { get; private set; }
         /// <summary>未登记到点表的点。只在 --allow-unknown-points 下才允许出现。</summary>
         public bool Unknown { get; private set; }
 
-        internal PointInfo(string name,string label,string group,string unit,string mode,bool confirmed,string alias,double scale,string unitQualifier,bool semanticConfirmed) {
+        internal PointInfo(string name,string label,string group,string unit,string mode,bool confirmed,string alias,double scale,string unitQualifier,bool semanticConfirmed,string role,string pairedWith) {
             Name=name;Label=label;Group=group;Unit=unit;Mode=mode;ScaleConfirmed=confirmed;Alias=alias??"";
             Scale=scale;UnitQualifier=unitQualifier??"";SemanticConfirmed=semanticConfirmed;Unknown=false;
+            Role=String.IsNullOrEmpty(role)?PointRole.Measurement:role;PairedWith=pairedWith??"";
         }
         internal static PointInfo MakeUnknown(string name,string mode) {
-            return new PointInfo(name??"",name??"","未登记点","","",false,"",1.0,"",false){Unknown=true};
+            return new PointInfo(name??"",name??"","未登记点","","",false,"",1.0,"",false,PointRole.Measurement,""){Unknown=true};
         }
     }
     public static class PointCatalog {
@@ -62,8 +87,35 @@ namespace ExperimentMonitor {
         /// </summary>
         public static bool AllowUnknown { get; set; }
 
+        /// <summary>
+        /// 角色与配对表。集中声明而不是散在 37 个 Add 调用里，才能一眼核对
+        /// "哪些是命令、哪些是读数、每个命令对哪个实测"。
+        /// 配对依据是现场数据的定量核对：
+        ///   D2202 ↔ T1  ：压缩机运转时 T1 落在 D2202±1 K（42%），停机后 T1 漂到环境温度（偏差最大 +21 K）
+        ///   D2000 ↔ D2209：D2000=50 持续 71 轮，同期 D2209 恒为 0 ⇒ 这条联动已被证伪
+        ///   D2001 ↔ D2210：两者恒为 0，无法证明关系
+        ///   D2207       ：无配对量
+        /// </summary>
+        static readonly Dictionary<string,KeyValuePair<string,string>> roles=new Dictionary<string,KeyValuePair<string,string>>(StringComparer.Ordinal){
+            {"D2202",new KeyValuePair<string,string>(PointRole.Setpoint,"T1")},
+            {"D2000",new KeyValuePair<string,string>(PointRole.Setpoint,"D2209")},
+            {"D2001",new KeyValuePair<string,string>(PointRole.Setpoint,"D2210")},
+            {"D2207",new KeyValuePair<string,string>(PointRole.Setpoint,"")},
+            {"T1",new KeyValuePair<string,string>(PointRole.Measurement,"D2202")},
+            {"D2209",new KeyValuePair<string,string>(PointRole.Status,"D2000")},
+            {"D2210",new KeyValuePair<string,string>(PointRole.Status,"D2001")},
+            {"D2208",new KeyValuePair<string,string>(PointRole.Status,"")},
+            {"D2211",new KeyValuePair<string,string>(PointRole.Status,"")},
+            {"D2212",new KeyValuePair<string,string>(PointRole.Status,"")},
+            {"D2213",new KeyValuePair<string,string>(PointRole.Status,"")},
+            {"D2003",new KeyValuePair<string,string>(PointRole.Status,"")},
+            {"0006H",new KeyValuePair<string,string>(PointRole.Diagnostic,"")}
+        };
         static void Add(string id,string label,string group,string unit,string mode,bool confirmed=true,string alias="",double scale=1.0,string unitQualifier="",bool semanticConfirmed=true) {
-            entries[id]=new PointInfo(id,label,group,unit,mode,confirmed,alias,scale,unitQualifier,semanticConfirmed);
+            KeyValuePair<string,string> pair;
+            string role=PointRole.Measurement,paired="";
+            if(roles.TryGetValue(id,out pair)){role=pair.Key;paired=pair.Value;}
+            entries[id]=new PointInfo(id,label,group,unit,mode,confirmed,alias,scale,unitQualifier,semanticConfirmed,role,paired);
         }
 
         static PointCatalog() {
@@ -113,7 +165,9 @@ namespace ExperimentMonitor {
             // "U16 / I16"兜底分支、只出文本不出数值，趋势/历史/导出里全是空值。
             Add("D2000","送风风机速度","控制/设定","原始码","INT16",true,"送风风机速度",1.0,"",false);
             Add("D2001","模式控制","控制/设定","原始码","INT16",true,"模式控制",1.0,"",false);
-            Add("D2202","主机温度设定","控制/设定","原始码","INT16",true,"主机温度设定",1.0,"",false);
+            // D2202 是设定值不是读数：它与 T1 同量纲（压缩机运转时 |T1-D2202|<=1K 占 42%，停机后漂到环境温度），
+            // 因此单位按 ℃ 显示，并标"推断待确认" —— 这正是"读到的数值"与"命令的数值"必须分开的原因。
+            Add("D2202","主机温度设定","控制/设定","℃","INT16",true,"主机温度设定（由 T1 跟随推断为℃，待现场确认）",1.0,"",false);
             Add("D2207","放冷反馈设定","控制/设定","原始码","INT16",true,"放冷反馈设定",1.0,"",false);
             // 只读状态/联锁。
             Add("D2209","风机档位","运行状态","原始码","INT16",true,"风机状态（力控 DESC；2026-11-06 实测为档位 1/2/3/0）");
