@@ -55,7 +55,7 @@ namespace ExperimentMonitor {
                 token.ThrowIfCancellationRequested();
                 using(var c=ExperimentHistory.OpenRead(file))
                 using(var q=ExperimentHistory.Command(c,f,
-                    "SELECT session,round,MIN(utc_ticks),MAX(utc_ticks),COUNT(*),SUM(CASE WHEN quality='good' THEN 1 ELSE 0 END),COUNT(DISTINCT device),COUNT(DISTINCT point)",long.MaxValue)) {
+                    "SELECT session,round,MIN(utc_ticks),MAX(utc_ticks),COUNT(*),SUM(CASE WHEN quality='" + Quality.Good + "' THEN 1 ELSE 0 END),COUNT(DISTINCT device),COUNT(DISTINCT point)",long.MaxValue)) {
                     q.CommandText+=" GROUP BY session,round";
                     using(var r=q.ExecuteReader()) while(r.Read()) {
                         string sessionKey=SessionKey(file,Text(r.GetValue(0)));
@@ -140,7 +140,7 @@ namespace ExperimentMonitor {
                         var parts=new List<string>();
                         if(pair.Value.Lo.HasValue){parts.Add("number<@llo"+index);parameters.Add("@llo"+index);parameters.Add(pair.Value.Lo.Value.ToString("R",CultureInfo.InvariantCulture));}
                         if(pair.Value.Hi.HasValue){parts.Add("number>@lhi"+index);parameters.Add("@lhi"+index);parameters.Add(pair.Value.Hi.Value.ToString("R",CultureInfo.InvariantCulture));}
-                        clauses.Add("(point=@lp"+index+" AND quality='good' AND number IS NOT NULL AND ("+String.Join(" OR ",parts.ToArray())+"))");
+                        clauses.Add("(point=@lp"+index+" AND quality='" + Quality.Good + "' AND number IS NOT NULL AND ("+String.Join(" OR ",parts.ToArray())+"))");
                         parameters.Add("@lp"+index);parameters.Add(pair.Key);
                         index++;
                     }
@@ -159,7 +159,7 @@ namespace ExperimentMonitor {
                 token.ThrowIfCancellationRequested();
                 using(var c=ExperimentHistory.OpenRead(file))
                 using(var q=ExperimentHistory.Command(c,f,
-                    "SELECT point,COUNT(*),SUM(CASE WHEN quality='good' THEN 1 ELSE 0 END),SUM(CASE WHEN quality='timeout' THEN 1 ELSE 0 END),"
+                    "SELECT point,COUNT(*),SUM(CASE WHEN quality='" + Quality.Good + "' THEN 1 ELSE 0 END),SUM(CASE WHEN quality='" + Quality.Timeout + "' THEN 1 ELSE 0 END),"
                     +"SUM(CASE WHEN quality IS NOT NULL AND quality<>'good' AND quality<>'timeout' THEN 1 ELSE 0 END),"
                     +"MIN(number),MAX(number),SUM(number),SUM(number*number),COUNT(number),MIN(utc_ticks),MAX(utc_ticks)",long.MaxValue)) {
                     q.CommandText+=" GROUP BY point";
@@ -208,7 +208,7 @@ namespace ExperimentMonitor {
                 using(var c=ExperimentHistory.OpenRead(file))
                 using(var q=ExperimentHistory.Command(c,f,"SELECT COUNT(*)",long.MaxValue)) {
                     var parts=new List<string>();
-                    q.CommandText+=" AND point=@p AND quality='good' AND number IS NOT NULL";
+                    q.CommandText+=" AND point=@p AND quality='" + Quality.Good + "' AND number IS NOT NULL";
                     q.Parameters.AddWithValue("@p",point);
                     if(limit.Lo.HasValue){parts.Add("number<@lo");q.Parameters.AddWithValue("@lo",limit.Lo.Value);}
                     if(limit.Hi.HasValue){parts.Add("number>@hi");q.Parameters.AddWithValue("@hi",limit.Hi.Value);}

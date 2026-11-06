@@ -14,6 +14,13 @@
 !/.github/workflows/
 !/.github/workflows/*.yml
 !/protocol.json
+!/PROTOCOL-REFERENCE.md
+!/docs/
+!/docs/protocol/
+!/docs/protocol/*.md
+!/tools/material-analysis/
+!/tools/material-analysis/*.py
+!/tools/material-analysis/*.ps1
 !/ExperimentMonitorDemo.exe.config
 !/ExperimentMonitorDemo.manifest
 !/System.Data.SQLite.dll

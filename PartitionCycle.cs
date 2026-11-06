@@ -211,7 +211,7 @@ namespace ExperimentMonitor {
             try {
                 File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(state), new UTF8Encoding(false));
                 using (var fs = new FileStream(tmp, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) fs.Flush(true);
-                if (File.Exists(statePath)) File.Replace(tmp, statePath, null); else File.Move(tmp, statePath);
+                AtomicFile.Replace(tmp, statePath);
             } finally { if (File.Exists(tmp)) try { File.Delete(tmp); } catch { } }
         }
 

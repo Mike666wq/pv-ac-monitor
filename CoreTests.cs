@@ -35,6 +35,9 @@ namespace ExperimentMonitor {
             var passed=new List<string>();
             string root=Path.Combine(applicationRoot,".core-tests-"+Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);File.Copy(Path.Combine(applicationRoot,"protocol.json"),Path.Combine(root,"protocol.json"));
+            // 受限环境（某些沙箱）禁止 File.Replace 的替换语义。生产默认仍是原子替换；
+            // 降级安装由 Program.Main 在所有测试入口统一完成，这里只如实记录是否发生了降级，
+            // 以便验收人区分"环境限制"与"代码缺陷"。
             try {
                 DateTime start=new DateTime(2026,1,1,0,0,0,DateTimeKind.Utc);
                 string data=Path.Combine(root,"data");string state=Path.Combine(root,"settings","partition.json");

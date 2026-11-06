@@ -1,4 +1,4 @@
-﻿# 运行控制（Modbus 06 下置）设计与现场启用
+# 运行控制（Modbus 06 下置）设计与现场启用
 
 本文对应源码 `MonitorEngine.Control.cs`、`ControlConfig.cs`、`ControlPage.cs`、`ControlConfirmForm.cs`、`Protocol.cs`（`Modbus.WriteSingle` / `ExtractWriteEcho` / `IWriteTransport`）、`ExperimentStore.cs`（`control_events`）、`PointCatalog.cs`。适用于 0.7.0 起的控制写入链路。
 
@@ -305,3 +305,4 @@ CRC 以程序计算为准（该算法已在自测中对照已知帧校验），�
 - `D2003`（远程/本地）、`D2208`（总故障）、`D2209/D2210/D2211/D2213` 的 0/1 枚举含义：工程里既无 `OFFMES/ONMES`（未用开关量点）、无 `LINETBL` 枚举表、无报警定义、无历史曲线，2026-10-03 实机读数**全为 0**。
 - `D2202` 的单位与量程、`D2001` 的模式码、`D2000` 的风机单位、`D2207` 的「放冷」含义：工程 `UNIT` 全空、`SCALEFL` 全 0。
 - PLC 是否允许 06 写这些寄存器、是否有写保护区：**无证据**。
+- 写入的物理风险：控制点全在 EEPROM 保持区（`EX3U-80` 第 14 页 D128–D7999），且 D1000 以后可能被配置成文件寄存器（FX2N 印刷 p.64）——写入能否持久、是否受保护开关限制，现场确认（见 `PROTOCOL-REFERENCE.md` §7 V12）。

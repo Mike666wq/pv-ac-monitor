@@ -38,11 +38,19 @@ namespace ExperimentMonitor {
                 var until=DateTime.UtcNow.AddSeconds(10);while(engine.IsRunning&&DateTime.UtcNow<until)Thread.Sleep(10);
                 Check(!engine.IsRunning,"single round shuts down",checks);
             }
-            Check(observed.Count==31&&observed.Any(o=>o.Slave==1&&o.Quality=="good"),"mains timeout does not block solar or PLC",checks);
-            Check(observed.Count(o=>o.Quality=="timeout")==1&&observed.First(o=>o.Quality=="timeout").Number==null,"offline device does not create zero values",checks);
+            // 2026-11-06 修订：每轮每个点都必须有一行。
+            // 旧断言锁死"31 行"（= 37 − 6），那个 6 正是站内超时后被 break 掉、
+            // 从此既不落库也不进统计的直流表其余点。现在必须是 37 行齐全：
+            // 失败的点记 timeout，后面同站的点记 skipped（数值列为空，绝不是 0）。
+            Check(observed.Count==points.Count&&observed.Any(o=>o.Slave==1&&Quality.IsGood(o.Quality)),"mains timeout does not block solar or PLC",checks);
+            Check(observed.Count(o=>o.Quality==Quality.Timeout)==1&&observed.First(o=>o.Quality==Quality.Timeout).Number==null,"offline device does not create zero values",checks);
+            var skipped=observed.Where(o=>o.Quality==Quality.Skipped).ToList();
+            Check(skipped.Count==points.Count(p=>p.binding.slave==6)-1&&skipped.All(o=>!o.Number.HasValue),"offline station still reports every point as unread",checks);
+            Check(observed.Select(o=>o.Point).Distinct().Count()==points.Count,"every point produces exactly one row per round",checks);
             Check(observed.First(o=>o.Point=="T1").Number==24,"T1 direct integer 24",checks);
             var rows=ExperimentHistory.Query(Path.Combine(folder,"data","storage"),new HistoryFilter{Source="simulation",FromUtc=DateTime.UtcNow.AddMinutes(-2),ToUtc=DateTime.UtcNow.AddMinutes(1)},100);
-            Check(rows.Count==observed.Count&&rows.Any(r=>r.Quality=="timeout"),"engine observations committed including failure",checks);
+            Check(rows.Count==observed.Count&&rows.Any(r=>r.Quality==Quality.Timeout),"engine observations committed including failure",checks);
+            Check(rows.Count(r=>r.Quality==Quality.Skipped)==skipped.Count&&rows.Where(r=>r.Quality==Quality.Skipped).All(r=>r.Number==null),"unread points are persisted without a value",checks);
             using(var restored=new ManualResetEventSlim())using(var engine=new MonitorEngine(points,folder)) {
                 int mainsAttempts=0;
                 engine.TransportFactory=(sim,port,baud)=>new RecoveryTransport(()=>Interlocked.Increment(ref mainsAttempts)==1);

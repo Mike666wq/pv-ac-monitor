@@ -88,6 +88,18 @@ namespace ExperimentMonitor {
             return (frame[3] << 8) | frame[4];
         }
         public static string Hex(byte[] data) { return BitConverter.ToString(data).Replace('-', ' '); }
+        /// <summary>MODBUS RTU 帧间静默要求 3.5 字符时间。9600 8N1（10 bit/字节）时约 3.65 ms。</summary>
+        public static double CharTimeMs(int baud) { return 10.0 * 3.5 / (baud <= 0 ? 9600 : baud) * 1000.0; }
+        /// <summary>FC03 响应帧长度：站号1 + 功能码1 + 字节数1 + 数据2N + CRC2。</summary>
+        public static int ResponseLength(int count) { return 5 + 2 * count; }
+        /// <summary>
+        /// 一次 03 请求的物理最小往返时间：响应帧自身在线路上的传输时间 + 从站最小处理时间（手册 T12 &lt; 1 ms）。
+        /// 低于该值的"响应"在物理上不可能属于本次请求，只能是上一笔事务的迟到帧 —— 03 响应不回显起始地址，
+        /// 这是唯一不依赖"站号+字节数签名唯一性"的迟到帧判据。
+        /// </summary>
+        public static double PhysicalFloorMs(int count, int baud) {
+            return ResponseLength(count) * 10.0 / (baud <= 0 ? 9600 : baud) * 1000.0 + 1.0;
+        }
         // Resynchronise through noise, unrelated frames, bad CRC and partial input.
         // No RTU transaction ID exists: a late reply with the same slave/length is ambiguous.
         public static bool Extract(List<byte> buffer, int slave, int count, out byte[] frame) {
@@ -143,43 +155,113 @@ namespace ExperimentMonitor {
         public DateTime RoundStartedUtc;
         public byte[] Tx = new byte[0], Rx = new byte[0], Payload = new byte[0];
         public long Milliseconds;
+        // Measured round trip of the transaction that produced this observation, in
+        // milliseconds, measured from the moment the request left the port.
+        public long RoundTripMs;
+        // Fault classification for the transport layer: "" (none), "timeout",
+        // "frame" (CRC/length/protocol), "port" (port disappeared or I/O failed),
+        // "busy" (bus not silent, or port held by another program),
+        // "late" (response arrived before the physical minimum round trip).
+        public string FaultClass;
         public double? Number;
         public double? RawNumber;
         public string Unit, Quality, SessionId, ConfigVersion;
         public long Round;
     }
+    /// <summary>总线持续有数据，无法获得发送前静默间隔：通常是同一总线上还有另一个主站。</summary>
+    public sealed class BusBusyException : IOException {
+        public BusBusyException(string message) : base(message) { }
+    }
+    /// <summary>端口级故障：端口消失、被占用或读写失败。重建串口对这类故障才有意义。</summary>
+    public sealed class PortFaultException : IOException {
+        public PortFaultException(string message, Exception inner) : base(message, inner) { }
+    }
     public interface IReadTransport : IDisposable {
         byte[] Read(int slave, int address, int count, int timeoutMs, CancellationToken token, Action<string> log);
+    }
+    /// <summary>
+    /// 传输层时序元数据。用于迟到帧判定：请求真正上线的时刻，以及本次请求可能收到的
+    /// 响应的物理最小往返时间。实现该接口即启用下界校验；返回 0 表示不启用。
+    /// 现有测试替身不必实现，接口保持向后兼容。
+    /// </summary>
+    public interface ITimedTransport {
+        /// <summary>最近一次请求真正写入端口的时刻（Stopwatch 刻度）；尚未发出请求时为 0。</summary>
+        long LastRequestSentTicks { get; }
+        /// <summary>本次请求可能收到的响应帧对应的物理最小往返毫秒数；0 表示不做下界判定。</summary>
+        int PhysicalFloorMs(int count);
     }
     /// <summary>写通道单独成接口：只读测试替身无需实现写，控制功能会被门禁拒绝。</summary>
     public interface IWriteTransport {
         byte[] WriteSingle(int slave, int address, int value, int timeoutMs, CancellationToken token, Action<string> log);
     }
-    public sealed class SerialTransport : IReadTransport, IWriteTransport {
+    public sealed class SerialTransport : IReadTransport, IWriteTransport, ITimedTransport {
         readonly SerialPort port;
+        readonly int baud;
+        // Per-station quarantine after a communication fault. A slave that just failed to
+        // answer may still deliver its answer late; that stale frame would otherwise be
+        // accepted as the answer to the next request on the same station.
+        readonly Dictionary<int, long> quarantineUntil = new Dictionary<int, long>();
         public SerialTransport(string name, int baud) {
-            port = new SerialPort(name, baud, Parity.None, 8, StopBits.One);
+            this.baud = baud <= 0 ? 9600 : baud;
+            port = new SerialPort(name, this.baud, Parity.None, 8, StopBits.One);
             port.ReadTimeout = 50; port.WriteTimeout = 1000; port.DtrEnable = false; port.RtsEnable = false;
             port.Handshake = Handshake.None;
-            try { port.Open(); } catch { port.Dispose(); throw; }
+            try { port.Open(); } catch (UnauthorizedAccessException ex) { port.Dispose(); throw new BusBusyException("串口被占用（另一个程序可能正在使用 " + name + "）：" + ex.Message); }
+              catch (IOException ex) { port.Dispose(); throw new PortFaultException("打开串口失败：" + name + "（" + ex.Message + "）", ex); }
+              catch { port.Dispose(); throw; }
         }
-        /// <summary>发送前至少 10 ms 静默；丢弃并记录上一次事务残留的 RX。</summary>
+        public long LastRequestSentTicks { get; private set; }
+        public int PhysicalFloorMs(int count) { return (int)Math.Ceiling(Modbus.PhysicalFloorMs(count, baud)); }
+        /// <summary>
+        /// 发送前静默：MODBUS RTU 要求帧间至少 3.5 字符时间（9600 8N1 约 3.65 ms）。
+        /// 现行实现固定 10 ms，是规范值的 2.7 倍，占实测轮时的 22%。这里按波特率取规范值并留余量。
+        /// </summary>
+        int QuietMs { get { return (int)Math.Ceiling(Modbus.CharTimeMs(baud) + 1.5); } }
         void WaitForQuiet(CancellationToken token, Action<string> log) {
             var quiet = Stopwatch.StartNew(); var guard = Stopwatch.StartNew(); var scratch = new byte[256];
-            while (quiet.ElapsedMilliseconds < 10) {
+            int required = QuietMs;
+            while (quiet.ElapsedMilliseconds < required) {
                 token.ThrowIfCancellationRequested();
-                if (guard.ElapsedMilliseconds > 2000) throw new IOException("串口持续有数据，未获得发送前静默间隔");
+                if (guard.ElapsedMilliseconds > 2000) throw new BusBusyException("串口持续有数据，未获得发送前静默间隔");
                 if (port.BytesToRead > 0) {
                     int n = port.Read(scratch, 0, Math.Min(scratch.Length, port.BytesToRead));
                     log("发送前丢弃 RX " + Modbus.Hex(scratch.Take(n).ToArray())); quiet.Restart();
                 } else token.WaitHandle.WaitOne(1);
             }
         }
+        /// <summary>
+        /// 故障后隔离：超时或帧错的站号在一个物理帧窗口内不再发请求，期间到达的字节一律丢弃。
+        /// 窗口按帧长自适应（count=1 约 16 ms，count=12 约 39 ms），而不是固定数百毫秒。
+        /// </summary>
+        void WaitQuarantine(int slave, int count, CancellationToken token, Action<string> log) {
+            long until;
+            if (!quarantineUntil.TryGetValue(slave, out until)) return;
+            long now = Stopwatch.GetTimestamp();
+            if (until <= now) { quarantineUntil.Remove(slave); return; }
+            double waitMs = (until - now) * 1000.0 / Stopwatch.Frequency;
+            log("站号 " + slave + " 通信故障后隔离 " + waitMs.ToString("0") + " ms（丢弃迟到帧）");
+            var deadline = Stopwatch.StartNew(); var scratch = new byte[256];
+            int limit = (int)Math.Ceiling(waitMs);
+            while (deadline.ElapsedMilliseconds < limit) {
+                token.ThrowIfCancellationRequested();
+                if (port.BytesToRead > 0) {
+                    int n = port.Read(scratch, 0, Math.Min(scratch.Length, port.BytesToRead));
+                    log("隔离期丢弃 RX " + Modbus.Hex(scratch.Take(n).ToArray()));
+                } else token.WaitHandle.WaitOne(1);
+            }
+            quarantineUntil.Remove(slave);
+        }
+        void MarkQuarantine(int slave, int count) {
+            double quarantineMs = Modbus.PhysicalFloorMs(count, baud) + 2 * Modbus.CharTimeMs(baud);
+            long ticks = (long)(quarantineMs * Stopwatch.Frequency / 1000.0);
+            quarantineUntil[slave] = Stopwatch.GetTimestamp() + ticks;
+        }
         public byte[] WriteSingle(int slave, int address, int value, int timeoutMs, CancellationToken token, Action<string> log) {
             token.ThrowIfCancellationRequested();
             WaitForQuiet(token, log);
             var tx = Modbus.WriteSingle(slave, address, value);
             log("TX " + Modbus.Hex(tx)); port.Write(tx, 0, tx.Length);
+            LastRequestSentTicks = Stopwatch.GetTimestamp();
             var watch = Stopwatch.StartNew(); var input = new List<byte>(); var scratch = new byte[64];
             while (watch.ElapsedMilliseconds < timeoutMs) {
                 token.ThrowIfCancellationRequested();
@@ -189,15 +271,18 @@ namespace ExperimentMonitor {
                     byte[] frame;
                     if (Modbus.ExtractWriteEcho(input, slave, address, value, out frame)) return frame;
                 } catch (TimeoutException) { }
+                catch (IOException ex) { throw new PortFaultException("串口读写失败：" + ex.Message, ex); }
             }
             throw new TimeoutException("写入回显超时；接收缓存 " + Modbus.Hex(input.ToArray()));
         }
         public byte[] Read(int slave, int address, int count, int timeoutMs, CancellationToken token, Action<string> log) {
             token.ThrowIfCancellationRequested();
+            WaitQuarantine(slave, count, token, log);
             WaitForQuiet(token, log);
             var scratch = new byte[256];
             var tx = Modbus.Request(slave, address, count);
             log("TX " + Modbus.Hex(tx)); port.Write(tx, 0, tx.Length);
+            LastRequestSentTicks = Stopwatch.GetTimestamp();
             var watch = Stopwatch.StartNew(); var input = new List<byte>();
             while (watch.ElapsedMilliseconds < timeoutMs) {
                 token.ThrowIfCancellationRequested();
@@ -207,17 +292,22 @@ namespace ExperimentMonitor {
                     byte[] frame;
                     if (Modbus.Extract(input, slave, count, out frame)) return frame;
                 } catch (TimeoutException) { }
+                catch (IOException ex) { throw new PortFaultException("串口读写失败：" + ex.Message, ex); }
             }
+            MarkQuarantine(slave, count);
             throw new TimeoutException("等待有效响应超时；接收缓存 " + Modbus.Hex(input.ToArray()));
         }
         public void Dispose() { port.Dispose(); }
     }
-    public sealed class SimulationTransport : IReadTransport, IWriteTransport {
+    public sealed class SimulationTransport : IReadTransport, IWriteTransport, ITimedTransport {
         int tick;
         readonly Dictionary<int, int> registers = new Dictionary<int, int>();
         public int WriteCount { get; private set; }
         /// <summary>测试故障注入：drop=丢回显，exception=0x86 异常，ignore=回显成功但值不变。</summary>
         public string FailMode = "";
+        public long LastRequestSentTicks { get; private set; }
+        /// <summary>模拟器不做物理下界判定：它没有真实线路时序，启用会把仿真结果误判为迟到帧。</summary>
+        public int PhysicalFloorMs(int count) { return 0; }
         static int Key(int slave, int address) { return (slave << 16) | (address & 0xffff); }
         /// <summary>模拟 PLC 的合理初值：远程=1、无故障=0、设定=24、风机/主机/水泵=1 等，便于演示控制闭环。</summary>
         static int SimulationRegister(int slave, int address) {
@@ -270,6 +360,7 @@ namespace ExperimentMonitor {
         public byte[] Read(int slave, int address, int count, int timeoutMs, CancellationToken token, Action<string> log) {
             if (token.WaitHandle.WaitOne(12)) token.ThrowIfCancellationRequested();
             log("[模拟] TX " + Modbus.Hex(Modbus.Request(slave, address, count)));
+            LastRequestSentTicks = Stopwatch.GetTimestamp();
             var body = new byte[3 + count * 2]; body[0] = (byte)slave; body[1] = 3; body[2] = (byte)(count * 2);
             int seeded;
             if (count == 1 && registers.TryGetValue(Key(slave, address), out seeded)) {
@@ -294,7 +385,12 @@ namespace ExperimentMonitor {
                 else if(address==16384)value=359.27f+tick*.0001f;
                 else value=1.25f;
                 byte[] data = BitConverter.GetBytes(value); Array.Reverse(data); Array.Copy(data, 0, body, 3, 4);
-            } else { int value=slave==1?(address==0?1653:address==3?12:20):slave==2?(address==302?24:0):701;body[3]=(byte)(value>>8);body[4]=(byte)value; }
+            } else {
+                // 模拟器只建模了 1 个和 2 个寄存器的点。早先这里会给 count>=3 填一个
+                // "字节数声明正确、CRC 合法、但数据段其余全是 0" 的畸形帧 —— 块读一旦上线，
+                // 测试会全绿而现场读到全 0。现在把这个静默陷阱变成显式契约。
+                throw new NotSupportedException("模拟器不支持一次读取 " + count + " 个寄存器（仅建模了 1 与 2）。块读测试请改用 FixtureTransport。");
+            }
             byte[] reply = Modbus.WithCrc(body); log("[模拟] RX " + Modbus.Hex(reply)); return reply;
         }
         public void Dispose() { }
@@ -306,22 +402,45 @@ namespace ExperimentMonitor {
                 Address=b.address_zero_based, Count=b.register_count, Mode=mode, Source=source,
                 Utc=DateTime.UtcNow, Tx=Modbus.Request(b.slave,b.address_zero_based,b.register_count), Status="失败", Value="" };
             var watch = Stopwatch.StartNew();
+            var timed = transport as ITimedTransport;
             try {
                 o.Rx = transport.Read(b.slave,b.address_zero_based,b.register_count,timeoutMs,token,log);
                 var buf = new List<byte>(o.Rx); byte[] frame;
                 if (!Modbus.Extract(buf,b.slave,b.register_count,out frame) || frame.Length != o.Rx.Length || buf.Count != 0)
                     throw new InvalidDataException("响应CRC、站号或长度不匹配");
-                if (frame[1] == 0x83) { o.Status="设备异常 0x"+frame[2].ToString("X2"); }
+                if (frame[1] == 0x83) { o.Status="设备异常 0x"+frame[2].ToString("X2"); o.FaultClass="frame"; }
                 else {
+                    // 迟到帧判定：03 响应不回显起始地址，同站同字节数的两笔响应在协议层无法区分。
+                    // 但响应帧自身在线路上的传输时间是物理下限 —— 低于这个往返时间的"响应"
+                    // 不可能属于本次请求，只能是上一笔事务迟到的帧。
+                    long sent = timed != null ? timed.LastRequestSentTicks : 0;
+                    int floor = timed != null ? timed.PhysicalFloorMs(b.register_count) : 0;
+                    if (sent > 0 && floor > 0) {
+                        double roundTripMs = (Stopwatch.GetTimestamp() - sent) * 1000.0 / Stopwatch.Frequency;
+                        o.RoundTripMs = (long)Math.Round(roundTripMs);
+                        if (roundTripMs + 1.0 < floor) {
+                            o.Status = "响应早于物理下限（疑似迟到帧）";
+                            o.Value = "往返 " + roundTripMs.ToString("0.0", CultureInfo.InvariantCulture) + " ms < 物理下限 " + floor + " ms";
+                            o.FaultClass = "late"; o.Quality = Quality.Ambiguous;
+                            o.Number = null; o.RawNumber = null; o.Payload = new byte[0];
+                            o.Utc = DateTime.UtcNow; o.Milliseconds = watch.ElapsedMilliseconds;
+                            return o;
+                        }
+                    }
                     o.Payload = frame.Skip(3).Take(b.register_count * 2).ToArray();
                     double? value; o.Value=Modbus.Decode(o.Payload,mode,out value); o.Number=value;
                     o.Status = o.Value.StartsWith("非有限") ? "解码待核对" : "收到响应 / 未实机核准";
                 }
             } catch (OperationCanceledException) { throw; }
-            catch (TimeoutException ex) { o.Status="超时"; o.Value=ex.Message; }
-            catch (Exception ex) { o.Status="失败"; o.Value=ex.Message; }
+            catch (BusBusyException ex) { o.Status="总线忙"; o.Value=ex.Message; o.FaultClass="busy"; }
+            catch (PortFaultException ex) { o.Status="端口故障"; o.Value=ex.Message; o.FaultClass="port"; }
+            catch (TimeoutException ex) { o.Status="超时"; o.Value=ex.Message; o.FaultClass="timeout"; }
+            catch (InvalidDataException ex) { o.Status="失败"; o.Value=ex.Message; o.FaultClass="frame"; }
+            catch (UnauthorizedAccessException ex) { o.Status="总线忙"; o.Value=ex.Message; o.FaultClass="busy"; }
+            catch (IOException ex) { o.Status="端口故障"; o.Value=ex.Message; o.FaultClass="port"; }
+            catch (Exception ex) { o.Status="失败"; o.Value=ex.Message; o.FaultClass="frame"; }
             o.Utc=DateTime.UtcNow; o.RawNumber=o.Number;
-            o.Quality=o.Status.StartsWith("收到")?"good":o.Status=="超时"?"timeout":o.Status.StartsWith("设备异常")?"protocol_exception":o.Status=="解码待核对"?"decode_error":"error";
+            if (o.Quality==null) o.Quality=o.Status.StartsWith("收到")?Quality.Good:o.Status=="超时"?Quality.Timeout:o.Status.StartsWith("设备异常")?Quality.ProtocolException:o.Status=="解码待核对"?Quality.DecodeError:Quality.Error;
             o.Milliseconds=watch.ElapsedMilliseconds; return o;
         }
     }

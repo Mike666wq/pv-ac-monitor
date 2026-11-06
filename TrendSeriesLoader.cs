@@ -37,7 +37,7 @@ namespace ExperimentMonitor {
             int BucketFor(DateTime utc){double span=Math.Max(.001,(to-from).TotalSeconds);return (int)Math.Max(0,Math.Min(buckets-1,(utc.ToUniversalTime()-from).TotalSeconds/span*buckets));}
             void BeginBucket(int bucket){currentBucket=bucket;nextRunId=0;firstRun=lastRun=null;bucketMin=bucketMax=null;minRunId=maxRunId=0;bucketHasGood=false;gapSeen=leadingGap=false;gapMarker=null;}
             void MarkGap(ChartSample at,bool leading){if(!gapSeen){gapSeen=true;leadingGap=leading;gapMarker=new ChartSample{Utc=at.Utc.ToUniversalTime(),Quality=String.IsNullOrEmpty(at.Quality)?"gap":at.Quality,Value=null};}}
-            public void Add(ChartSample sample){if(sample==null)throw new ArgumentNullException("sample");int bucket=BucketFor(sample.Utc);if(currentBucket!=bucket){FlushBucket();BeginBucket(bucket);}bool good=sample.Value.HasValue&&sample.Quality=="good";
+            public void Add(ChartSample sample){if(sample==null)throw new ArgumentNullException("sample");int bucket=BucketFor(sample.Utc);if(currentBucket!=bucket){FlushBucket();BeginBucket(bucket);}bool good=sample.Value.HasValue&&Quality.IsGood(sample.Quality);
                 if(!good){MarkGap(sample,!bucketHasGood);broken=true;lastGood=null;return;}
                 if(lastGood!=null&&(sample.Utc.ToUniversalTime()-lastGood.Utc.ToUniversalTime()).TotalSeconds>gapSeconds){MarkGap(new ChartSample{Utc=sample.Utc.AddTicks(-1),Quality="gap"},!bucketHasGood);broken=true;}
                 Run run;if(lastRun==null||broken){run=new Run(nextRunId++,sample);if(firstRun==null)firstRun=run;lastRun=run;broken=false;}else{run=lastRun;run.Add(sample);}

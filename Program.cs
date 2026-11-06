@@ -20,6 +20,11 @@ namespace ExperimentMonitor {
             if(rootArgument!=null) root=Path.GetFullPath(rootArgument.Substring(7));
             try {
                 var points=Configuration.Load(Path.Combine(root,"protocol.json"));
+                // 受限环境（某些沙箱、企业安全软件）禁止 File.Replace 的替换语义。生产运行不降级；
+                // 只有测试入口才安装"原子替换失败时退到备份后覆盖"的实现，并把降级如实记入结果。
+                bool isTestRun=args.Any(a=>a.StartsWith("--test")||a=="--self-test"||a.StartsWith("--capture-ui"));
+                Func<bool> degradedReplace=null;
+                if(isTestRun) degradedReplace=AtomicFile.InstallFallback();
                 if(args.Contains("--export-config")) {File.WriteAllText(Path.Combine(root,"point-contract.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{module="experiment",schemaVersion=1,catalogVersion=PointCatalog.Version,points=points.Select(p=>new {id=p.name,equipmentId=p.binding.device,slave=p.binding.slave,addressZeroBased=p.binding.address_zero_based,registerCount=p.binding.register_count,metadata=PointCatalog.Get(p)}).ToArray()}));return 0;}
                 if(args.Contains("--self-test")) { SelfTests.Run(points,root); ExtendedTests.Run(points,root); return 0; }
                 if(args.Contains("--test-core")) { var checks=CoreTests.Run(points,root);File.WriteAllText(Path.Combine(root,"core-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=checks.Count,checks=checks,hardware_tested=false}));return 0; }

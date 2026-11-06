@@ -137,7 +137,7 @@ namespace ExperimentMonitor {
         }
 
         static int? NumericValue(Observation o) {
-            if (o == null || o.Quality != "good") return null;
+            if (o == null || !Quality.IsGood(o.Quality)) return null;
             if (o.Number.HasValue) return (int)Math.Round(o.Number.Value);
             if (o.Payload != null && o.Payload.Length >= 2 && (o.Mode == "U16 / I16" || o.Mode == "UINT16" || o.Mode == "RAW"))
                 return (o.Payload[0] << 8) | o.Payload[1];
@@ -300,10 +300,10 @@ namespace ExperimentMonitor {
             }
             int timeoutSeconds, period;
             lock (sync) { timeoutSeconds = currentTimeoutMs; period = periodSeconds; }
-            int timeoutMs = timeoutSeconds;
-            // 等待预算必须覆盖「采集周期 + 一次写超时 + 一次回读超时 + 余量」，
-            // 否则会出现「界面已报超时，但随后 worker 仍把 06 发出去」的错误结论。
-            long waitMs = Math.Min(180000L, Math.Max(20000L, (long)period * 1000L + (long)timeoutMs * 2L + 8000L));
+            // currentTimeoutMs 这个名字是历史遗留，存的实际是“秒”（UI 允许 1..30 秒）。
+            // 之前这里把它当毫秒用，预算只剩 20 秒，比「采集周期 + 写超时 + 回读超时」小，
+            // 合法写入会被误判 unknown 并上锁。等待预算必须覆盖完整链路再加余量。
+            long waitMs = Math.Min(180000L, Math.Max(20000L, (long)period * 1000L + (long)timeoutSeconds * 2000L + 8000L));
             if (!pending.Done.Wait((int)waitMs)) {
                 pending.Cancelled = true;
                 lock (controlSync) controlQueue.Remove(pending);
@@ -581,7 +581,7 @@ namespace ExperimentMonitor {
                 binding = new Binding { device = "PLC", slave = target.slave, address_zero_based = target.address, register_count = 1, decode_proposal = "int16" }
             };
             Observation o = Collector.Read(transport, point, "UINT16", "control", timeoutMs, token, log);
-            return o.Quality == "good" && o.Number.HasValue ? o : null;
+            return Quality.IsGood(o.Quality) && o.Number.HasValue ? o : null;
         }
 
         static string ExceptionHint(int code) {

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -44,19 +44,28 @@ namespace ExperimentMonitor {
     internal static class OverviewPageBuilder {
         const int CardMinWidth=200,CardHeight=110;
 
-        /// <summary>数值标签按实际宽度收缩字号，保证任何 DPI/字体下都不溢出卡片（E 记数法尤其需要）。</summary>
-        static void FitValueFont(Label value,FontFamily family,float baseSize){
-            if(value==null||value.IsDisposed||value.ClientSize.Width<=0||String.IsNullOrEmpty(value.Text))return;
-            int limit=value.ClientSize.Width+2;
-            float size=baseSize;
-            while(size>8f){
-                using(var probe=new Font(family,size,FontStyle.Bold)){
-                    if(TextRenderer.MeasureText(value.Text,probe).Width<=limit){
-                        if(Math.Abs(value.Font.Size-size)>0.01f){try{value.Font.Dispose();}catch{}value.Font=new Font(family,size,FontStyle.Bold);}
+        /// <summary>
+        /// 数值标签按实际宽度收缩字号，保证任何 DPI/字体下都不溢出卡片（E 记数法尤其需要）。
+        /// 基准字号记录在标签的 Tag 上：每次刷新都从基准重新计算，否则一次收缩后再也恢复不回来。
+        /// </summary>
+        internal static void FitValueFont(Label value) {
+            if (value == null || value.IsDisposed || value.ClientSize.Width <= 0 || String.IsNullOrEmpty(value.Text)) return;
+            float baseSize = value.Tag is float ? (float)value.Tag : value.Font.Size;
+            FontFamily family = value.Font.FontFamily;
+            int limit = value.ClientSize.Width + 2;
+            float size = baseSize;
+            while (size > 8f) {
+                using (var probe = new Font(family, size, FontStyle.Bold)) {
+                    if (TextRenderer.MeasureText(value.Text, probe).Width <= limit) {
+                        if (Math.Abs(value.Font.Size - size) > 0.01f) {
+                            Font previous = value.Font;
+                            value.Font = new Font(family, size, FontStyle.Bold);
+                            try { previous.Dispose(); } catch { }
+                        }
                         return;
                     }
                 }
-                size-=1f;
+                size -= 1f;
             }
         }
 
@@ -74,7 +83,11 @@ namespace ExperimentMonitor {
                 // Bring the header to the top of the z-order so docking fills correctly.
                 section.Controls.SetChildIndex(header,section.Controls.Count-1);
                 stack.RowCount++;stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));stack.Controls.Add(section,0,stack.RowCount-1);
-                foreach(Point p in group) {
+                // 运行状态/控制设定按寄存器地址排序:力控绑定表的记录顺序是乱的
+                // (D2209,D2210,D2213,D2211,D2212…),按地址排才"对位"。
+                IEnumerable<Point> ordered = group;
+                if(group.Key=="运行状态"||group.Key=="控制/设定") ordered = group.OrderBy(x=>x.binding.address_zero_based);
+                foreach(Point p in ordered) {
                     PointInfo info=PointCatalog.Get(p);
                     var card=new RoundedPanel { Width=CardMinWidth,Height=CardHeight,Margin=new Padding(4),Padding=new Padding(10,8,10,8) };
                     var grid=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Margin=Padding.Empty,Padding=Padding.Empty,BackColor=UiTheme.Surface };
@@ -84,6 +97,7 @@ namespace ExperimentMonitor {
                     var label=new Label { Text=info.Label+"  "+p.name,Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft,ForeColor=UiTheme.Muted,Font=new Font(baseFont.FontFamily,8.5f),AutoEllipsis=true,BackColor=UiTheme.Surface,Margin=Padding.Empty,Padding=Padding.Empty };
                     float valueSize = info.Mode=="U16 / I16" ? 9.5f : 17f;
                     var value=new Label { Text="—",Dock=DockStyle.Fill,TextAlign=ContentAlignment.BottomLeft,ForeColor=UiTheme.Ink,Font=new Font(baseFont.FontFamily,valueSize,FontStyle.Bold),AutoEllipsis=false,UseCompatibleTextRendering=true,BackColor=UiTheme.Surface };
+                    value.Tag=valueSize;// 基准字号：数值刷新时按实际宽度从基准重算（见 FitValueFont）
                     string unitText=info.Unit??"";
                     // “原始值/原始码”是无单位占位,不占用单位列,让大数值(含 E 记数法)用满整行。
                     if(unitText=="原始值"||unitText=="原始码")unitText="";

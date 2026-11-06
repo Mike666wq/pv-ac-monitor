@@ -154,7 +154,9 @@ namespace ExperimentMonitor {
                     check(form.Engine.IsConnected&&!form.Engine.IsRunning,"手动诊断连接不启动采集");
                     form.MainNavigation.SelectedIndex=5;Control page=form.MainNavigation.SelectedTab;
                     ComboBox mode=Find<ComboBox>(page,c=>c.Items.Contains("FLOAT CDAB"));string requested=swapped?"FLOAT CDAB":"FLOAT ABCD";mode.SelectedItem=requested;
-                    Find<NumericUpDown>(page,n=>n.Maximum==8).Value=2;Button read=Find<Button>(page,b=>b.Text=="发送读取");read.PerformClick();
+                    // 诊断页的寄存器数输入框：站号 1..247、地址 0..65535、寄存器数 1..125、超时 1..30。
+                    // 上限由 8 提到 125 之后，原来的 Maximum==8 选择器再也匹配不到控件（2026-11-06 修复）。
+                    Find<NumericUpDown>(page,n=>n.Maximum==125).Value=2;Button read=Find<Button>(page,b=>b.Text=="发送读取");read.PerformClick();
                     DateTime end=DateTime.UtcNow.AddSeconds(5);while(!read.Enabled&&DateTime.UtcNow<end)await Task.Delay(20);
                     Label result=Find<Label>(page,l=>l.Text.StartsWith("最近收发时间："));
                     check(read.Enabled&&result!=null&&result.Text.Contains("解析："+requested),"诊断保持用户选择的完整浮点字节序 "+requested);
@@ -177,7 +179,9 @@ namespace ExperimentMonitor {
                     Find<Button>(cloud,b=>b.Text=="保存并应用").PerformClick();string path=Path.Combine(isolated,"cloud-settings.json");var saved=CloudConfiguration.Load(path);
                     check(!saved.Enabled&&saved.Endpoint=="https://example.invalid"&&saved.Alias=="test fixture"&&saved.Token==mockToken,"云页面保存操作实际持久化当前配置");
                     check(!File.ReadAllText(path).Contains(mockToken)&&Field<TextBox>(cloud,"token").Text.Length==0,"保存令牌受DPAPI保护且输入框清空");
-                    Find<Button>(cloud,b=>b.Text=="清除保存的令牌").PerformClick();saved=CloudConfiguration.Load(path);check(saved.Token.Length==0&&!saved.Enabled,"清除令牌实际清除凭据并禁用发布");
+                    Find<Button>(cloud,b=>b.Text=="清除保存的令牌").PerformClick();saved=CloudConfiguration.Load(path);
+                    string clearStatus=Field<Label>(cloud,"status").Text;
+                    check(saved.Token.Length==0&&!saved.Enabled,"清除令牌实际清除凭据并禁用发布（状态："+clearStatus+"；文件令牌长度："+new FileInfo(path).Length+"）");
                     Button diagnose=Find<Button>(cloud,b=>b.Text.StartsWith("连接诊断"));diagnose.PerformClick();DateTime end=DateTime.UtcNow.AddSeconds(3);while(!diagnose.Enabled&&DateTime.UtcNow<end)await Task.Delay(20);
                     check(Field<Label>(cloud,"diagnostic").Text.Contains("认证"),"页面诊断对未配置令牌给出真实认证结果，不发送外部请求");
                 }catch(Exception ex){failure=ex;}finally{form.Close();}};

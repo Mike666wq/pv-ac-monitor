@@ -52,7 +52,7 @@ namespace ExperimentMonitor
             string parentDirectory=Path.GetDirectoryName(SavePath);if(String.IsNullOrEmpty(parentDirectory))throw new InvalidOperationException("配置路径必须包含目录部分");
             Directory.CreateDirectory(parentDirectory);string secret="";if(!String.IsNullOrEmpty(Token))secret=Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(Token),null,DataProtectionScope.CurrentUser));
             string text="deviceId="+DeviceId+"\r\n"+"enabled="+(Enabled?"1":"0")+"\r\nsimulation="+(IncludeSimulation?"1":"0")+"\r\nendpoint="+B64(Endpoint)+"\r\nalias="+B64(Alias)+"\r\ntoken="+secret+"\r\n";string temp=SavePath+".partial-"+Guid.NewGuid().ToString("N");
-            try{File.WriteAllText(temp,text,new UTF8Encoding(false));if(File.Exists(SavePath))File.Replace(temp,SavePath,null);else File.Move(temp,SavePath);}
+            try{File.WriteAllText(temp,text,new UTF8Encoding(false));AtomicFile.Replace(temp,SavePath);}
             catch{try{if(File.Exists(temp))File.Delete(temp);}catch{}throw;}
         }
         static string B64(string s){return Convert.ToBase64String(Encoding.UTF8.GetBytes(s??""));}

@@ -21,6 +21,15 @@ namespace ExperimentMonitor {
             }
             public void Dispose() { }
         }
+        /// <summary>按脚本抛出指定异常，用来验证故障分类。</summary>
+        sealed class ThrowingTransport : IReadTransport {
+            readonly Exception failure;
+            public ThrowingTransport(Exception failure) { this.failure=failure; }
+            public byte[] Read(int s,int a,int c,int timeout,CancellationToken token,Action<string> log) {
+                token.ThrowIfCancellationRequested(); throw failure;
+            }
+            public void Dispose() { }
+        }
         public static void Run(List<Point> points,string root) {
             Check("37 bound points / 4 devices",points.Count==37 && points.Select(p=>p.binding.device).Distinct().Count()==4);
             Check("CRC reference",Modbus.Hex(Modbus.Request(1,0,10))=="01 03 00 00 00 0A C5 CD");
@@ -29,6 +38,22 @@ namespace ExperimentMonitor {
             Check("D9 belongs station6",points.First(p=>p.name=="D9").binding.slave==6);
             bool invalid=false; try { Modbus.Request(1,65535,2); } catch(ArgumentOutOfRangeException) { invalid=true; }
             Check("Reject overflowing address",invalid);
+            // 2026-11-06 协议物料落地后的固定约定：直流表原始计数要换成工程值，电表功率单位是 kW 级。
+            Check("DC meter scale 0.1V/0.001A/1VA",PointCatalog.Get("ZU6682").Scale==0.1&&PointCatalog.Get("ZI6682").Scale==0.001&&PointCatalog.Get("ZW66822").Scale==1.0);
+            Check("DC voltage raw 1754 -> 175.4 V",Math.Abs(1754*PointCatalog.Get("ZU6682").Scale-175.4)<1e-9);
+            Check("DS666/DDSU666 power unit is kW/kvar/kVA",PointCatalog.Get("D3").Unit=="kW"&&PointCatalog.Get("D4").Unit=="kvar"&&PointCatalog.Get("D5").Unit=="kVA"&&PointCatalog.Get("DU3").Unit=="kW");
+            Check("D9 marked reserved 0x200C",PointCatalog.Get("D9").Label.IndexOf("保留",StringComparison.Ordinal)>=0);
+            Check("DU6 is power factor (0x200A)",PointCatalog.Get("DU6").Label.IndexOf("功率因数",StringComparison.Ordinal)>=0);
+            // 类型落地：除 RAW（位串）外，每个绑定点都必须能产出数值，
+            // 否则 "U16 / I16" 兜底分支只出文本，趋势/历史/导出里全是空值。
+            foreach(var bound in points) {
+                var meta=PointCatalog.Get(bound);
+                if(meta.Mode=="RAW") continue;
+                double? decoded; Modbus.Decode(new byte[bound.binding.register_count*2],meta.Mode,out decoded);
+                Check("numeric decode: "+bound.name,decoded.HasValue);
+            }
+            double? signedDc;
+            Check("DC meter signed int16",Modbus.Decode(new byte[]{0xff,0x9c},"INT16",out signedDc)=="-100"&&signedDc==-100);
             var full=Reply(2,0x41,0xc8,0,0); var buffer=new List<byte>(); byte[] result;
             bool premature=false;
             for(int i=0;i<full.Length-1;i++) { buffer.Add(full[i]); premature|=Modbus.Extract(buffer,2,2,out result); }
@@ -66,6 +91,76 @@ namespace ExperimentMonitor {
                 Check("Cancellation propagates",canceled);
             }
             Check("CSV formula guard",Journal.Cell("=1+1").StartsWith("\"'="));
+
+            // 云配置保存→读取→清除→再读取的往返（与页面工作流同一条路径）。
+            // 第二次保存走的是"替换已存在文件"这条分支，受限环境会在这里失败。
+            string cloudPath=Path.Combine(root,".cloud-roundtrip.json");
+            try {
+                var cloudConfig=new CloudConfiguration{DeviceId="fixture-device",Enabled=false,Endpoint="https://example.invalid",Alias="fixture",Token="fixture-token",SavePath=cloudPath};
+                cloudConfig.Save();
+                var loaded=CloudConfiguration.Load(cloudPath);
+                Check("Cloud config round trip keeps token",loaded.Token=="fixture-token"&&loaded.Alias=="fixture"&&loaded.Endpoint=="https://example.invalid");
+                var cleared=CloudConfiguration.Load(cloudPath);cleared.Token="";cleared.Enabled=false;cleared.Save();
+                var afterClear=CloudConfiguration.Load(cloudPath);
+                Check("Cloud token clear persists",afterClear.Token.Length==0&&!afterClear.Enabled);
+            } catch(Exception cloudEx) {
+                Check("Cloud token clear persists ("+cloudEx.GetType().Name+": "+cloudEx.Message+")",false);
+            }
+
+            // ── A1 传输层契约 ────────────────────────────────────────────────
+            // 物理常量：帧长、字符时间、物理最小往返时间。
+            Check("Modbus response length",Modbus.ResponseLength(1)==7&&Modbus.ResponseLength(2)==9&&Modbus.ResponseLength(12)==29);
+            Check("Modbus char time 3.5 chars at 9600",Math.Abs(Modbus.CharTimeMs(9600)-3.646)<0.02);
+            Check("Modbus physical floor 1 register",Math.Abs(Modbus.PhysicalFloorMs(1,9600)-8.29)<0.05);
+            Check("Modbus physical floor 12 registers",Math.Abs(Modbus.PhysicalFloorMs(12,9600)-31.21)<0.05);
+
+            // 迟到帧判定：往返时间低于物理下限的"响应"不可能属于本次请求。
+            var lateFrame=Reply(2,0x41,0xc8,0,0);
+            var lateTransport=new ScriptedTransport {FloorMs=40};
+            lateTransport.Enqueue(lateFrame,0,2);
+            var lateObs=Collector.Read(lateTransport,point,"FLOAT ABCD","test",100,CancellationToken.None,s=>{});
+            Check("Late frame is rejected as ambiguous",lateObs.Quality=="ambiguous"&&!lateObs.Number.HasValue&&lateObs.FaultClass=="late");
+            Check("Late frame keeps no payload",lateObs.Payload.Length==0);
+
+            // 同一传输层，往返时间充足时正常值必须照常发布（防止闸门过严误杀）。
+            var timelyTransport=new ScriptedTransport {FloorMs=1};
+            timelyTransport.Enqueue(lateFrame,0,2);
+            var timelyObs=Collector.Read(timelyTransport,point,"FLOAT ABCD","test",100,CancellationToken.None,s=>{});
+            Check("Response above physical floor is published",timelyObs.Quality=="good"&&timelyObs.Number==25);
+
+            // 故障分类：端口故障与帧故障必须分开，否则引擎无法决定是否重建串口。
+            var frameFault=new Fake {Response=bad};
+            var frameObs=Collector.Read(frameFault,point,"FLOAT ABCD","test",100,CancellationToken.None,s=>{});
+            Check("CRC mismatch classified as frame fault",frameObs.FaultClass=="frame"&&frameObs.Quality=="error"&&!frameObs.Number.HasValue);
+            var portFault=new ThrowingTransport(new IOException("端口已消失"));
+            var portObs=Collector.Read(portFault,point,"FLOAT ABCD","test",100,CancellationToken.None,s=>{});
+            Check("IO failure classified as port fault",portObs.FaultClass=="port"&&portObs.Quality=="error");
+            var busyTransport=new ThrowingTransport(new UnauthorizedAccessException("端口被占用"));
+            var busyObs=Collector.Read(busyTransport,point,"FLOAT ABCD","test",100,CancellationToken.None,s=>{});
+            Check("Port in use classified as busy",busyObs.FaultClass=="busy");
+            var timeoutObs=Collector.Read(new Fake {Timeout=true},point,"FLOAT ABCD","test",100,CancellationToken.None,s=>{});
+            Check("Timeout classified as timeout",timeoutObs.FaultClass=="timeout"&&timeoutObs.Quality=="timeout");
+
+            // 模拟器的 count>=3 陷阱必须变成显式契约，而不是"CRC 合法但数据段全 0"的畸形帧。
+            bool simUnsupported=false;
+            try { new SimulationTransport().Read(2,125,12,100,CancellationToken.None,s=>{}); }
+            catch(NotSupportedException) { simUnsupported=true; }
+            Check("Simulator refuses multi-register reads explicitly",simUnsupported);
+
+            // 夹具传输层：按真实寄存器表建模，支持任意读取长度。
+            var fixture=new FixtureTransport();
+            fixture.DeclareSegment(2,125,12).DeclareSegment(3,8192,16).DeclareSegment(1,0,16);
+            fixture.SetFloat(2,125,25.0f).SetFloat(2,127,21.25f).SetWord(3,8192,0x0DC0);
+            var blockFrame=fixture.Read(2,125,12,100,CancellationToken.None,s=>{});
+            Check("Fixture serves any register count",blockFrame.Length==29&&blockFrame[2]==24);
+            var perPoint=fixture.Read(2,127,2,100,CancellationToken.None,s=>{});
+            bool sliceMatches=perPoint[3]==blockFrame[7]&&perPoint[4]==blockFrame[8]&&perPoint[5]==blockFrame[9]&&perPoint[6]==blockFrame[10];
+            Check("Block slice equals per-point read byte for byte",sliceMatches);
+            var unbound=fixture.Read(2,136,1,100,CancellationToken.None,s=>{});
+            Check("Unbound register inside a segment reads as zero",unbound.Length==7&&unbound[3]==0&&unbound[4]==0);
+            var outsideSegment=fixture.Read(2,9000,1,100,CancellationToken.None,s=>{});
+            Check("Address outside every segment reads as zero",outsideSegment.Length==7&&outsideSegment[3]==0);
+
             string testRoot=Path.Combine(root,".testing",DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N").Substring(0,6));
             Directory.CreateDirectory(testRoot);
             using(var form=new MonitorForm(points,testRoot)) {form.SetSimulationForTest(true);form.TestSimulationRun(false);}
