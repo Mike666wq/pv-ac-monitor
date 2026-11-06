@@ -104,7 +104,7 @@ namespace ExperimentMonitor {
             // 四个一样颜色的圆点等于告诉使用者"这四件事一样重要、一样可靠"。
             var divider=new Label { Text="│",AutoSize=true,ForeColor=Color.FromArgb(180,196,214),Padding=new Padding(4,4,4,0),Margin=Padding.Empty,BackColor=Color.Transparent };
             states.Controls.Add(connectionState);states.Controls.Add(captureState);states.Controls.Add(divider);states.Controls.Add(recordState);states.Controls.Add(cloudState);
-            counts.AutoSize=true;counts.Dock=DockStyle.Right;counts.TextAlign=ContentAlignment.MiddleLeft;counts.Padding=new Padding(8,6,4,0);counts.Margin=Padding.Empty;counts.ForeColor=UiTheme.Muted;counts.BackColor=Color.Transparent;
+            counts.AutoSize=true;counts.AutoEllipsis=true;counts.MaximumSize=new Size(420,0);counts.Dock=DockStyle.Right;counts.TextAlign=ContentAlignment.MiddleLeft;counts.Padding=new Padding(8,6,4,0);counts.Margin=Padding.Empty;counts.ForeColor=UiTheme.Muted;counts.BackColor=Color.Transparent;
             statusBar.Controls.Add(states);statusBar.Controls.Add(counts);shell.Controls.Add(statusBar,0,3);
         }
 
@@ -387,7 +387,10 @@ namespace ExperimentMonitor {
                     }
                 }
                 c[3].ForeColor=valid?UiTheme.Green:(Quality.IsFailure(o.Quality)?UiTheme.Danger:UiTheme.Muted);tips.SetToolTip(c[1],valid?"实际值："+(o.Value??DisplayNumber(o))+"\r\n采样时间："+o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"):o.Value);}
-            overviewChart.Add(o);counts.Text="本次采集累计成功 "+good+" / 异常 "+bad+"　·　"+(o.Source=="serial"?"实机":"模拟")+"　·　最新测点 "+o.Point+"　·　本地记录按实际采样时间保存";
+            overviewChart.Add(o);
+            // 状态栏右侧只放最必要的计数。原先这里还有一句"本地记录按实际采样时间保存"，
+            // 属于说明文档的内容；它把 960 宽下的四段状态挤得看不见了。
+            counts.Text="成功 "+good+" / 异常 "+bad+"　·　"+(o.Source=="serial"?"实机":"模拟")+"　·　"+o.Point;
         }
         static string DisplayNumber(Observation o){if(o.Number.HasValue){double value=o.Number.Value;if(value==0)return "0";string s=value.ToString("G6",CultureInfo.InvariantCulture);if(s=="0"||s=="-0")s=value.ToString("G9",CultureInfo.InvariantCulture);return s;}return o.Value??"—";}
         static string DisplayCardValue(Observation o){if(o.Mode=="U16 / I16"&&o.Value!=null){int split=o.Value.IndexOf(" / I16=",StringComparison.Ordinal);if(split>0){string a=o.Value.Substring(0,split),b=o.Value.Substring(split+3);int annotation=b.IndexOf('（');if(annotation>=0)b=b.Substring(0,annotation);return a+Environment.NewLine+b;}}return DisplayNumber(o);}

@@ -64,6 +64,10 @@ namespace ExperimentMonitor {
                 Write(root, "control-test-result.json", checks.Count, checks);
             });
             Run(entries, "workflow", root, "workflow-test-result.json", () => WorkflowTests.Run(points, root));
+            Run(entries, "resources", root, "resource-test-result.json", () => {
+                var checks = ResourceTests.Run(points, root, 8);
+                Write(root, "resource-test-result.json", checks.Count, checks);
+            });
             Run(entries, "ui", root, "ui-test-result.json", () => UiLayoutTests.Run(points, root));
             return entries;
         }
