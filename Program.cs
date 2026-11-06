@@ -69,6 +69,7 @@ namespace ExperimentMonitor {
                     form.AttachCloudPage(new CloudPage(root,form.Engine));
                     if(args.Contains("--diag-cpu")) return Diag.Cpu(points,root,(string[])args);
                 if(args.Contains("--diag-page")) return Diag.Page(points,root,(string[])args);
+                if(args.Contains("--diag-export")) return Diag.Export(points,root,(string[])args);
                 if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
                     Application.Run(form);
                 }
@@ -111,7 +112,12 @@ namespace ExperimentMonitor {
                     } catch(Exception ex) { facts["connectError"]=ex.Message; } }
                     timer.Tick+=(s2,e2)=>{
                         ticks++;
-                        if(ticks==5) { if(captureFirst) { try { form.Engine.Stop(); } catch { } } form.MainNavigation.SelectedIndex=tab; }
+                        if(ticks==5) {
+                            // 默认先停采集再看页签；--keep-capturing 时保持采集，
+                            // 这样门禁才会越过"请先开始采集"到达"尚未现场确认"那一层。
+                            if(captureFirst && Array.IndexOf(args,"--keep-capturing")<0) { try { form.Engine.Stop(); } catch { } }
+                            form.MainNavigation.SelectedIndex=tab;
+                        }
                         if(ticks>=30) {
                             timer.Stop();
                             try { Collect(form,tab,facts); } catch(Exception ex) { facts["collectError"]=ex.Message; }
@@ -125,6 +131,39 @@ namespace ExperimentMonitor {
             File.WriteAllText(Path.Combine(root,"diag-page.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
             Console.Out.WriteLine("DIAG page tab="+tab+" facts="+facts.Count);
             return 0;
+        }
+        /// <summary>
+        /// 对真实累积数据跑一次完整导出，并核对产物。导出按钮的文件夹选择框靠 UI Automation
+        /// 驱动不了（数据记录页的 DataGridView 让枚举超过 30 秒上限），但导出这件事本身
+        /// 可以在进程内完整跑一遍 —— 而且用的是真库里真实形状的数据，比合成夹具更有说服力。
+        /// </summary>
+        internal static int Export(List<Point> points,string root,string[] args) {
+            var facts=new Dictionary<string,object>();
+            try {
+                DateTime to=DateTime.UtcNow.AddMinutes(1), from=to.AddHours(-6);
+                var filter=new HistoryFilter{Source="simulation",FromUtc=from,ToUtc=to};
+                string format="csv"; foreach(string a in args) if(a!=null&&a.StartsWith("--format=",StringComparison.Ordinal)) format=a.Substring(9);
+                // 第一个参数是"存储根"，不是程序根 —— 传程序根会找不到任何库。
+                string storageRoot=Path.Combine(root,"data","storage");
+                var result=ExperimentExport.ExportAsync(storageRoot,filter,root,format,null,CancellationToken.None).GetAwaiter().GetResult();
+                facts["rows"]=result.Rows;
+                facts["outputDirectory"]=result.OutputDirectory;
+                facts["files"]=result.Files;
+                foreach(string name in result.Files) {
+                    string path=Path.Combine(result.OutputDirectory,name);
+                    if(!File.Exists(path)) continue;
+                    string[] lines=File.ReadAllLines(path);
+                    facts[name+"_lines"]=lines.Length;
+                    // 直接给出原始行，让调用方自己按 CSV 规则解析 ——
+                        // 在诊断里再写一遍"按逗号切分"会得到错数（引号内的逗号），
+                        // 之前就因此报了 6 列（实际 21 列）的错数据。
+                        facts[name+"_header"]=lines[0];
+                        facts[name+"_first"]=lines.Length>1?lines[1]:"";
+                }
+            } catch(Exception ex) { facts["error"]=ex.GetType().Name+"："+ex.Message; }
+            File.WriteAllText(Path.Combine(root,"diag-export.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
+            Console.Out.WriteLine("DIAG export");
+            return facts.ContainsKey("error")?1:0;
         }
         static void Collect(DashboardForm form,int tab,Dictionary<string,object> facts) {
             facts["tab"]=tab;
@@ -149,6 +188,20 @@ namespace ExperimentMonitor {
             facts["labels"]=texts;
             var buttons=AllOf<Button>(page).Where(b=>b.Visible).Select(b=>b.Text??"").Where(t=>t.Length>0).Take(12).ToList();
             if(buttons.Count==0) buttons=AllOf<Button>(form).Where(b=>b.Visible).Select(b=>b.Text??"").Where(t=>t.Length>0).Take(12).ToList();
+            // 控制页：把每个控制点的门禁判定原样导出来。
+            // 界面一次只显示当前选中行的门禁，但"每个点都被挡住"这件事必须逐点有证据。
+            var cfg=form.Engine.ControlSettings;
+            if(cfg!=null&&cfg.targets!=null) {
+                var gates=new List<string>();
+                foreach(var target in cfg.targets) {
+                    var gate=form.Engine.ControlReadiness(target.point);
+                    gates.Add(target.point+" | "+gate.Status+" | "+gate.Detail);
+                }
+                facts["controlMode"]=cfg.mode;
+                facts["controlWritesEnabled"]=cfg.WritesEnabled;
+                facts["controlArmed"]=form.Engine.ControlArmed;
+                facts["controlGates"]=gates;
+            }
             facts["buttons"]=buttons;
         }
         static IEnumerable<T> AllOf<T>(Control root) where T:Control {
