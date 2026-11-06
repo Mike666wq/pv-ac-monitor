@@ -47,6 +47,14 @@ namespace ExperimentMonitor {
                 if(isTestRun) degradedReplace=AtomicFile.InstallFallback();
                 if(args.Contains("--export-config")) {File.WriteAllText(Path.Combine(root,"point-contract.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{module="experiment",schemaVersion=1,catalogVersion=PointCatalog.Version,points=points.Select(p=>new {id=p.name,equipmentId=p.binding.device,slave=p.binding.slave,addressZeroBased=p.binding.address_zero_based,registerCount=p.binding.register_count,metadata=PointCatalog.Get(p)}).ToArray()}));return 0;}
                 if(args.Contains("--self-test")) { SelfTests.Run(points,root); ExtendedTests.Run(points,root); return 0; }
+                // 逐套件隔离执行：一个套件失败不会掩埋其它套件的结果，且显式申报没有用例的缺口。
+                if(args.Contains("--test-all")) {
+                    var entries=TestMatrix.RunAll(points,root);
+                    int failed=TestMatrix.WriteReport(entries,root);
+                    foreach(var e in entries) Console.Out.WriteLine(e.status.ToUpperInvariant().PadRight(6)+e.suite.PadRight(26)+e.count.ToString().PadLeft(6)+" 项 "+e.ms.ToString().PadLeft(7)+" ms"+(String.IsNullOrEmpty(e.detail)?"":"  "+e.detail));
+                    Console.Out.WriteLine("缺口 "+TestMatrix.Gaps.Length+" 项（无自动化用例，需真机/现场）");
+                    return failed==0?0:1;
+                }
                 if(args.Contains("--test-core")) { var checks=CoreTests.Run(points,root);File.WriteAllText(Path.Combine(root,"core-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=checks.Count,checks=checks,hardware_tested=false}));return 0; }
                 if(args.Contains("--test-storage")) { int storage=StorageTests.Run(),records=RecordsTests.Run(),failures=ExportFailureTests.Run(points,root);File.WriteAllText(Path.Combine(root,"records-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,storageChecks=storage,recordsChecks=records,failureChecks=failures,count=storage+records+failures,hardware_tested=false}));return 0; }
                 if(args.Contains("--test-cloud")) { int count=CloudSelfTests.Run();File.WriteAllText(Path.Combine(root,"cloud-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=count,production_cloud_tested=false}));return 0; }
