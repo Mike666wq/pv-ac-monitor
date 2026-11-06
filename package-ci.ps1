@@ -37,6 +37,12 @@ $runtimeFiles = [ordered]@{
     'x64/SQLite.Interop.dll' = (Join-Path $projectRoot 'x64\SQLite.Interop.dll')
     'x86/SQLite.Interop.dll' = (Join-Path $projectRoot 'x86\SQLite.Interop.dll')
     'README.md' = (Join-Path $projectRoot 'README.md')
+    'docs\field\INSTALL.md' = (Join-Path $projectRoot 'docs\field\INSTALL.md')
+    'docs\field\TROUBLESHOOTING.md' = (Join-Path $projectRoot 'docs\field\TROUBLESHOOTING.md')
+    'docs\field\OPERATIONS.md' = (Join-Path $projectRoot 'docs\field\OPERATIONS.md')
+    'docs\field\CONTROL-ENABLE.md' = (Join-Path $projectRoot 'docs\field\CONTROL-ENABLE.md')
+    'docs\field\ACCEPTANCE-CHECKLIST.md' = (Join-Path $projectRoot 'docs\field\ACCEPTANCE-CHECKLIST.md')
+    'CHANGELOG.md' = (Join-Path $projectRoot 'CHANGELOG.md')
 }
 
 try {

@@ -1,5 +1,18 @@
 # PV AC Monitor
 
+## 现场文档（交付包内 docs\field\）
+
+| 文档 | 什么时候看 |
+|---|---|
+| [INSTALL.md](docs/field/INSTALL.md) | 第一次安装、首跑、端口选错、与力控并存 |
+| [TROUBLESHOOTING.md](docs/field/TROUBLESHOOTING.md) | 没数据、点数不足、卡片变 `—`、导出打不开 |
+| [OPERATIONS.md](docs/field/OPERATIONS.md) | 数据在哪、怎么备份、三层回滚、并存切换 |
+| [CONTROL-ENABLE.md](docs/field/CONTROL-ENABLE.md) | 要让某个控制点可写之前**必须先读** |
+| [ACCEPTANCE-CHECKLIST.md](docs/field/ACCEPTANCE-CHECKLIST.md) | 现场验收：42 项、约 30 分钟、可签字 |
+
+> **控制写入出厂全部关闭。** 4 个控制点都是 `confirmed:false / allowWrite:false`，
+> 这是有意的（旧版本这两道闸门从未生效，曾向真实 PLC 写过 10 次）。
+> 启用方法见 CONTROL-ENABLE.md。
 PV AC Monitor 是独立运行的 Windows 桌面程序，用于读取项目绑定的 Modbus RTU 测点、查看实时状态并记录本地实验数据。程序可与 BMS 并行运行，不修改 BMS 文件。**默认不发送任何 Modbus 写入命令**；0.7.0 起新增受控的 06 单寄存器写入，默认禁用，必须现场确认后手动解锁。
 
 当前配置包含 4 台设备、37 个绑定测点。实时监控按温度、实验电表、市电、太阳能、控制/设定和运行状态分组，支持设备详情与实时/历史趋势。
