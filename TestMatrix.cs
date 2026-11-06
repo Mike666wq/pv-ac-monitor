@@ -69,6 +69,11 @@ namespace ExperimentMonitor {
                 Write(root, "resource-test-result.json", checks.Count, checks);
             });
             Run(entries, "ui", root, "ui-test-result.json", () => UiLayoutTests.Run(points, root));
+            // 集成路径：ExtendedTests 会再跑一遍上面多数套件，并额外做"37 点一整轮、
+            // 点表标签/角色、界面与导出点集一致"这类跨模块检查。放在最后跑，
+            // 前九个套件已经各自读完自己的结果文件，不会被它覆盖影响。
+            // 代价是这里会重复计数 —— 矩阵里它是"集成回归"，不是"新增断言"。
+            Run(entries, "integration(含子套件重复)", root, "extended-test-result.json", () => ExtendedTests.Run(points, root));
             return entries;
         }
 
