@@ -161,6 +161,32 @@ namespace ExperimentMonitor {
             var outsideSegment=fixture.Read(2,9000,1,100,CancellationToken.None,s=>{});
             Check("Address outside every segment reads as zero",outsideSegment.Length==7&&outsideSegment[3]==0);
 
+            // ── 块读规划（纯函数，尚未接入采集）─────────────────────────────
+            var blocks=BlockPlanner.Plan(points);
+            Check("块规划自检无问题：["+String.Join("；",BlockPlanner.Validate(blocks,points).ToArray())+"]",BlockPlanner.Validate(blocks,points).Count==0);
+            Check("块规划零空洞（绝不用未绑定地址填空）",blocks.All(b=>b.Holes==0));
+            Check("块规划不跨站号合并",blocks.GroupBy(b=>b.Slave).Count()==points.Select(p=>p.binding.slave).Distinct().Count());
+            Check("块规划不超协议上限 125",blocks.All(b=>b.Count<=BlockPlanner.MaxBlockRegisters));
+            // 直流表三个地址互不相邻（0/3/15），必须保持三块 —— 合并要去读表里没有的地址。
+            Check("直流表保持 3 个独立块",blocks.Count(b=>b.Slave==1)==3&&blocks.Where(b=>b.Slave==1).All(b=>b.Count==1));
+            // PLC 的 6 个温度点连续（125..137），应合成一块 12 寄存器。
+            var temperatureBlock=blocks.First(b=>b.Slave==2&&b.Points.Contains("T0"));
+            Check("PLC 温度点合成一块 12 寄存器",temperatureBlock.Address==125&&temperatureBlock.Count==12&&temperatureBlock.Points.Count==6);
+            // 帧数必须显著少于逐点读。
+            Check("块读帧数少于逐点读",BlockPlanner.FrameCount(blocks)<BlockPlanner.PerPointFrameCount(points));
+            // 切片按地址算偏移，不按点名下标 —— 句柄点故意用乱序验证。
+            var t3=points.First(p=>p.name=="T3");
+            byte[] fakeBlockPayload=new byte[temperatureBlock.Count*2];
+            for(int i=0;i<fakeBlockPayload.Length;i++)fakeBlockPayload[i]=(byte)(0x10+i);
+            byte[] sliceT3=BlockPlanner.Slice(temperatureBlock,t3,fakeBlockPayload);
+            int expectedOffset=(t3.binding.address_zero_based-temperatureBlock.Address)*2;
+            Check("块切片按寄存器地址取偏移",sliceT3.Length==4&&sliceT3[0]==fakeBlockPayload[expectedOffset]&&sliceT3[3]==fakeBlockPayload[expectedOffset+3]);
+            // 排除保留寄存器（0x200C = D9）后应多出一块：8202..8204 与 8206..8208 被 8204 隔开。
+            var withoutReserved=points.Where(p=>p.name!="D9").ToList();
+            var reservedFree=BlockPlanner.Plan(withoutReserved);
+            Check("排除保留寄存器后站6多出一块",reservedFree.Count(b=>b.Slave==6)==blocks.Count(b=>b.Slave==6)+1);
+            Check("排除保留寄存器后仍零空洞",reservedFree.All(b=>b.Holes==0)&&BlockPlanner.Validate(reservedFree,withoutReserved).Count==0);
+
             string testRoot=Path.Combine(root,".testing",DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N").Substring(0,6));
             Directory.CreateDirectory(testRoot);
             using(var form=new MonitorForm(points,testRoot)) {form.SetSimulationForTest(true);form.TestSimulationRun(false);}

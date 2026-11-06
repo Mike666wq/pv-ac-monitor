@@ -42,6 +42,7 @@ $runtimeFiles = [ordered]@{
     'docs\field\OPERATIONS.md' = (Join-Path $projectRoot 'docs\field\OPERATIONS.md')
     'docs\field\CONTROL-ENABLE.md' = (Join-Path $projectRoot 'docs\field\CONTROL-ENABLE.md')
     'docs\field\ACCEPTANCE-CHECKLIST.md' = (Join-Path $projectRoot 'docs\field\ACCEPTANCE-CHECKLIST.md')
+    'docs\field\BLOCK-READ-VERIFICATION.md' = (Join-Path $projectRoot 'docs\field\BLOCK-READ-VERIFICATION.md')
     'CHANGELOG.md' = (Join-Path $projectRoot 'CHANGELOG.md')
 }
 
