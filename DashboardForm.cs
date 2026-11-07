@@ -36,9 +36,11 @@ namespace ExperimentMonitor {
         readonly TextBox searchBox=new TextBox{Width=150};
         readonly Button searchButton=new Button{Text="定位",AutoSize=true};
         Label searchCaption;
-        /// <summary>定位结果的标题栏文案：平时显示这句，有结果时临时替换，几秒后恢复。</summary>
-        const string SearchCaptionDefault="定位测点";
+        /// <summary>筛选结果的标题栏文案：平时显示这句，有结果时临时替换，几秒后恢复。</summary>
+        const string SearchCaptionDefault="筛选测点";
         readonly Timer searchCaptionReset=new Timer{Interval=6000};
+        /// <summary>输入防抖：边打边筛，不要每敲一个字符就整墙重排一次。</summary>
+        readonly Timer filterTimer=new Timer{Interval=250};
         readonly Label connectionState=StatusLabel("未连接"),captureState=StatusLabel("未采集"),recordState=StatusLabel("本地记录待机"),cloudState=StatusLabel("云端未启用");
         readonly Label counts=new Label { AutoSize=true,Text="点表已载入 · 4 台设备 / 37 个测点" };
         readonly TextBox log=new TextBox { Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Both,WordWrap=false,Font=new Font("Consolas",9) };
@@ -85,6 +87,10 @@ namespace ExperimentMonitor {
         // 站在总览页点这个按钮等于没反应 —— 没命中、循环到第几个，全看不见。
         // 现在标题栏这里直接回显（6 秒后恢复），同时仍往通信诊断日志留一份完整记录。
         searchBox.HandleCreated+=(s,e)=>ApplySearchCue();
+        // 用户要的是"筛选"：输入就只留下匹配的卡片，不匹配的不该继续占着屏幕。
+        // 以前的"定位"只是滚一下闪一下，目标本来就在眼前时等于毫无反应。
+        filterTimer.Tick+=(s,e)=>{filterTimer.Stop();ApplyCardFilter(searchBox.Text);};
+        searchBox.TextChanged+=(s,e)=>{filterTimer.Stop();filterTimer.Start();};
         searchCaptionReset.Tick+=(s,e)=>{searchCaptionReset.Stop();if(searchCaption!=null)searchCaption.Text=SearchCaptionDefault;};
         searchButton.Click+=(s,e)=>{ShowSearchResult(SearchNext());searchBox.Focus();searchBox.SelectAll();};
             headerAction.Dock=DockStyle.Right;headerAction.Margin=new Padding(0,0,4,0);header.Controls.Add(headerAction);
@@ -295,14 +301,7 @@ namespace ExperimentMonitor {
             if(term!=searchTerm) { searchTerm=term; searchCursor=-1; }
             var hits=new List<string>();
             foreach(Point p in points) {
-                if(p==null||p.binding==null) continue;
-                PointInfo meta=PointCatalog.Get(p);
-                string address=p.binding.address_zero_based.ToString(CultureInfo.InvariantCulture);
-                bool match=(p.name??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
-                    ||(meta.Label??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
-                    ||(meta.Alias??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
-                    ||address==term;
-                if(match) hits.Add(p.name);
+                if(PointMatches(p,term)) hits.Add(p.name);
             }
             if(hits.Count==0) return "没有匹配「"+term+"」的测点";
             searchCursor=(searchCursor+1)%hits.Count;
@@ -325,11 +324,63 @@ namespace ExperimentMonitor {
 
         /// <summary>把定位结果显示在标题栏（一直看得见），并在通信诊断日志里留一份完整记录。</summary>
         void ShowSearchResult(string text) {
-            AppendLog("定位测点 · "+text);
+            AppendLog("筛选测点 · "+text);
             if(searchCaption==null) return;
             searchCaption.Text=text;
             searchCaptionReset.Stop();searchCaptionReset.Start();
         }
+
+        /// <summary>四路匹配：点名 / 名称 / 力控原名(alias) / 寄存器地址（地址要完全相等）。</summary>
+        static bool PointMatches(Point p,string term) {
+            if(p==null||p.binding==null||String.IsNullOrEmpty(term)) return false;
+            PointInfo meta=PointCatalog.Get(p);
+            string address=p.binding.address_zero_based.ToString(CultureInfo.InvariantCulture);
+            return (p.name??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
+                ||(meta.Label??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
+                ||(meta.Alias??"").IndexOf(term,StringComparison.OrdinalIgnoreCase)>=0
+                ||address==term;
+        }
+
+        /// <summary>
+        /// 按关键字筛选卡片墙：不匹配的卡片隐藏，整组一个都没命中的分组一起收起。
+        /// 关键字为空时全部恢复。这样"输入即见结果"，不再需要靠滚动或闪烁来暗示。
+        /// </summary>
+        internal void ApplyCardFilter(string term) {
+            if(overviewViewport==null||overviewViewport.IsDisposed) return;
+            term=(term??"").Trim();
+            var byPoint=new Dictionary<string,Point>(StringComparer.Ordinal);
+            if(points!=null) foreach(Point p in points) if(p!=null&&p.name!=null) byPoint[p.name]=p;
+            var sectionCards=new Dictionary<Control,List<Control>>();
+            int matched=0;
+            foreach(var kv in cards) {
+                Label[] labels=kv.Value;
+                if(labels==null||labels.Length<2) continue;
+                Control card=labels[1];
+                while(card!=null&&!(card is RoundedPanel)) card=card.Parent;
+                if(card==null) continue;
+                Control flow=card.Parent;
+                Control section=flow==null?null:flow.Parent;
+                if(section!=null&&!sectionCards.ContainsKey(section)) sectionCards[section]=new List<Control>();
+                Point point;
+                bool hit=term.Length==0||(byPoint.TryGetValue(kv.Key,out point)&&PointMatches(point,term));
+                card.Visible=hit;
+                if(hit){ matched++; if(section!=null) sectionCards[section].Add(card); }
+            }
+            foreach(var kv in sectionCards) kv.Key.Visible=kv.Value.Count>0;
+            if(overviewViewport.Controls.Count>0) {
+                TableLayoutPanel stack=overviewViewport.Controls[0] as TableLayoutPanel;
+                if(stack!=null) stack.PerformLayout();
+            }
+            try { overviewViewport.AutoScrollPosition=new DrawingPoint(0,0); } catch { }
+            if(searchCaption!=null) {
+                if(term.Length==0) searchCaption.Text=SearchCaptionDefault;
+                else searchCaption.Text=matched>0?("筛选「"+term+"」· "+matched+" 个"):("没有匹配「"+term+"」");
+            }
+            filterTerm=term;
+            filterMatched=matched;
+        }
+        string filterTerm="";
+        int filterMatched;
 
         // 输入框里放一句灰字提示，说明这里认什么。.NET Framework 的 TextBox 没有 PlaceholderText，
         // 用 EM_SETCUEBANNER（Vista 起支持）代替；失败就静默跳过，不影响功能。

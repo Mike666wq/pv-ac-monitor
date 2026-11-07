@@ -73,6 +73,7 @@ namespace ExperimentMonitor {
                 if(args.Contains("--diag-cycles")) return Diag.Cycles(points,root,(string[])args);
                 if(args.Contains("--diag-paging")) return Diag.Paging(points,root,(string[])args);
                 if(args.Contains("--diag-columns")) return Diag.Columns(points,root,(string[])args);
+                if(args.Contains("--diag-header")) return Diag.Header(points,root,(string[])args);
                 if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
                     Application.Run(form);
                 }
@@ -389,6 +390,87 @@ namespace ExperimentMonitor {
             // 记录页有 4 个表格，不能按"列数最多"挑 —— 清空后宽表只剩 2 列，会被别的表格盖过。
             var grid=AllOf<DataGridView>(page).FirstOrDefault(g=>g.Columns.Count>0&&(g.Columns[0].HeaderText??"").StartsWith("轮次开始时间",StringComparison.Ordinal));
             return grid==null?"未找到宽表":grid.Columns.Count+"";
+        }
+        /// <summary>标题栏"定位测点"入口的实况 dump：控件位置、文本、可见性，以及真实点按钮后回显有没有变。</summary>
+        internal static int Header(List<Point> points,string root,string[] args) {
+            var facts=new Dictionary<string,object>();
+            using(var form=new DashboardForm(points,root)) {
+                foreach(string a in args) if(a!=null&&a.StartsWith("--size=",StringComparison.Ordinal)) {
+                    string[] wh=a.Substring(7).Split('x'); int sw,sh;
+                    if(wh.Length==2&&Int32.TryParse(wh[0],out sw)&&Int32.TryParse(wh[1],out sh)) { form.ClientSize=new System.Drawing.Size(sw,sh); facts["clientSize"]=sw+"x"+sh; }
+                }
+                form.ShowInTaskbar=false;
+                var timer=new System.Windows.Forms.Timer{Interval=200};
+                int ticks=0;
+                form.Shown+=(s,e)=>{
+                    timer.Tick+=(s2,e2)=>{
+                        ticks++;
+                        if(ticks!=12) return;
+                        timer.Stop();
+                        try {
+                            var F=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+                            var box=(TextBox)typeof(DashboardForm).GetField("searchBox",F).GetValue(form);
+                            var caption=(Label)typeof(DashboardForm).GetField("searchCaption",F).GetValue(form);
+                            var btn=(Button)typeof(DashboardForm).GetField("searchButton",F).GetValue(form);
+                            facts["captionIsNull"]=caption==null;
+                            if(caption!=null) {
+                                facts["captionText"]=caption.Text;
+                                facts["captionBounds"]=caption.Bounds.ToString();
+                                facts["captionVisible"]=caption.Visible;
+                            }
+                            facts["boxBounds"]=box.Bounds.ToString();
+                            facts["boxVisible"]=box.Visible;
+                            facts["boxParent"]=box.Parent==null?"null":box.Parent.GetType().Name+" "+box.Parent.Bounds;
+                            facts["buttonText"]=btn.Text;
+                            facts["buttonBounds"]=btn.Bounds.ToString();
+                            var kids=new List<string>();
+                            var host=box.Parent;
+                            if(host!=null) foreach(Control c in host.Controls) kids.Add(c.GetType().Name+" \""+c.Text+"\" "+c.Bounds+" vis="+c.Visible+" en="+c.Enabled);
+                            facts["searchHostChildren"]=kids;
+                            // 真实跑一次搜索（走按钮），看回显
+                            box.Text="电流";
+                            btn.PerformClick();
+                            facts["afterButton_caption"]=caption==null?"<null>":caption.Text;
+                            facts["afterButton_captionVisible"]=caption==null?false:caption.Visible;
+                            facts["afterButton_logTail"]=null;
+                            // header 及其子控件的真实矩形（相对 header 与屏幕坐标都记）
+                            var hdr=box.Parent==null?null:box.Parent.Parent==null?null:box.Parent.Parent.Parent;
+                            if(box.Parent!=null) facts["searchHost"]=box.Parent.Bounds+" vis="+box.Parent.Visible;
+                            if(hdr!=null) {
+                                facts["headerClient"]=hdr.ClientSize.ToString();
+                                facts["headerDisplay"]=hdr.DisplayRectangle.ToString();
+                                var kids2=new List<string>();
+                                foreach(Control c in hdr.Controls) kids2.Add(c.GetType().Name+" \""+c.Text+"\" bounds="+c.Bounds+" vis="+c.Visible+" dock="+c.Dock);
+                                facts["headerChildren"]=kids2;
+                            }
+                            facts["formClient"]=form.ClientSize.ToString();
+                            // 筛选验证：可见卡片数、分组数、标题栏文案
+                            var cardMap=(Dictionary<string,Label[]>)typeof(DashboardForm).GetField("cards",F).GetValue(form);
+                            Func<int> visibleCards=()=>{int n=0;foreach(var kv in cardMap){Control c=kv.Value[1];while(c!=null&&!(c is RoundedPanel))c=c.Parent;if(c!=null&&c.Visible)n++;}return n;};
+                            Func<int> visibleSections=()=>{int n=0;var seen=new HashSet<Control>();foreach(var kv in cardMap){Control c=kv.Value[1];while(c!=null&&!(c is RoundedPanel))c=c.Parent;if(c==null)continue;Control sec=c.Parent==null?null:c.Parent.Parent;if(sec!=null&&seen.Add(sec)&&sec.Visible)n++;}return n;};
+                            facts["before_filter_cards"]=visibleCards();
+                            facts["before_filter_sections"]=visibleSections();
+                            var apply=typeof(DashboardForm).GetMethod("ApplyCardFilter",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Public);
+                            apply.Invoke(form,new object[]{"电流"});
+                            facts["filtered_cards"]=visibleCards();
+                            facts["filtered_sections"]=visibleSections();
+                            facts["filtered_caption"]=caption==null?"":caption.Text;
+                            apply.Invoke(form,new object[]{"绝无此项"});
+                            facts["nomatch_cards"]=visibleCards();
+                            facts["nomatch_caption"]=caption==null?"":caption.Text;
+                            apply.Invoke(form,new object[]{""});
+                            facts["restored_cards"]=visibleCards();
+                            facts["restored_caption"]=caption==null?"":caption.Text;
+                        } catch(Exception ex) { facts["error"]=ex.GetType().Name+"："+ex.Message; }
+                        form.Close();
+                    };
+                    timer.Start();
+                };
+                Application.Run(form);
+            }
+            File.WriteAllText(Path.Combine(root,"diag-header.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
+            Console.Out.WriteLine("DIAG header");
+            return 0;
         }
         static void Collect(DashboardForm form,int tab,Dictionary<string,object> facts) {
             facts["tab"]=tab;

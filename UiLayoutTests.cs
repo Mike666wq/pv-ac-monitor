@@ -211,6 +211,28 @@ namespace ExperimentMonitor {
             // 越靠后的分组偏得越多 —— 表现就是"查找了但什么都没动"。
             var overviewViewport=typeof(DashboardForm).GetField("overviewViewport",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(form) as Panel;
             var cardMap=typeof(DashboardForm).GetField("cards",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(form) as Dictionary<string,Label[]>;
+            // 用户真正要的是"筛选"：输入关键字后，不匹配的卡片不该继续占着屏幕。
+            // 之前的"定位"只滚一下闪一下，目标本来就在眼前时等于毫无反应。
+            Func<int> visibleCards=()=>{
+                int n=0;
+                foreach(var kv in cardMap) {
+                    Control c=kv.Value[1];
+                    while(c!=null&&!(c is RoundedPanel)) c=c.Parent;
+                    if(c!=null&&c.Visible) n++;
+                }
+                return n;
+            };
+            MethodInfo applyFilter=typeof(DashboardForm).GetMethod("ApplyCardFilter",BindingFlags.Instance|BindingFlags.NonPublic);
+            int all=visibleCards();
+            applyFilter.Invoke(form,new object[]{"电流"});
+            int filtered=visibleCards();
+            Check(filtered>0&&filtered<all,title+" 筛选「电流」只留下匹配的卡片（"+filtered+"/"+all+"）");
+            Check(caption.Text.Contains("筛选")&&caption.Text.Contains("3"),title+" 筛选后在标题栏报出命中个数（"+caption.Text+"）");
+            applyFilter.Invoke(form,new object[]{"绝无此项"});
+            Check(visibleCards()==0,title+" 无匹配时卡片墙清空");
+            Check(caption.Text.Contains("没有匹配"),title+" 无匹配在标题栏如实提示（"+caption.Text+"）");
+            applyFilter.Invoke(form,new object[]{""});
+            Check(visibleCards()==all,title+" 清空关键字后卡片全部恢复（"+visibleCards()+"/"+all+"）");
             Check(overviewViewport!=null&&cardMap!=null&&cardMap.ContainsKey("0006H"),title+" 搜索定位所需的视口与卡片映射可用");
             search.Text="0006H"; searchNext.Invoke(form,null);
             Control lastCard=cardMap["0006H"][1];
