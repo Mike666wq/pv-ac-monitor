@@ -134,14 +134,20 @@ namespace ExperimentMonitor {
             engine.RememberObservation(Sample(fake,"D2208",2,2208));
         }
 
-        static Observation Sample(FakeControlTransport fake,string name,int slave,int address) {
+        /// <summary>造一条观测。可显式指定时间戳。</summary>
+        /// <remarks>判定"写入之后的观测"用的是 DateTime.UtcNow，它在 Windows 上分辨率约 15.6 ms。
+        /// 测试里两次取时间若落在同一个时钟刻度，观测就会被当成"不晚于写入"而永不判定 ——
+        /// 这在 GitHub runner 上真实发生过（本地因为中间有文件写入耗时跨过刻度才通过）。
+        /// 这里允许显式指定时间戳，把时序写成确定的。</remarks>
+        static Observation Sample(FakeControlTransport fake,string name,int slave,int address,DateTime? utc=null) {
             var point=new Point {
                 name=name,description=name,
                 binding=new Binding {device="PLC",slave=slave,address_zero_based=address,register_count=1,decode_proposal="int16"}
             };
-            return Collector.Read(fake,point,"UINT16","simulation",1000,CancellationToken.None,delegate(string s) { });
+            Observation o=Collector.Read(fake,point,"UINT16","simulation",1000,CancellationToken.None,delegate(string s) { });
+            if(utc.HasValue&&o!=null)o.Utc=utc.Value;
+            return o;
         }
-
         public static List<string> Run(List<Point> points,string root) {
             if(points==null||points.Count==0)throw new ArgumentException("点表不能为空");
             if(points.All(p=>p.name!="D2202")||points.All(p=>p.name!="D2003")||points.All(p=>p.name!="D2208"))
@@ -277,9 +283,14 @@ namespace ExperimentMonitor {
                         Check(File.Exists(logPath),"成功写入生成控制审计文件",checks);
                         Check(File.Exists(logPath)&&File.ReadAllText(logPath).Contains("\"held\""),"控制审计包含 held",checks);
                         Check(File.Exists(logPath)&&File.ReadAllText(logPath).Contains(r.WriteId),"控制审计带上 write_id",checks);
-                        // 效果确认：下一轮采集观测到同点同值 ⇒ applied
-                        engine.RememberObservation(Sample(fake,"D2202",2,2202));
-                        Check(engine.LastControlResult!=null&&engine.LastControlResult.Status=="applied","下一轮采集观测一致后判定 applied",checks);
+            // 效果确认：下一轮采集观测到同点同值 ⇒ applied
+            // 时序必须写成确定的：靠"两次 DateTime.UtcNow 之间自然跨过时钟刻度"来判先后，
+            // 在快机器上会落到同一刻度而被当成"不晚于写入"，状态永远停在 held。
+            ControlResult beforeResolve=engine.LastControlResult;
+            engine.RememberObservation(Sample(fake,"D2202",2,2202,DateTime.UtcNow.AddSeconds(-5)));
+            Check(ReferenceEquals(engine.LastControlResult,beforeResolve),"早于写入的观测不判定效果（继续等下一轮）",checks);
+            engine.RememberObservation(Sample(fake,"D2202",2,2202,DateTime.UtcNow.AddMilliseconds(100)));
+            Check(engine.LastControlResult!=null&&engine.LastControlResult.Status=="applied","下一轮采集观测一致后判定 applied",checks);
                         Check(engine.LastControlResult.WriteId==r.WriteId,"applied 与 held 属于同一笔写入",checks);
                     }
                 }
