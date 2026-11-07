@@ -242,13 +242,31 @@ namespace ExperimentMonitor {
                 form.HistoryHost.Controls.Add(historyPage);
                 form.AttachHistoryPage(historyPage);
                 form.ShowInTaskbar=false;
+                int prefill=0; foreach(string a in args) if(a!=null&&a.StartsWith("--prefill=",StringComparison.Ordinal)) { int v; if(Int32.TryParse(a.Substring(10),out v)) prefill=v; }
                 var timer=new System.Windows.Forms.Timer{Interval=300};
-                int ticks=0, step=0;
+                int ticks=0, step=0; bool prefillStarted=false; string pendingStep=null; int pendingAt=0; long maxRound=0;
                 string[] order={"更新 ›","最新 »","‹ 更早","« 最早"};
                 form.Shown+=(s,e)=>{
                     timer.Tick+=(s2,e2)=>{
                         ticks++;
                         try {
+                            if(ticks==5&&prefill>0&&!prefillStarted) {
+                                // 先采够轮次，否则页长(200)永远大于轮数，翻页永远不触发。
+                                prefillStarted=true;
+                                form.Engine.TransportFactory=(sim,port,baud)=>new SimulationTransport();
+                                form.Engine.Connect(true,"SIM",9600);
+                                form.Engine.SetPeriodSeconds(1);
+                                maxRound=0;
+                                form.Engine.ObservationReceived+=(o)=>{ if(o!=null&&o.Round>maxRound) maxRound=o.Round; };
+                                form.Engine.Start(1,1,points.Select(p=>p.name).ToArray());
+                                timer.Interval=500;
+                                return;
+                            }
+                            if(prefillStarted&&prefill>0) {
+                                long done=maxRound;
+                                if(done<prefill&&ticks<12000) { if(ticks%20==0) facts["prefillProgress"]=done; return; }
+                                form.Engine.Stop(); prefillStarted=false; facts["prefilledRounds"]=done; ticks=5;
+                            }
                             if(ticks==5) form.MainNavigation.SelectedIndex=3;   // 数据记录
                             if(ticks==12) {
                                 var inv=new List<string>();
@@ -257,11 +275,14 @@ namespace ExperimentMonitor {
                                 facts["pagingButtons"]=inv;
                             }
                             if(ticks==20) steps.Add("起始 | "+Snapshot(historyPage));
-                            if(ticks>20&&ticks%8==0&&step<order.Length) {
+                            // 点完不要立刻取样：页面要重新查询，须等它落定再读页脚。
+                            if(ticks>20&&ticks%8==0&&step<order.Length&&pendingStep==null) {
                                 var button=FindButton(historyPage,order[step]);
-                                if(button!=null&&button.Enabled) { button.PerformClick(); steps.Add(order[step]+" | "+Snapshot(historyPage)); }
-                                else steps.Add(order[step]+" | （按钮不可用或未找到）");
-                                step++;
+                                if(button!=null&&button.Enabled) { button.PerformClick(); pendingStep=order[step]; pendingAt=ticks; }
+                                else { steps.Add(order[step]+" | （按钮不可用或未找到）"); step++; }
+                            } else if(pendingStep!=null&&ticks>=pendingAt+5) {
+                                steps.Add(pendingStep+" | "+Snapshot(historyPage));
+                                pendingStep=null; step++;
                             }
                             if(step>=order.Length&&ticks%8==4) {
                                 timer.Stop();
