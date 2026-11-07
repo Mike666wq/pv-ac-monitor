@@ -33,7 +33,12 @@ namespace ExperimentMonitor {
         readonly StyledActionButton stop=new StyledActionButton { Text="停止",Width=80 };
         readonly StyledActionButton headerAction=new StyledActionButton { Text="连接",Width=104,BackColor=UiTheme.Blue };
         Label headerTitle;
-        readonly TextBox searchBox=new TextBox{Width=150};readonly Button searchButton=new Button{Text="查找",AutoSize=true};
+        readonly TextBox searchBox=new TextBox{Width=150};
+        readonly Button searchButton=new Button{Text="定位",AutoSize=true};
+        Label searchCaption;
+        /// <summary>定位结果的标题栏文案：平时显示这句，有结果时临时替换，几秒后恢复。</summary>
+        const string SearchCaptionDefault="定位测点";
+        readonly Timer searchCaptionReset=new Timer{Interval=6000};
         readonly Label connectionState=StatusLabel("未连接"),captureState=StatusLabel("未采集"),recordState=StatusLabel("本地记录待机"),cloudState=StatusLabel("云端未启用");
         readonly Label counts=new Label { AutoSize=true,Text="点表已载入 · 4 台设备 / 37 个测点" };
         readonly TextBox log=new TextBox { Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Both,WordWrap=false,Font=new Font("Consolas",9) };
@@ -76,12 +81,17 @@ namespace ExperimentMonitor {
             var header=new Panel { Dock=DockStyle.Fill,Height=56,BackColor=UiTheme.Ink,Padding=new Padding(16,10,12,10) };
             headerTitle=new Label { Text="实验监控  /  全实验数据工作台",AutoSize=true,Location=new DrawingPoint(16,12),Font=new Font("Microsoft YaHei UI",13,FontStyle.Bold),ForeColor=Color.White,BackColor=Color.Transparent };
             header.Controls.Add(headerTitle);
-            searchButton.Click+=(s,e)=>{AppendLog("查找 · "+SearchNext());searchBox.Focus();searchBox.SelectAll();};
+            // 结果必须显示在"你看得见的地方"。以前 AppendLog 写进的是「通信诊断」页的通信日志，
+        // 站在总览页点这个按钮等于没反应 —— 没命中、循环到第几个，全看不见。
+        // 现在标题栏这里直接回显（6 秒后恢复），同时仍往通信诊断日志留一份完整记录。
+        searchBox.HandleCreated+=(s,e)=>ApplySearchCue();
+        searchCaptionReset.Tick+=(s,e)=>{searchCaptionReset.Stop();if(searchCaption!=null)searchCaption.Text=SearchCaptionDefault;};
+        searchButton.Click+=(s,e)=>{ShowSearchResult(SearchNext());searchBox.Focus();searchBox.SelectAll();};
             headerAction.Dock=DockStyle.Right;headerAction.Margin=new Padding(0,0,4,0);header.Controls.Add(headerAction);
             // 37 个点靠肉眼在卡片墙上找，等于训练使用者背位置。搜索放在标题栏（工具栏已经满了，
             // 挤到第二行会吃掉纵向空间）。四路匹配：点名 / 名称 / 力控原名(alias) / 地址。
             var searchHost=new FlowLayoutPanel { Dock=DockStyle.Right,AutoSize=true,WrapContents=false,AutoScroll=false,BackColor=Color.Transparent,Margin=Padding.Empty,Padding=new Padding(0,12,10,0) };
-            var searchCaption=new Label { Text="查找",AutoSize=true,ForeColor=Color.FromArgb(198,214,232),BackColor=Color.Transparent,Padding=new Padding(0,6,6,0),Margin=Padding.Empty };
+            searchCaption=new Label { Text=SearchCaptionDefault,AutoSize=true,AutoEllipsis=true,MaximumSize=new Size(200,0),ForeColor=Color.FromArgb(198,214,232),BackColor=Color.Transparent,Padding=new Padding(0,6,6,0),Margin=Padding.Empty };
             searchHost.Controls.Add(searchCaption);searchHost.Controls.Add(new RoundedInputHost(searchBox) { Width=150,Margin=new Padding(0,3,6,0) });searchHost.Controls.Add(searchButton);
             header.Controls.Add(searchHost);
             shell.Controls.Add(header,0,0);
@@ -111,6 +121,7 @@ namespace ExperimentMonitor {
         void BuildPages() {
             TabPage live=AddPage("实时监控"),control=AddPage("运行控制"),trends=AddPage("趋势分析"),records=AddPage("数据记录"),cloud=AddPage("云端连接"),diag=AddPage("通信诊断");
             var liveTabs=new TabControl { Dock=DockStyle.Fill,DrawMode=TabDrawMode.OwnerDrawFixed,ItemSize=new Size(104,30),SizeMode=TabSizeMode.Fixed };
+            this.liveTabs=liveTabs;
             liveTabs.DrawItem+=(s,e)=>{bool selected=(e.State&DrawItemState.Selected)!=0;TextRenderer.DrawText(e.Graphics,liveTabs.TabPages[e.Index].Text,Font,e.Bounds,selected?UiTheme.Blue:UiTheme.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter);if(selected)using(var p=new Pen(UiTheme.Blue,2))e.Graphics.DrawLine(p,e.Bounds.Left+18,e.Bounds.Bottom-1,e.Bounds.Right-18,e.Bounds.Bottom-1);};live.Controls.Add(liveTabs);
             var overview=new TabPage("总览") { BackColor=UiTheme.Canvas,Padding=new Padding(7) };var detail=new TabPage("测点详情") { BackColor=UiTheme.Canvas,Padding=new Padding(7) };liveTabs.TabPages.Add(overview);liveTabs.TabPages.Add(detail);
             BuildOverview(overview);BuildDetails(detail);
@@ -128,6 +139,7 @@ namespace ExperimentMonitor {
 
         void BuildOverview(TabPage page) { overviewViewport=OverviewPageBuilder.Build(page,points,cards,tips,overviewChart,Font); }
         Panel overviewViewport;
+        TabControl liveTabs;
 
         void BuildDetails(TabPage page) {
             foreach(string col in new[]{"测点","名称","设备","站号","零基地址","单位","实时值","质量","采样时间","耗时(ms)"})table.Columns.Add(col);
@@ -295,9 +307,37 @@ namespace ExperimentMonitor {
             if(hits.Count==0) return "没有匹配「"+term+"」的测点";
             searchCursor=(searchCursor+1)%hits.Count;
             string target=hits[searchCursor];
-            if(!FocusCard(target)) return "找到了 "+target+"，但它当前不在总览页";
+            // 这个框在标题栏上是常驻的，任何页签都点得到。以前它只在总览页真起作用，
+            // 在别的页签点完屏幕上什么都不变、却还回报"定位成功" —— 那是说假话。
+            // 现在先把视图切到总览（并在必要时滚动），再定位。
+            EnsureOverviewVisible();
+            if(!FocusCard(target)) return "找到了 "+target+"，但卡片没有渲染出来";
             string suffix=hits.Count>1?"（第 "+(searchCursor+1)+"/"+hits.Count+" 个）":"";
-            return "定位 "+target+" "+PointCatalog.Get(target).Label+suffix;
+            return target+" "+PointCatalog.Get(target).Label+suffix;
+        }
+
+        /// <summary>把主视图切到「实时监控 → 总览」。搜索框是全局的，效果就不该只在某一页出现。</summary>
+        void EnsureOverviewVisible() {
+            if(MainNavigation.SelectedIndex!=0) MainNavigation.SelectedIndex=0;
+            if(liveTabs!=null&&liveTabs.SelectedIndex!=0) liveTabs.SelectedIndex=0;
+            if(overviewViewport!=null&&!overviewViewport.IsDisposed) overviewViewport.PerformLayout();
+        }
+
+        /// <summary>把定位结果显示在标题栏（一直看得见），并在通信诊断日志里留一份完整记录。</summary>
+        void ShowSearchResult(string text) {
+            AppendLog("定位测点 · "+text);
+            if(searchCaption==null) return;
+            searchCaption.Text=text;
+            searchCaptionReset.Stop();searchCaptionReset.Start();
+        }
+
+        // 输入框里放一句灰字提示，说明这里认什么。.NET Framework 的 TextBox 没有 PlaceholderText，
+        // 用 EM_SETCUEBANNER（Vista 起支持）代替；失败就静默跳过，不影响功能。
+        const int EM_SETCUEBANNER=0x1501;
+        [System.Runtime.InteropServices.DllImport("user32.dll",CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern IntPtr SendMessage(IntPtr hWnd,int msg,IntPtr wParam,string lParam);
+        void ApplySearchCue() {
+            try { if(searchBox!=null&&searchBox.IsHandleCreated) SendMessage(searchBox.Handle,EM_SETCUEBANNER,(IntPtr)1,"点名 / 名称 / 地址"); } catch { }
         }
 
         /// <summary>把某张卡片滚到可见区域并短暂高亮。</summary>
@@ -341,7 +381,7 @@ namespace ExperimentMonitor {
         /// <summary>Ctrl+F 聚焦搜索框。用 ProcessCmdKey 而不是 KeyDown：焦点在任何子控件时都要生效。</summary>
         protected override bool ProcessCmdKey(ref Message msg,Keys keyData) {
             if(keyData==(Keys.Control|Keys.F)) { searchBox.Focus();searchBox.SelectAll();return true; }
-            if(keyData==Keys.Enter&&searchBox.Focused) { AppendLog("查找 · "+SearchNext());return true; }
+            if(keyData==Keys.Enter&&searchBox.Focused) { ShowSearchResult(SearchNext());return true; }
             return base.ProcessCmdKey(ref msg,keyData);
         }
 

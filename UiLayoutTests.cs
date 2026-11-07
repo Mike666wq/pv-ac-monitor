@@ -185,6 +185,27 @@ namespace ExperimentMonitor {
             search.Text="温度";                string first=(string)searchNext.Invoke(form,null);
             string second=(string)searchNext.Invoke(form,null);
             Check(first!=second&&first.Contains("第 1/")&&second.Contains("第 2/"),title+" 搜索在多个命中项之间循环");
+            // 搜索框在标题栏上是常驻的，任何页签都点得到。以前它只在总览页真起作用，
+            // 在别的页签点完屏幕上什么都不变、却还回报"定位成功" —— 那是说假话。
+            form.MainNavigation.SelectedIndex=3;
+            search.Text="T1";
+            string fromOther=(string)searchNext.Invoke(form,null);
+            Check(fromOther.Contains("T1")&&!fromOther.Contains("不在总览页"),title+" 在别的页签定位会切回总览并真正生效（"+fromOther+"）");
+            Check(form.MainNavigation.SelectedIndex==0,title+" 定位后主视图已切回实时监控");
+            // 结果必须回显在看得见的地方；以前 AppendLog 写进的是通信诊断页的日志。
+            MethodInfo showResult=typeof(DashboardForm).GetMethod("ShowSearchResult",BindingFlags.Instance|BindingFlags.NonPublic);
+            showResult.Invoke(form,new object[]{"回显测试"});
+            Label caption=Field<Label>(form,"searchCaption");
+            Check(caption!=null&&caption.Text=="回显测试",title+" 定位结果显示在标题栏（站在总览页也看得见）");
+            Check(caption!=null&&caption.AutoEllipsis&&caption.MaximumSize.Width>0,title+" 回显文案有宽度上限，不会把标题挤掉");
+            Check(caption!=null&&caption.MaximumSize.Width<=220,title+" 回显文案宽度上限足够窄（"+ (caption==null?0:caption.MaximumSize.Width) +"px）");
+            // 走真实按钮，而不是直接调 SearchNext：用户是按按钮，这条链路上"结果有没有回显"才是他看到的。
+            // 用"主机罐温度"（唯一命中 T1）而不是 "T1"：回显显示的是点名+名称，
+            // 而 "T1" 还会经由别名命中别的点，断言就不稳。
+            search.Text="主机罐温度";
+            Field<Button>(form,"searchButton").PerformClick();
+            Check(caption!=null&&caption.Text!="定位测点"&&caption.Text.Contains("T1"),title+" 点「定位」按钮后结果回显在标题栏（"+ (caption==null?"":caption.Text) +"）");
+            Check(Field<Button>(form,"searchButton").Text=="定位",title+" 入口标注为「定位」而不是含糊的「查找」");
             // 只断言"找到了"是不够的：真正的要求是**把目标滚进可视区**。
             // 定位算法曾用 card.Parent.Top+card.Top，漏掉 section 在 stack 里的偏移，
             // 越靠后的分组偏得越多 —— 表现就是"查找了但什么都没动"。
