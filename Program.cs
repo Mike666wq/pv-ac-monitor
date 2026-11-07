@@ -72,6 +72,7 @@ namespace ExperimentMonitor {
                 if(args.Contains("--diag-export")) return Diag.Export(points,root,(string[])args);
                 if(args.Contains("--diag-cycles")) return Diag.Cycles(points,root,(string[])args);
                 if(args.Contains("--diag-paging")) return Diag.Paging(points,root,(string[])args);
+                if(args.Contains("--diag-columns")) return Diag.Columns(points,root,(string[])args);
                 if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
                     Application.Run(form);
                 }
@@ -125,6 +126,13 @@ namespace ExperimentMonitor {
                             // 这样门禁才会越过"请先开始采集"到达"尚未现场确认"那一层。
                             if(captureFirst && Array.IndexOf(args,"--keep-capturing")<0) { try { form.Engine.Stop(); } catch { } }
                             form.MainNavigation.SelectedIndex=tab;
+                            foreach(string sa in args) if(sa!=null&&sa.StartsWith("--subtab=",StringComparison.Ordinal)) {
+                                int sub; if(Int32.TryParse(sa.Substring(9),out sub)) {
+                                    var host=form.MainNavigation.SelectedTab;
+                                    var inner=host==null?null:AllOf<TabControl>(host).FirstOrDefault();
+                                    if(inner!=null&&sub>=0&&sub<inner.TabCount) { inner.SelectedIndex=sub; facts["subTab"]=inner.SelectedTab==null?"":inner.SelectedTab.Text; }
+                                }
+                            }
                         }
                         if(ticks>=30) {
                             timer.Stop();
@@ -312,7 +320,68 @@ namespace ExperimentMonitor {
         }
         static Button FindButton(Control root,string text) {
             foreach(var b in AllOf<Button>(root)) if(b.Text==text) return b;
+            foreach(var b in AllOf<Button>(root)) if(b.Text!=null&&b.Text.Contains(text)) return b;
             return null;
+        }
+        /// <summary>
+        /// 列选择下拉实跑：点开「列选择」，用面板里的「清空/全选」驱动，核对宽表列数变化。
+        /// 这条路径 UIA 摸不到（记录页的 DataGridView 让枚举超过 30 秒上限），只能进程内驱动。
+        /// </summary>
+        internal static int Columns(List<Point> points,string root,string[] args) {
+            var facts=new Dictionary<string,object>();
+            var steps=new List<string>();
+            using(var form=new DashboardForm(points,root)) {
+                var historyPage=new HistoryPage(points,root,form.Engine);
+                form.HistoryHost.Controls.Add(historyPage);
+                form.AttachHistoryPage(historyPage);
+                form.ShowInTaskbar=false;
+                var timer=new System.Windows.Forms.Timer{Interval=300};
+                int ticks=0, step=0;
+                form.Shown+=(s,e)=>{
+                    timer.Tick+=(s2,e2)=>{
+                        ticks++;
+                        try {
+                            if(ticks==5) form.MainNavigation.SelectedIndex=3;
+                            if(ticks==25) steps.Add("起始 | "+WideColumns(historyPage)+" 列");
+                            if(ticks==26) {
+                                var pick=FindButton(historyPage,"列选择");
+                                if(pick==null) { steps.Add("列选择 | 按钮未找到"); }
+                                else { pick.PerformClick(); steps.Add("打开面板 | 已点开"); }
+                            }
+                            if(ticks==30||ticks==38) {
+                                var drop=typeof(HistoryPage).GetField("columnDrop",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(historyPage) as ToolStripDropDown;
+                                if(drop==null) { steps.Add("面板 | 未取到 columnDrop"); }
+                                else {
+                                    string want=ticks==30?"清空（只留时间与采集轮）":"全选（显示全部取数测点）";
+                                    ToolStripItem hit=null;
+                                    foreach(ToolStripItem it in drop.Items) if(it.Text==want) { hit=it; break; }
+                                    if(hit==null) steps.Add(want+" | 菜单项未找到");
+                                    else { hit.PerformClick(); steps.Add(want+" | 已点"); }
+                                }
+                            }
+                            if(ticks==34) steps.Add("清空后 | "+WideColumns(historyPage)+" 列");
+                            if(ticks==42) {
+                                steps.Add("全选后 | "+WideColumns(historyPage)+" 列");
+                                var drop=typeof(HistoryPage).GetField("columnDrop",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(historyPage) as ToolStripDropDown;
+                                if(drop!=null) drop.Close();
+                                timer.Stop();
+                                facts["steps"]=steps;
+                                form.Close();
+                            }
+                        } catch(Exception ex) { facts["error"]=ex.GetType().Name+"："+ex.Message; timer.Stop(); form.Close(); }
+                    };
+                    timer.Start();
+                };
+                Application.Run(form);
+            }
+            File.WriteAllText(Path.Combine(root,"diag-columns.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
+            Console.Out.WriteLine("DIAG columns");
+            return facts.ContainsKey("error")?1:0;
+        }
+        static string WideColumns(HistoryPage page) {
+            // 记录页有 4 个表格，不能按"列数最多"挑 —— 清空后宽表只剩 2 列，会被别的表格盖过。
+            var grid=AllOf<DataGridView>(page).FirstOrDefault(g=>g.Columns.Count>0&&(g.Columns[0].HeaderText??"").StartsWith("轮次开始时间",StringComparison.Ordinal));
+            return grid==null?"未找到宽表":grid.Columns.Count+"";
         }
         static void Collect(DashboardForm form,int tab,Dictionary<string,object> facts) {
             facts["tab"]=tab;
