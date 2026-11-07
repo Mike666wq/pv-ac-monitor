@@ -342,7 +342,14 @@ namespace ExperimentMonitor {
                         ticks++;
                         try {
                             if(ticks==5) form.MainNavigation.SelectedIndex=3;
-                            if(ticks==25) steps.Add("起始 | "+WideColumns(historyPage)+" 列");
+                            if(ticks==25) {
+                                steps.Add("起始 | "+WideColumns(historyPage)+" 列");
+                                // 导出菜单是 ContextMenuStrip：没弹出时不在控件树里，取不到子项。
+                                // 这里只验入口按钮在且可用；菜单项本身与文件夹选择框由 --diag-export
+                                // 在真实数据上覆盖（那条路径能完整跑通导出并核对产物）。
+                                var exp=FindButton(historyPage,"导出数据");
+                                steps.Add("导出数据 | "+(exp==null?"按钮未找到":(exp.Enabled?"入口存在且可用":"入口存在但不可用")));
+                            }
                             if(ticks==26) {
                                 var pick=FindButton(historyPage,"列选择");
                                 if(pick==null) { steps.Add("列选择 | 按钮未找到"); }
