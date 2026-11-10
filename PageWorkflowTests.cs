@@ -165,7 +165,13 @@ namespace ExperimentMonitor {
                     // 上限由 8 提到 125 之后，原来的 Maximum==8 选择器再也匹配不到控件（2026-11-06 修复）。
                     Find<NumericUpDown>(page,n=>n.Maximum==125).Value=2;Button read=Find<Button>(page,b=>b.Text=="发送读取");read.PerformClick();
                     DateTime end=DateTime.UtcNow.AddSeconds(5);while(!read.Enabled&&DateTime.UtcNow<end)await Task.Delay(20);
-                    Label result=Find<Label>(page,l=>l.Text.StartsWith("最近收发时间："));
+                    // 按 Name 找，不要绑控件类型：0.8.11 把结果区从 Label 换成只读多行 TextBox
+                    // （Label 不会滚动、六行结果被裁掉），按类型找的断言当场就挂了。
+                    TextBox result=Find<TextBox>(page,t=>t.Name=="diagnosticResult");
+                    check(result!=null,"诊断结果区可按 Name=diagnosticResult 找到");
+                    // 结果区必须可滚动、可复制 —— TX/RX 原始帧是要抄给厂家/贴工单的。
+                    check(result!=null&&result.Multiline&&result.ReadOnly&&result.ScrollBars==ScrollBars.Vertical,
+                        "诊断结果区是只读多行且带垂直滚动（长内容不会被裁掉）");
                     check(read.Enabled&&result!=null&&result.Text.Contains("解析："+requested),"诊断保持用户选择的完整浮点字节序 "+requested);
                     check(result.Text.Contains("正常 · 12.5"),"已知合成响应按所选字节序正确解码 "+requested);
                     check(ExperimentHistory.Count(Path.Combine(isolated,"data","storage"),new HistoryFilter{Source="simulation",FromUtc=DateTime.UtcNow.AddDays(-1),ToUtc=DateTime.UtcNow.AddDays(1)})==0,"手动诊断不混入正式历史记录");

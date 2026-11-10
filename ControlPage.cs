@@ -67,7 +67,9 @@ namespace ExperimentMonitor {
             acqLabel = Chip("采集 —");
             gateLabel = Chip("门禁 —");
             interlockLabel = Chip("联锁 —");
-            statLabel = Chip("已发 0 · 成功 0 · 异常 0");
+            // 初始占位必须和 RefreshCounters() 的输出用同一套措辞，
+            // 否则「还没写任何东西」时显示"已发/异常"，写过一次后变成"提交/未生效" —— 同一个计数两种说法。
+            statLabel = Chip("提交 0 · 成功 0 · 未生效 0");
             verifyButton = new Button { Text = "重新读取核对", Width = 116, Height = 30, Visible = false };
             verifyButton.Click += delegate { VerifyClicked(); };
             status.Controls.AddRange(new Control[] { switchButton, connLabel, acqLabel, gateLabel, interlockLabel, statLabel, verifyButton });

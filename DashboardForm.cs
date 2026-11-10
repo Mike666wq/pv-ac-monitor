@@ -45,7 +45,8 @@ namespace ExperimentMonitor {
         // 初始文案不能写死"4 台设备 / 37 个测点" —— 点表一改它就变成假话。
         // 真实值在 BuildShell 里按点表算好后填上。
         readonly Label counts=new Label { AutoSize=true,Text="点表载入中…" };
-        readonly TextBox log=new TextBox { Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Both,WordWrap=false,Font=new Font("Consolas",9) };
+        readonly TextBox log=new TextBox { Name="commLog",Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Both,WordWrap=false,Font=new Font("Consolas",9) };
+        static readonly string CommLogName="commLog";
         readonly DataTable table=new DataTable();
         readonly Dictionary<string,DataRow> rows=new Dictionary<string,DataRow>();
         readonly Dictionary<string,Label[]> cards=new Dictionary<string,Label[]>();
@@ -293,7 +294,16 @@ namespace ExperimentMonitor {
             controls.SizeChanged+=(s,e)=>fitDiagnostics();
             controls.Layout+=(s,e)=>fitDiagnostics();
             fitDiagnostics();
-            Label result=new Label { Dock=DockStyle.Fill,Text="尚未发送诊断读取，结果会显示在这里。",Padding=new Padding(9),ForeColor=UiTheme.Muted,AutoEllipsis=true };
+            // 诊断结果必须是**只读多行、可滚动、可复制**的。
+            // 原来用 Label：它不会滚动，而「最近一次读取」这个 GroupBox 只有约 100px 高，
+            // 于是结果里最要紧的三行（结果 / TX / RX / 耗时）被永久裁掉 ——
+            // 而 TX/RX 恰恰是要抄给厂家或贴进工单的东西。
+            // Name 固定成 diagnosticResult：测试与 UI 自动化都按它找，
+            // 不要再绑控件类型（换类型就把测试打挂，0.8.11 已经踩过一次）。
+            var result=new TextBox { Name="diagnosticResult",Dock=DockStyle.Fill,Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,
+                WordWrap=true,BorderStyle=BorderStyle.None,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,
+                Font=new Font("Microsoft YaHei UI",8.5f),Text="尚未发送诊断读取，结果会显示在这里。" };
+            result.AccessibleName="最近一次读取结果";
             var resultBox=new GroupBox { Text="最近一次读取",Dock=DockStyle.Fill,BackColor=UiTheme.Surface,ForeColor=UiTheme.Ink,Padding=new Padding(6) };resultBox.Controls.Add(result);
             // 历史会话日志放在独立只读窗口里:不占用诊断页的布局高度,也不影响通信日志的可视高度。
             var openSessionLogs=new StyledActionButton { Text="历史会话日志…",Width=132,Anchor=AnchorStyles.Top|AnchorStyles.Right,Margin=Padding.Empty,Location=new System.Drawing.Point(8,26) };
