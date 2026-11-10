@@ -32,7 +32,7 @@ namespace ExperimentMonitor {
         int sentCount, okCount, badCount;
         bool busy, wasRunning, suppressEdit, compactRows;
 
-        sealed class StepRecord {
+        internal sealed class StepRecord {
             /// <summary>这条记录对应的控制点（用于查它的因果判据）。</summary>
             public string Point = "";
             public int[] Steps = new int[] { 0, 0, 0, 0 };
@@ -362,8 +362,17 @@ namespace ExperimentMonitor {
             if (planGrid.Parent != null && planGrid.Parent.Height != total) planGrid.Parent.Height = total;
         }
 
-        static string StageDetail(StepRecord r) {
+        internal static string StageDetail(StepRecord r) {
             if (r == null) return "还没有发送";
+            // 必须先判「根本没发出去」。
+            // Steps[0]==3 等价于 Tx 为空 —— 一个字节都没上总线。此时 ②回显 / ③回读
+            // 也必然是 3；如果先判 Steps[2]==3，被门禁拦下的写入就会显示成
+            // "回读不一致，请核对"，让人以为写下去了、只是设备没对上。
+            // 这正是 0.8.x 要消灭的那种"界面说假话"，而它一直躲在判断顺序里。
+            if (r.Steps[0] == 3) {
+                string reason = BlockedReason(r.Last);
+                return reason == null ? "被拦截，未发送" : "被拦截未发送 · " + reason;
+            }
             if (r.Steps[3] == 2) return "设备已动作";
             if (r.Steps[3] == 5) return "同值写：设备状态无变化（正常）";
             if (r.Steps[3] == 6) return "无法判定设备是否动作（未配置因果判据）";
@@ -373,10 +382,29 @@ namespace ExperimentMonitor {
             if (r.Steps[2] == 2) return "回读一致";
             if (r.Steps[1] == 3) return "回显异常/为空，结果未知";
             if (r.Steps[1] == 2) return "回显一致，正在回读";
-            if (r.Steps[0] == 3) return "被拦截，未发送";
             if (r.Steps[0] == 1) return "正在下发 06 报文";
             if (r.Steps[0] == 2) return "已下发，等待回显";
             return "还没有发送";
+        }
+
+        /// <summary>把"为什么没发出去"翻译成现场能照着做的一句话；不是拦截类状态返回 null。</summary>
+        internal static string BlockedReason(ControlResult r) {
+            if (r == null) return null;
+            switch (r.Status) {
+                case "not_confirmed": return "该点尚未现场确认（confirmed=false）";
+                case "not_allow_write": return "该点未开放写入（allowWrite=false）";
+                case "disabled": return "配置未启用写入（mode 不是 live）";
+                case "disconnected": return "未连接数据源";
+                case "not_acquiring": return "采集未运行";
+                case "not_armed": return "控制开关未解锁";
+                case "interlock": return "联锁条件不满足";
+                case "rate": return "超过写入频率上限";
+                case "range": return "设定值超出允许范围";
+                case "config_error": return "控制配置有错";
+                case "no_target": return "配置里没有这个控制点";
+                case "blocked_ack": return "缺少操作者";
+            }
+            return null;
         }
 
         static Color StageColor(StepRecord r) {
@@ -544,7 +572,6 @@ namespace ExperimentMonitor {
             StepRecord record = Record(point);
             record.Last = result;
             sentCount++;
-            if (result.Status == "applied") okCount++; else badCount++;
             bool sent = result.Tx != null && result.Tx.Length > 0;
             bool echoed = result.Rx != null && result.Rx.Length > 0;
             bool rejected = result.Status == "rejected";
@@ -562,16 +589,28 @@ namespace ExperimentMonitor {
             if (echoed) Log(stamp + " [RX ] " + Modbus.Hex(result.Rx) + "   （PLC 回显）", UiTheme.Muted);
             if (result.HasReadback) Log(stamp + " [回读] 03 → " + result.Point + " = " + result.Readback.Value + (readbackOk ? "（一致）" : "（不一致）"), UiTheme.Muted);
             string change = StateChangeText(result);
-            if (!String.IsNullOrEmpty(change)) Log(stamp + " [状态] " + result.Point + " " + change, UiTheme.Muted);
+            // change 已以 result.Point 开头，这里不能再加一次，否则日志是 "D2202 D2202 → 26"。
+            if (!String.IsNullOrEmpty(change)) Log(stamp + " [状态] " + change, UiTheme.Muted);
             Log(stamp + " [审计] " + (result.AuditOk ? "control_events + logs/control-events.jsonl 已记录" : "⚠ 审计写入失败，请检查磁盘与日志目录"), result.AuditOk ? UiTheme.Muted : UiTheme.Danger);
 
             edited[point] = false;
             record.Baseline = snapshot ?? new Dictionary<string, int?>(StringComparer.Ordinal);
             record.SameValue = result.OldValue == result.NewValue;
-            if (result.HasReadback && (result.Status == "applied" || result.Status == "not_accepted" || result.Status == "mismatch")) StartObservation(record);
+            // 同值写：写进去的值和原值一样。这是**正常情况**（用户想确认的往往就是这个值），
+            // 不是异常，也不该被报成"设备无变化"。StageDetail 里有专门文案，但此前
+            // 没有任何地方把 Steps[3] 设成 5 —— 那条文案永远不会出现（死分支）。
+            if (record.SameValue && result.HasReadback && result.OldValue.HasValue) {
+                record.Observing = false;
+                record.Steps[3] = 5;
+                record.Note = "写入值与当前值相同（" + result.OldValue.Value + "），未发生变化";
+            }
+            else if (result.HasReadback && NeedsObservation(result)) StartObservation(record);
             else if (result.Status == "unknown" || result.Status == "rejected") record.Note = result.Status + "：" + result.Detail;
 
-            statLabel.Text = "已发 " + sentCount + " · 成功 " + okCount + " · 异常 " + badCount;
+            // 计数器不在这一刻定死：此时状态往往还是 held（等下一轮观测确认是否生效），
+            // 若在此时计一次，界面就会永远停在"回读一致 却 未生效 1"。
+            // 改成按各点当前记录重算；SyncFinalVerdicts 会在引擎判定落地后再算一次。
+            RefreshCounters();
             planGrid.InvalidateColumn(ColumnIndex("result"));
             ShowDetail(result, record);
             UpdatePending();
@@ -579,7 +618,7 @@ namespace ExperimentMonitor {
 
         string StateChangeText(ControlResult result) {
             StringBuilder sb = new StringBuilder();
-            sb.Append(result.Point).Append(" ").Append(result.OldValue).Append(" → ").Append(result.HasReadback ? result.Readback.Value : result.NewValue);
+            sb.Append(result.Point).Append(" ").Append(Show(result.OldValue)).Append(" → ").Append(result.HasReadback ? result.Readback.Value : result.NewValue);
             int? before;
             if (feedbackBefore.TryGetValue("D2209", out before)) sb.Append(" | 风机 ").Append(Show(before)).Append("→").Append(Show(engine.ControlNumericValue("D2209")));
             if (feedbackBefore.TryGetValue("D2208", out before)) sb.Append(" | 故障 ").Append(Show(before)).Append("→").Append(Show(engine.ControlNumericValue("D2208")));
@@ -737,9 +776,66 @@ namespace ExperimentMonitor {
             });
         }
 
+        /// <summary>
+        /// 按各点当前记录重算计数。
+        ///
+        /// 过去这里是 ReportResult 里 `if(applied) okCount++ else badCount++` 的累加，
+        /// 而报告那一刻的状态通常还是 held —— 引擎要等下一轮采集观测到写入值才判 applied。
+        /// 于是"回读一致"的写入永远被记成"未生效"，而且永远不会改口。
+        /// </summary>
+        internal void RefreshCounters() {
+            int ok = 0, bad = 0;
+            foreach (KeyValuePair<string, StepRecord> pair in steps) {
+                StepRecord record = pair.Value;
+                if (record == null || record.Last == null) continue;
+                if (record.Last.Status == "applied") ok++; else bad++;
+            }
+            okCount = ok; badCount = bad;
+            statLabel.Text = "提交 " + sentCount + " · 成功 " + okCount + " · 未生效 " + badCount;
+        }
+
+        static bool NeedsObservation(ControlResult r) {
+            if (r == null) return false;
+            // applied / reverted / not_accepted / mismatch 都需要走观察窗：
+            // 前两个说明效果确认有结论了，后两个说明读到了但对不上。
+            // 漏掉 reverted 会让"设备没按新值动作"这种最该报警的情况静默。
+            return r.Status == "applied" || r.Status == "reverted"
+                || r.Status == "not_accepted" || r.Status == "mismatch";
+        }
+
+        /// <summary>
+        /// 把引擎后来才落地的判定同步回行记录。
+        ///
+        /// 一笔写入的状态机是 held →（下一轮观测）applied / reverted / verify_timeout。
+        /// ReportResult 只处理了 held 那一刻：步骤①②③已经正确，但 ④设备 从未启动观察，
+        /// 计数也停在"未生效"。RefreshState 每秒跑，就在这里补上这一步。
+        /// </summary>
+        void SyncFinalVerdicts() {
+            ControlResult latest;
+            try { latest = engine.LastControlResult; } catch { return; }
+            if (latest == null || String.IsNullOrEmpty(latest.WriteId)) return;
+            StepRecord synced = null;
+            foreach (KeyValuePair<string, StepRecord> pair in steps) {
+                StepRecord record = pair.Value;
+                if (record == null || record.Last == null) continue;
+                if (!String.Equals(record.Last.WriteId, latest.WriteId, StringComparison.Ordinal)) continue;
+                if (String.Equals(record.Last.Status, latest.Status, StringComparison.Ordinal)) continue;
+                record.Last = latest;
+                // 判定落地后启动观察窗：这正是 ④设备 一直灰着的原因。
+                if (record.Steps[3] == 0 && NeedsObservation(latest)) StartObservation(record);
+                synced = record;
+                break;
+            }
+            if (synced == null) return;
+            RefreshCounters();
+            planGrid.InvalidateColumn(ColumnIndex("result"));
+            ShowDetail(latest, synced);
+        }
+
         void RefreshState() {
             if (IsDisposed) return;
             try { engine.TickControl(); } catch { }
+            SyncFinalVerdicts();
             ControlConfig config = engine.ControlSettings;
             bool enabled = engine.ControlEnabled;
             switchButton.Text = enabled ? "控制开关：开启" : "控制开关：关闭";

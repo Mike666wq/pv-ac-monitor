@@ -178,6 +178,26 @@ namespace ExperimentMonitor {
         }
 
         /// <summary>
+        /// 筛选后同步分组标题里的个数。
+        ///
+        /// 过去标题的个数是建卡片时写死的（"指令 / 设定 · 4"），筛选后只显示 1 张卡片，
+        /// 标题却还写 4 —— 界面在说假话。现在按实际可见卡片数重写。
+        /// </summary>
+        internal static void UpdateSectionCount(Control section,int visible) {
+            if(section==null) return;
+            foreach(Control child in section.Controls) {
+                foreach(Control inner in child.Controls) {
+                    var title=inner as Label;
+                    if(title==null) continue;
+                    var info=title.Tag as GroupTitleInfo;
+                    if(info==null) continue;
+                    title.Text=info.Text(visible);
+                    return;
+                }
+            }
+        }
+
+        /// <summary>
         /// 把站号状态拼成状态栏后缀。纯函数，便于离线钉死文案：
         /// 只列**正在退避窗口内**的站（已经可以重试的不算"离线中"），
         /// 正常时返回空串，不占状态栏地方。
@@ -448,7 +468,10 @@ namespace ExperimentMonitor {
                 card.Visible=hit;
                 if(hit){ matched++; if(section!=null) sectionCards[section].Add(card); }
             }
-            foreach(var kv in sectionCards) kv.Key.Visible=kv.Value.Count>0;
+            foreach(var kv in sectionCards) {
+                kv.Key.Visible=kv.Value.Count>0;
+                UpdateSectionCount(kv.Key,kv.Value.Count);
+            }
             if(overviewViewport.Controls.Count>0) {
                 TableLayoutPanel stack=overviewViewport.Controls[0] as TableLayoutPanel;
                 if(stack!=null) stack.PerformLayout();

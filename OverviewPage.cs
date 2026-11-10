@@ -40,6 +40,14 @@ namespace ExperimentMonitor {
         public override string Text { get { return base.Text; } set { base.Text=String.IsNullOrEmpty(value)?value:"● "+value; } }
     }
 
+    /// <summary>分组标题的基准信息：标题文字 + 该组总点数。筛选时据此重算显示的个数。</summary>
+    internal sealed class GroupTitleInfo {
+        public readonly string Title;
+        public readonly int Total;
+        public GroupTitleInfo(string title,int total){ Title=title; Total=total; }
+        public string Text(int visible) { return Title + "  ·  " + visible; }
+    }
+
     /// <summary>实时监控 → 总览页:分组流式卡片网格 + 总览趋势图。</summary>
     internal static class OverviewPageBuilder {
         // 188 = 1440 宽下 7 列正好放得下（7*188 + 6*8 边距 = 1364 <= 1377 净宽，已扣 17px 滚动条）。
@@ -85,6 +93,10 @@ namespace ExperimentMonitor {
                 // 指令/设定不只改排序：它在这一区里是"命令"，不是"读数"，标题也要说清楚。
                 string groupTitle=group.Key=="控制/设定"?"指令 / 设定":group.Key;
                 var title=new Label { Text=groupTitle+"  ·  "+group.Count(),AutoSize=true,ForeColor=UiTheme.Ink,Font=new Font(baseFont.FontFamily,10,FontStyle.Bold),BackColor=UiTheme.Surface };
+                // Tag 记住"分组标题模板 + 该组总点数"，筛选时据此重算显示的个数。
+                // 少了这一步，筛选后标题仍写"指令 / 设定 · 4"却只显示 1 张卡片 ——
+                // 界面在说假话，而这正是本项目一直在消灭的那类问题。
+                title.Tag=new GroupTitleInfo(groupTitle,group.Count());
                 header.Controls.Add(title);section.Controls.Add(header);
                 var flow=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=true,AutoScroll=false,Padding=new Padding(8,0,8,6),Margin=Padding.Empty,BackColor=UiTheme.Surface };
                 section.Controls.Add(flow);

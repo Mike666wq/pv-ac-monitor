@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -228,11 +229,19 @@ namespace ExperimentMonitor {
             int filtered=visibleCards();
             Check(filtered>0&&filtered<all,title+" 筛选「电流」只留下匹配的卡片（"+filtered+"/"+all+"）");
             Check(caption.Text.Contains("筛选")&&caption.Text.Contains("3"),title+" 筛选后在标题栏报出命中个数（"+caption.Text+"）");
+            // 分组标题的个数必须跟着筛选走。
+            // 过去它是建卡片时写死的（"指令 / 设定 · 4"），筛选后只剩 1 张卡片，
+            // 标题却还写 4 —— 界面在说假话，而这正是本项目一直在消灭的那类问题。
+            string sectionCounts=string.Join(" | ",SectionTitles(overviewViewport));
+            Check(!HasStaleSectionCount(overviewViewport),
+                title+" 筛选后分组标题的个数与实际可见卡片一致（"+sectionCounts+"）");
             applyFilter.Invoke(form,new object[]{"绝无此项"});
             Check(visibleCards()==0,title+" 无匹配时卡片墙清空");
             Check(caption.Text.Contains("没有匹配"),title+" 无匹配在标题栏如实提示（"+caption.Text+"）");
             applyFilter.Invoke(form,new object[]{""});
             Check(visibleCards()==all,title+" 清空关键字后卡片全部恢复（"+visibleCards()+"/"+all+"）");
+            Check(!HasStaleSectionCount(overviewViewport),
+                title+" 清空关键字后分组标题的个数恢复（"+string.Join(" | ",SectionTitles(overviewViewport))+"）");
             Check(overviewViewport!=null&&cardMap!=null&&cardMap.ContainsKey("0006H"),title+" 搜索定位所需的视口与卡片映射可用");
             search.Text="0006H"; searchNext.Invoke(form,null);
             Control lastCard=cardMap["0006H"][1];
@@ -392,6 +401,43 @@ namespace ExperimentMonitor {
         static T Find<T>(Control root,Func<T,bool> match=null) where T:Control {foreach(Control child in root.Controls){T v=child as T;if(v!=null&&(match==null||match(v)))return v;T nested=Find(child,match);if(nested!=null)return nested;}return null;}
         static IEnumerable<T> All<T>(Control root) where T:Control {foreach(Control child in root.Controls){T value=child as T;if(value!=null)yield return value;foreach(T nested in All<T>(child))yield return nested;}}
         static string SafeName(string value){foreach(char c in Path.GetInvalidFileNameChars())value=value.Replace(c,'_');return value;}
+
+        /// <summary>总览页各分组的标题（形如「温度 · 7」），用于诊断。</summary>
+        static IEnumerable<string> SectionTitles(Control viewport) {
+            if(viewport==null) yield break;
+            foreach(Label title in All<Label>(viewport)) {
+                if(title.Tag is GroupTitleInfo) yield return title.Text;
+            }
+        }
+
+        /// <summary>
+        /// 分组标题写的个数是否与该组实际可见卡片数一致。
+        /// 标题的个数此前是建卡片时写死的，筛选后不同步 —— 界面在说假话。
+        /// </summary>
+        static bool HasStaleSectionCount(Control viewport) {
+            if(viewport==null) return false;
+            foreach(Control section in All<Control>(viewport)) {
+                Label title=null;
+                foreach(Control child in section.Controls) {
+                    foreach(Control inner in child.Controls) {
+                        var label=inner as Label;
+                        if(label!=null&&label.Tag is GroupTitleInfo){title=label;break;}
+                    }
+                    if(title!=null) break;
+                }
+                if(title==null) continue;
+                // 卡片是 section → flow → RoundedPanel 这一层，必须数直接子级；
+                // 用 All<Control>(flow) 只拿到后代、数不到卡片自己。
+                int visible=0;
+                foreach(Control child in section.Controls) {
+                    foreach(Control inner in child.Controls) {
+                        if(inner is RoundedPanel&&inner.Visible) visible++;
+                    }
+                }
+                if(!title.Text.EndsWith("·  "+visible.ToString(CultureInfo.InvariantCulture),StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
     }
 }
 

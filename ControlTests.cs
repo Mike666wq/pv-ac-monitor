@@ -663,6 +663,30 @@ namespace ExperimentMonitor {
                     Check(!r.OldValue.HasValue,"未确定旧值时 OldValue 为空而不是 0",checks);
                 }
 
+                // ── 被门禁拦下的写入，界面不能显示成"回读不一致" ──
+                // 现场实测：D2202 设 26 点发送，门禁因 confirmed=false 拦下（Tx 为空、
+                // 一个字节都没上总线），结果列却显示"回读不一致，请核对" ——
+                // 让人以为写下去了、只是设备没对上。根因是判断顺序：
+                // Steps[0]==3 与 Steps[2]==3 同时为真时，先判了后者。
+                {
+                    var blocked=new ControlPage.StepRecord();
+                    blocked.Steps[0]=3; blocked.Steps[1]=3; blocked.Steps[2]=3;
+                    blocked.Last=new ControlResult{Status="not_confirmed",Detail="D2202 尚未现场确认"};
+                    string text=ControlPage.StageDetail(blocked);
+                    Check(!text.Contains("回读"),"被门禁拦下的写入不得显示成回读不一致（实际："+text+"）",checks);
+                    Check(text.Contains("被拦截")&&text.Contains("未发送"),"被门禁拦下的写入要明确说没发出去（实际："+text+"）",checks);
+                    Check(text.Contains("confirmed"),"要把为什么没发写出来（实际："+text+"）",checks);
+                    blocked.Last=new ControlResult{Status="not_allow_write"};
+                    Check(ControlPage.StageDetail(blocked).Contains("allowWrite"),"allowWrite=false 用同一套说法",checks);
+                    var mismatch=new ControlPage.StepRecord();
+                    mismatch.Steps[0]=2; mismatch.Steps[1]=2; mismatch.Steps[2]=3;
+                    mismatch.Last=new ControlResult{Status="mismatch",HasReadback=true,Readback=24,NewValue=26};
+                    Check(ControlPage.StageDetail(mismatch).Contains("回读不一致"),"写确实发出去了但回读不符时，仍报回读不一致",checks);
+                    var plain=new ControlPage.StepRecord();
+                    plain.Steps[0]=3; plain.Steps[1]=3; plain.Steps[2]=3;
+                    Check(ControlPage.StageDetail(plain)=="被拦截，未发送","没有具体理由时给出中性文案",checks);
+                    Check(ControlPage.BlockedReason(new ControlResult{Status="applied"})==null,"成功写入不被当成拦截",checks);
+                }
                 return checks;
             } finally {
                 try { Directory.Delete(controlRoot,true); } catch { }
