@@ -1,4 +1,4 @@
-param([switch]$Test)
+﻿param([switch]$Test)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot

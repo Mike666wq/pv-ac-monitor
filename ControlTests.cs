@@ -307,16 +307,21 @@ namespace ExperimentMonitor {
             engine.ArmControl("tester");
             ControlResult r=engine.ExecuteControl("D2202",26,"tester");
             Check(r.Status=="held","坏质量场景：写入先进入 held",checks);
-            // 一条明确晚于写入、但质量不好的观测
-            Observation bad=Sample(fake,"D2202",2,2202,DateTime.UtcNow.AddMilliseconds(100));
-            bad.Quality=Quality.Skipped; bad.Number=null; bad.Value="本轮未读取";
+            // 直接构造观测，不经过 Collector.Read —— 这条用例测的是**效果确认的状态机**，
+            // 不是采集/解码链路。走 Sample() 会让结果取决于那一次读的质量，
+            // 在忙机器上偶发地拿不到数值，表现为"偶发失败"而不是被测逻辑出错。
+            var bad=new Observation{Point="D2202",Slave=2,Address=2202,Count=1,
+                Utc=DateTime.UtcNow.AddMilliseconds(100),Quality=Quality.Skipped,Value="本轮未读取"};
             engine.RememberObservation(bad);
             Check(engine.LastControlResult==null||engine.LastControlResult.Status=="held",
                 "坏质量观测不下结论，也不该把待确认项丢掉（等下一轮）",checks);
-            // 再来一条好的观测：必须仍然能判定 applied（说明待确认项没被吞）
-            engine.RememberObservation(Sample(fake,"D2202",2,2202,DateTime.UtcNow.AddMilliseconds(500)));
+            // 再来一条明确晚于写入、质量 good、值等于写入值的观测：必须仍能判定 applied
+            var good=new Observation{Point="D2202",Slave=2,Address=2202,Count=1,
+                Utc=DateTime.UtcNow.AddMilliseconds(500),Quality=Quality.Good,Number=26,Value="26"};
+            engine.RememberObservation(good);
             Check(engine.LastControlResult!=null&&engine.LastControlResult.Status=="applied",
-                "坏质量观测之后，下一条好观测仍能判定 applied（待确认项没有被静默丢弃）",checks);
+                "坏质量观测之后，下一条好观测仍能判定 applied（待确认项没有被静默丢弃）；实际状态="
+                +(engine.LastControlResult==null?"<null>":engine.LastControlResult.Status),checks);
         }
         }
 
