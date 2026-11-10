@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = '',
     [string]$OutputDirectory = ''
 )
@@ -16,6 +16,29 @@ $detectedVersion = $fileVersion -replace '\.0$',''
 if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $detectedVersion }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Version must use x.y.z format.' }
 if ($Version -ne $detectedVersion) { throw "Package version $Version does not match EXE version $detectedVersion." }
+
+# 文档版本必须与发布版本一致。
+# 这个漂移在本项目里反复出现过（0.8.0 -> 0.8.8 期间有五次 README 忘了跟着升），
+# 每次都是在发布之后才被人工发现。既然能自动查，就不要靠记性。
+$readmePath = Join-Path $projectRoot 'README.md'
+if (Test-Path -LiteralPath $readmePath -PathType Leaf) {
+    $readmeText = Get-Content -LiteralPath $readmePath -Raw -Encoding UTF8
+    $declared = [regex]::Match($readmeText, '当前版本[:：]\s*\*\*(\d+\.\d+\.\d+)\*\*')
+    if (-not $declared.Success) {
+        throw 'README.md 里找不到「当前版本：**x.y.z**」，无法校验版本一致性。'
+    }
+    if ($declared.Groups[1].Value -ne $Version) {
+        throw ("README.md 声明的当前版本是 " + $declared.Groups[1].Value + "，与实际打包版本 " + $Version + " 不一致。请先更新 README.md。")
+    }
+}
+
+$changeLogPath = Join-Path $projectRoot 'CHANGELOG.md'
+if (Test-Path -LiteralPath $changeLogPath -PathType Leaf) {
+    $changeLogText = Get-Content -LiteralPath $changeLogPath -Raw -Encoding UTF8
+    if ($changeLogText -notmatch [regex]::Escape('## ' + $Version + ' —')) {
+        throw ("CHANGELOG.md 缺少 '## " + $Version + " — ...' 这一条。请先补变更记录。")
+    }
+}
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Join-Path $projectRoot 'artifacts'
