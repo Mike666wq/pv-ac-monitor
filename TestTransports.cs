@@ -114,6 +114,16 @@ namespace ExperimentMonitor {
         /// <summary>启用物理下界判定的往返下限（毫秒）。0 表示不启用。</summary>
         public int FloorMs;
         public int PhysicalFloorMs(int count) { return FloorMs; }
+        /// <summary>
+        /// 伪造本笔的往返时间（毫秒），>= 0 时生效。
+        ///
+        /// 为什么需要它：真实等待受 Windows 计时器粒度限制（约 15.6 ms），
+        /// WaitOne(6) 实际会睡到 ~15 ms，那么"物理下界"附近的边界根本测不准 ——
+        /// 用真实睡眠测边界，测的是操作系统而不是被测代码。
+        /// 这里改成**不睡**：读完之后把"请求时刻"回拨指定的毫秒数，
+        /// 于是往返时间被精确指定，边界可以逐毫秒验证。
+        /// </summary>
+        public int FakeRoundTripMs = -1;
         /// <summary>每次 Read 调用都会记录，便于断言"第几笔读拿到了哪一帧"。</summary>
         public readonly List<string> Trace = new List<string>();
 
@@ -144,6 +154,9 @@ namespace ExperimentMonitor {
             }
             Trace.Add(slave + "/" + address + "/" + count + " -> " + step.Bytes.Length + " bytes");
             log("[脚本] RX " + Modbus.Hex(step.Bytes));
+            // 伪造往返时间：把"请求时刻"回拨，让上层的物理下界判定拿到一个精确值。
+            if (FakeRoundTripMs >= 0)
+                LastRequestSentTicks = Stopwatch.GetTimestamp() - (long)(FakeRoundTripMs * Stopwatch.Frequency / 1000.0);
             return step.Bytes;
         }
 

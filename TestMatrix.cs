@@ -30,8 +30,11 @@ namespace ExperimentMonitor {
 
         /// <summary>没有自动化用例的项，如实申报原因。这里列出来的每一项都需要真机或现场。</summary>
         public static readonly string[][] Gaps = new string[][] {
-            new[] { "块读 vs 逐点读对拍", "需要真机：未绑定寄存器是否被 PLC 接受、块读与逐点读是否逐位一致" },
-            new[] { "迟到帧闸门不误杀", "需要真机：物理下界判据是否会把正常响应误判为 ambiguous" },
+            // 原"块读 vs 逐点读对拍"已由 block-read 套件离线钉死：16 块与 37 逐点逐位一致、
+            // 点表顺序打乱后切片不变、每块零空洞（块内没有未绑定寄存器，所以"PLC 是否接受
+            // 未绑定寄存器"这个问题不适用）。剩下的只是"把块读接进采集路径"这一步的集成风险。
+            new[] { "块读接入采集路径后的集成正确性", "需要真机：读的值已经离线证明正确，但接入采集主路径后仍需现场复核一轮采集" },
+            new[] { "迟到帧在真机缓冲区错位", "需要真机：帧在串口缓冲区里前后错位的真实形态（判据本身的离线边界已由 late-frame 套件逐毫秒钉死：下界 9 ms，翻转点 8 ms）" },
             new[] { "真实串口的故障恢复", "需要真机：SerialTransport 的 CRC/超时/端口重建路径无法在沙箱内驱动" },
             new[] { "控制写入端到端", "需要真机：真实 PLC 写入与设备动作确认" },
             new[] { "站号 6 无响应根因", "需要现场：DDSU666 为何自 2026-09-30 起无响应" },
@@ -47,6 +50,16 @@ namespace ExperimentMonitor {
             Run(entries, "core", root, "core-test-result.json", () => {
                 var checks = CoreTests.Run(points, root);
                 Write(root, "core-test-result.json", checks.Count, checks);
+            });
+            // 迟到帧闸门：安全关键判据，用脚本化传输注入延迟，离线钉死"不误杀/不放过"。
+            Run(entries, "late-frame", root, "late-frame-test-result.json", () => {
+                var checks = LateFrameTests.Run(points, root);
+                Write(root, "late-frame-test-result.json", checks.Count, checks);
+            });
+            // 块读 vs 逐点读：同一份真值两种读法逐位比对，离线钉死"块读不会挂错行"。
+            Run(entries, "block-read", root, "block-read-test-result.json", () => {
+                var checks = BlockReadTests.Run(points, root);
+                Write(root, "block-read-test-result.json", checks.Count, checks);
             });
             Run(entries, "storage+records+export", root, "records-test-result.json", () => {
                 int storage = StorageTests.Run(root), records = RecordsTests.Run(root), failures = ExportFailureTests.Run(points, root);
