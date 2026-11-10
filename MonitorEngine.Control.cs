@@ -27,6 +27,8 @@ namespace ExperimentMonitor {
             public int Value;
             public DateTime WrittenUtc;
         }
+        /// <summary>写入后最多等多久来确认设备效果。超时就如实报"无法确认"，而不是一直挂着。</summary>
+        const double EffectWaitSeconds = 120;
         readonly object controlSync = new object();
         readonly object controlLogSync = new object();
         readonly List<PendingControl> controlQueue = new List<PendingControl>();
@@ -94,6 +96,12 @@ namespace ExperimentMonitor {
                 controlConfigError = error ?? "";
             }
             Log("控制配置加载：mode=" + (next == null ? "null" : next.mode) + " version=" + (next == null ? "-" : next.Version) + (String.IsNullOrEmpty(error) ? "" : "；错误=" + error));
+            // mode=preview 是 0.7.x 的旧写法，按兼容语义**等于真实写入**。
+            // 这个告警以前只有测试在读，用户永远看不到 —— 属于"配置在暗示、界面在装傻"。
+            if (next != null) {
+                string warning = next.ModeCompatibilityWarning;
+                if (!String.IsNullOrEmpty(warning)) Log("控制配置兼容告警：" + warning);
+            }
             FireControlState();
         }
 
@@ -149,11 +157,33 @@ namespace ExperimentMonitor {
                 effect = pendingEffect;
                 if (effect == null || !String.Equals(effect.Point, o.Point, StringComparison.Ordinal)) return;
                 if (o.Utc <= effect.WrittenUtc) return; // 必须是写入之后的观测
-                pendingEffect = null;
+                // 等待上限：写得再对，设备也可能一直不回这一轮。不能无限等下去。
+                if ((o.Utc - effect.WrittenUtc).TotalSeconds > EffectWaitSeconds) {
+                    pendingEffect = null;
+                    var timeoutResult = new ControlResult {
+                        Point = effect.Point, WriteId = effect.WriteId, Status = "verify_timeout",
+                        Detail = "写入后 " + (int)EffectWaitSeconds + " 秒内没有读到该点的有效值，无法确认设备效果",
+                        Utc = DateTime.UtcNow, NewValue = effect.Value
+                    };
+                    LastControlResult = timeoutResult;
+                    AppendControlEvent(timeoutResult, null, null);
+                    FireControlState();
+                    return;
+                }
+                // 关键：这里**不能**先清空 pendingEffect。
+                // 写入后的第一条观测经常是 timeout/skipped/ambiguous（站 2 一进隔离期就是），
+                // 那时既不能判 applied 也不能判 reverted，应该**继续等下一轮**。
+                // 早先把清空放在质量判断之前，注释写着"继续等下一轮"而代码实际是直接丢弃：
+                // 效果确认会永久消失 —— 没有 applied、没有 reverted、连审计行都没有。
             }
             if (!Quality.IsGood(o.Quality)) return; // 这一轮没读到数：继续等下一轮，不下结论
             int observed = o.Number.HasValue ? (int)Math.Round(o.Number.Value) : int.MinValue;
             if (observed == int.MinValue) return;
+            lock (controlSync) {
+                // 到这一步才有结论，清掉待确认项（同一笔写入只判一次）。
+                if (pendingEffect != null && String.Equals(pendingEffect.WriteId, effect.WriteId, StringComparison.Ordinal))
+                    pendingEffect = null;
+            }
             bool applied = observed == effect.Value;
             var result = new ControlResult {
                 Point = effect.Point, WriteId = effect.WriteId, Status = applied ? "applied" : "reverted",
@@ -196,6 +226,22 @@ namespace ExperimentMonitor {
         }
 
         public ControlGateInfo ControlReadiness(string point) {
+            ControlGateInfo gate=ControlReadinessCore(point);
+            // mode=preview 是 0.7.x 旧写法，按兼容语义等于真实写入。
+            // 这个提示以前只存在于 ControlConfig 里、没有任何界面读它 —— 用户看不出来。
+            // 把它挂到门禁详情上：不管这一轮挡在哪一条，配置级的兼容告警都要看得见。
+            if (gate!=null&&!String.IsNullOrEmpty(gate.Detail)) {
+                string warning=null;
+                lock (controlSync) {
+                    if (controlSettings!=null) warning=controlSettings.ModeCompatibilityWarning;
+                }
+                if (!String.IsNullOrEmpty(warning)&&gate.Detail.IndexOf(warning,StringComparison.Ordinal)<0)
+                    gate.Detail=gate.Detail+"；"+warning;
+            }
+            return gate;
+        }
+
+        ControlGateInfo ControlReadinessCore(string point) {
             bool connectedNow, runningNow, singleNow;
             lock (sync) { connectedNow = connected; runningNow = worker != null; singleNow = single; }
             lock (controlSync) {

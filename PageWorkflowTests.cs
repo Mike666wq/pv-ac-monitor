@@ -78,7 +78,7 @@ namespace ExperimentMonitor {
                     inner.SelectedIndex=1;Field<Button>(history,"sessionRun").PerformClick();
                     await Wait(()=>Field<DataGridView>(history,"sessionTable").Rows.Count>0,"实验段统计未出结果");
                     DataGridView sessions=Field<DataGridView>(history,"sessionTable");
-                    check(sessions.Rows.Count>=1&&sessions.Columns.Count==12,"实验段表按会话列出统计");
+                    check(sessions.Rows.Count>=1&&sessions.Columns.Count==13,"实验段表按会话列出统计");
                     inner.SelectedIndex=2;Field<Button>(history,"pointRun").PerformClick();
                     await Wait(()=>Field<DataGridView>(history,"pointTable").Rows.Count>0,"测点统计未出结果");
                     DataGridView pointsTable=Field<DataGridView>(history,"pointTable");

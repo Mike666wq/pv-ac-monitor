@@ -15,7 +15,7 @@ ExperimentMonitorDemo.exe --test-all --root=<可写目录>
 | `failed` | 跑了但没过（附异常类型与消息） |
 | `gaps` | **根本没写自动化用例**，附原因（需真机/现场）。不是 skipped，也不是 failed |
 
-当前：10 个套件全通过、约 8850 项断言（含集成路径重复计数），8 项缺口（全部需要真机或现场）。
+当前：10 个套件全通过、约 8900 项断言（含集成路径重复计数），8 项缺口（全部需要真机或现场）；另见 `docs\protocol\audit-0.8.2.md`（全面审计与补进方案）。
 旧的 `--self-test` 在第一个失败处整体中断，一个坏套件会让其余 5 个套件的结果全部消失——
 `--test-all` 就是为修这个而加的。
 ## 现场文档（交付包内 docs\field\）
@@ -35,7 +35,7 @@ PV AC Monitor 是独立运行的 Windows 桌面程序，用于读取项目绑定
 
 当前配置包含 4 台设备、37 个绑定测点。实时监控按温度、实验电表、市电、太阳能、控制/设定和运行状态分组，支持设备详情与实时/历史趋势。
 
-> 当前版本：**0.8.0**。0.8.0 的主线是「让程序停止说谎」：每轮每点必有行（离线点显示"未读取"而不是静默消失）、控制门禁真正生效、导出不再用今天的点表改写历史、区分"命令值"与"实测值"。完整变更见 `CHANGELOG.md` 的 0.8.0 条目。
+> 当前版本：**0.8.3**。0.8.0 的主线是「让程序停止说谎」：每轮每点必有行（离线点显示"未读取"而不是静默消失）、控制门禁真正生效、导出不再用今天的点表改写历史、区分"命令值"与"实测值"。完整变更见 `CHANGELOG.md` 的 0.8.0 条目。
 >
 > **控制写入出厂全部关闭。** 随包 `control-config.json` 为 `mode=live`，但 4 个目标全部 `confirmed=false / allowWrite=false`，这两个字段自 0.8.0 起**各自独立生效**（不再受已废弃的 `requireConfirmed` 影响），因此不会发出任何 06 报文。要让某个点可写，必须显式把该点两个字段改成 `true`——步骤与风险见 `docs/field/CONTROL-ENABLE.md`。
 >
@@ -83,7 +83,7 @@ PV AC Monitor 是独立运行的 Windows 桌面程序，用于读取项目绑定
 | 本地程序（日常运行的就是它） | 仓库根目录 `ExperimentMonitorDemo.exe` | `.\build-source.ps1` 构建后**自动覆盖**，旧版本留成 `ExperimentMonitorDemo.exe.<旧版本>.bak` |
 | 控制链路套件自测（control/storage/workflow/smoke/demo） | `test-output\` | `powershell -Command "& .\tools\control-runner\run-tests.ps1 -Suites control,storage,workflow,smoke"` |
 | 界面截图 | `ui-validation\control-console.png` | 由 `run-tests.ps1 -Suites demo` 生成后复制 |
-| 发布包 | `artifacts\PV-AC-Monitor-Windows-0.8.0.zip` | `.\package-ci.ps1 -Version 0.8.0` |
+| 发布包 | `artifacts\PV-AC-Monitor-Windows-0.8.3.zip` | `.\package-ci.ps1 -Version 0.8.3` |
 
 `run-tests.ps1` 会把每个套件跑在 `test-output\<套件>-<guid>\` 里，并把 `TEMP` 指到 `test-output\temp`，不污染系统临时目录。
 

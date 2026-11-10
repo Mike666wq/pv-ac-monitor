@@ -291,9 +291,34 @@ namespace ExperimentMonitor {
             Check(ReferenceEquals(engine.LastControlResult,beforeResolve),"早于写入的观测不判定效果（继续等下一轮）",checks);
             engine.RememberObservation(Sample(fake,"D2202",2,2202,DateTime.UtcNow.AddMilliseconds(100)));
             Check(engine.LastControlResult!=null&&engine.LastControlResult.Status=="applied","下一轮采集观测一致后判定 applied",checks);
-                        Check(engine.LastControlResult.WriteId==r.WriteId,"applied 与 held 属于同一笔写入",checks);
-                    }
-                }
+            Check(engine.LastControlResult.WriteId==r.WriteId,"applied 与 held 属于同一笔写入",checks);
+        }
+        }
+
+        // 9b. 坏质量观测不能吞掉效果确认。
+        // 曾经 pendingEffect 在质量判断**之前**就被清空，于是写入后的第一条观测若是
+        // timeout/skipped/ambiguous（站 2 一进隔离期就是），效果确认被永久丢弃：
+        // 没有 applied、没有 reverted、连审计行都没有。注释写的是"继续等下一轮"。
+        {
+        string dir=NewRoot(root,"effect-badquality");
+        WriteConfig(dir,null);
+        var fake=new FakeControlTransport();
+        using(var engine=StartEngine(points,dir,fake,true)) {
+            engine.ArmControl("tester");
+            ControlResult r=engine.ExecuteControl("D2202",26,"tester");
+            Check(r.Status=="held","坏质量场景：写入先进入 held",checks);
+            // 一条明确晚于写入、但质量不好的观测
+            Observation bad=Sample(fake,"D2202",2,2202,DateTime.UtcNow.AddMilliseconds(100));
+            bad.Quality=Quality.Skipped; bad.Number=null; bad.Value="本轮未读取";
+            engine.RememberObservation(bad);
+            Check(engine.LastControlResult==null||engine.LastControlResult.Status=="held",
+                "坏质量观测不下结论，也不该把待确认项丢掉（等下一轮）",checks);
+            // 再来一条好的观测：必须仍然能判定 applied（说明待确认项没被吞）
+            engine.RememberObservation(Sample(fake,"D2202",2,2202,DateTime.UtcNow.AddMilliseconds(500)));
+            Check(engine.LastControlResult!=null&&engine.LastControlResult.Status=="applied",
+                "坏质量观测之后，下一条好观测仍能判定 applied（待确认项没有被静默丢弃）",checks);
+        }
+        }
 
                 // 10. 丢回显：第一次 unknown，之后锁定且不再发送；再尝试核对。
                 {
@@ -510,6 +535,10 @@ namespace ExperimentMonitor {
                         engine.ArmControl("tester");
                         ControlResult r=engine.ExecuteControl("D2202",26,"tester");
                         Check(r.Status=="held"||r.Status=="applied","mode=preview 按旧行为仍是真实写入",checks);
+            // mode=preview 等于真实写入，这个兼容告警以前只有测试在读、用户永远看不到。
+            // 现在它必须出现在门禁详情里，否则用户以为 preview 是"预览"。
+            ControlGateInfo previewGate=engine.ControlReadiness("D2202");
+            Check(previewGate!=null&&previewGate.Detail!=null&&previewGate.Detail.Contains("preview"),"mode=preview 的兼容告警出现在门禁详情里（"+ (previewGate==null?"":previewGate.Detail) +"）",checks);
                         Check(legacyFake.WriteCount==1,"mode=preview 确实发出了写入",checks);
                     }
                 }

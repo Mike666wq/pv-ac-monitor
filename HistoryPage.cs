@@ -151,8 +151,8 @@ namespace ExperimentMonitor {
             sessionRun.Margin=Padding.Empty;sessionStop.Margin=Padding.Empty;sessionStatus.Margin=new Padding(10,11,4,0);
             var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42,WrapContents=false,BackColor=Color.White,Padding=new Padding(2,2,0,0)};
             bar.Controls.Add(sessionRun);bar.Controls.Add(sessionStop);bar.Controls.Add(sessionStatus);
-            string[] headers={"会话","开始","结束","时长","轮数","应有","缺口","最大间隔","记录数","超时轮","超时率","越限轮"};
-            int[] weights={90,128,128,80,52,52,52,84,74,58,62,58};
+            string[] headers={"会话","开始","结束","时长","轮数","应有","缺口","最大间隔","记录数","超时轮","未读取轮","超时率","越限轮"};
+            int[] weights={90,128,128,80,52,52,52,84,74,58,62,58,58};
             for(int i=0;i<headers.Length;i++){sessionTable.Columns.Add(headers[i],headers[i]);sessionTable.Columns[i].FillWeight=weights[i];sessionTable.Columns[i].SortMode=DataGridViewColumnSortMode.NotSortable;}
             page.Controls.Add(sessionTable);page.Controls.Add(bar);
             sessionTable.CellDoubleClick+=(s,e)=>{if(e.RowIndex<0||e.RowIndex>=sessionTable.Rows.Count)return;SessionSummary summary=sessionTable.Rows[e.RowIndex].Tag as SessionSummary;if(summary!=null)ApplySession(summary);};
@@ -214,6 +214,7 @@ namespace ExperimentMonitor {
                         s.MaxGapTicks>0?Duration(new TimeSpan(s.MaxGapTicks)):"—",
                         s.Records.ToString("N0"),
                         s.TimeoutRounds.ToString("N0"),
+                        s.SkippedRounds.ToString("N0"),
                         s.Rounds>0?((double)s.TimeoutRounds/s.Rounds).ToString("P1"):"—",
                         s.OverLimitRounds<0?"—":s.OverLimitRounds.ToString("N0"));
                     sessionTable.Rows[index].Tag=s;

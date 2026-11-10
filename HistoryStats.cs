@@ -20,6 +20,9 @@ namespace ExperimentMonitor {
         public bool Legacy;                    // 无会话记录的旧数据,按库区分
         public DateTime FromUtc,ToUtc;
         public long Rounds,Records,GoodRounds,TimeoutRounds;
+    /// <summary>整轮都没读到有效值的轮次（通常是站隔离期被跳过）。这不是超时，
+    /// 不能和 TimeoutRounds 混在一起 —— 混了会让"超时轮"这个指标虚高。</summary>
+    public long SkippedRounds;
         public long OverLimitRounds=-1;        // -1 表示未配置阈值
         public long ExpectedRounds,MissingRounds,MaxGapTicks,PeriodTicks;
         public int Devices,Points;
@@ -38,7 +41,7 @@ namespace ExperimentMonitor {
     /// <summary>记录页「实验段」「测点统计」两个子标签的数据来源。一次筛选范围扫描 + 逐库聚合。</summary>
     public static class HistoryStats {
         sealed class RoundAgg {
-            public string SessionKey;public long MinUtc,MaxUtc,Rows,Good;public int Devices,Points;
+            public string SessionKey;public long MinUtc,MaxUtc,Rows,Good,Timeouts;public int Devices,Points;
         }
         sealed class PointAgg {
             public long Total,Good,Timeout,Other,NumberCount,SumMin,SumMax;
@@ -55,7 +58,7 @@ namespace ExperimentMonitor {
                 token.ThrowIfCancellationRequested();
                 using(var c=ExperimentHistory.OpenRead(file))
                 using(var q=ExperimentHistory.Command(c,f,
-                    "SELECT session,round,MIN(utc_ticks),MAX(utc_ticks),COUNT(*),SUM(CASE WHEN quality='" + Quality.Good + "' THEN 1 ELSE 0 END),COUNT(DISTINCT device),COUNT(DISTINCT point)",long.MaxValue)) {
+                    "SELECT session,round,MIN(utc_ticks),MAX(utc_ticks),COUNT(*),SUM(CASE WHEN quality='" + Quality.Good + "' THEN 1 ELSE 0 END),COUNT(DISTINCT device),COUNT(DISTINCT point),SUM(CASE WHEN quality='" + Quality.Timeout + "' THEN 1 ELSE 0 END)",long.MaxValue)) {
                     q.CommandText+=" GROUP BY session,round";
                     using(var r=q.ExecuteReader()) while(r.Read()) {
                         string sessionKey=SessionKey(file,Text(r.GetValue(0)));
@@ -68,6 +71,7 @@ namespace ExperimentMonitor {
                         agg.Rows+=Convert.ToInt64(r.GetValue(4));
                         agg.Good+=Convert.ToInt64(r.GetValue(5));
                         int devices=Convert.ToInt32(r.GetValue(6)),points=Convert.ToInt32(r.GetValue(7));
+                        agg.Timeouts+=Convert.ToInt64(r.GetValue(8));
                         if(devices>agg.Devices)agg.Devices=devices;
                         if(points>agg.Points)agg.Points=points;
                     }
@@ -91,7 +95,11 @@ namespace ExperimentMonitor {
                 foreach(var pair in group.Value) {
                     RoundAgg agg=pair.Value;
                     summary.Rounds++;summary.Records+=agg.Rows;
-                    if(agg.Good>0)summary.GoodRounds++;else summary.TimeoutRounds++;
+                    // 三种轮次要分清：有有效值 / 真发生了超时 / 整轮都没读到（站隔离期跳过）。
+            // 以前只有两分法，"整轮全 skipped"被算成超时轮，超时轮指标虚高。
+            if(agg.Good>0)summary.GoodRounds++;
+            else if(agg.Timeouts>0)summary.TimeoutRounds++;
+            else summary.SkippedRounds++;
                     if(agg.MinUtc<fromTicks)fromTicks=agg.MinUtc;
                     if(agg.MaxUtc>toTicks)toTicks=agg.MaxUtc;
                     if(agg.Devices>summary.Devices)summary.Devices=agg.Devices;

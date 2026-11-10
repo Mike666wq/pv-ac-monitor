@@ -195,6 +195,13 @@ namespace ExperimentMonitor {
             Check("太阳能点同时出现在界面与导出里",HistoryPage.DefaultColumnVisible("ZU6682")&&ExperimentExport.ExportablePoint("ZU6682"));
             Check("设定值不同时出现在界面默认列与导出里",!HistoryPage.DefaultColumnVisible("D2202")&&!ExperimentExport.ExportablePoint("D2202"));
             Check("状态点不同时出现在界面默认列与导出里",!HistoryPage.DefaultColumnVisible("D2212")&&!ExperimentExport.ExportablePoint("D2212"));
+            // D9 是 DDSU666 的保留地址 0x200C，手册没有对应物理量。
+            // 它仍进采集（保持每轮 37 行），但不能算测量点 ——
+            // 否则导出和记录页默认列里会出现一列没有物理意义的数。
+            Check("D9 角色是 diagnostic 而非 measurement",PointCatalog.Get("D9").Role==PointRole.Diagnostic);
+            Check("D9 不进导出",!ExperimentExport.ExportablePoint("D9"));
+            Check("D9 不在记录页默认列",!HistoryPage.DefaultColumnVisible("D9"));
+            Check("D9 仍然在采集点集里（每轮 37 行不能破）",points.Any(p=>p.name=="D9"));
 
             string testRoot=Path.Combine(root,".testing",DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N").Substring(0,6));
             Directory.CreateDirectory(testRoot);

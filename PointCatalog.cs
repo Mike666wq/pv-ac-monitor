@@ -109,7 +109,11 @@ namespace ExperimentMonitor {
             {"D2212",new KeyValuePair<string,string>(PointRole.Status,"")},
             {"D2213",new KeyValuePair<string,string>(PointRole.Status,"")},
             {"D2003",new KeyValuePair<string,string>(PointRole.Status,"")},
-            {"0006H",new KeyValuePair<string,string>(PointRole.Diagnostic,"")}
+            {"0006H",new KeyValuePair<string,string>(PointRole.Diagnostic,"")},
+            // D9 是 DDSU666 的保留地址（0x200C = RESERVED），手册里没有对应物理量。
+            // 它仍然会被采集（读保留寄存器不抛异常，且"每轮每点必有行"的约定不能破），
+            // 但**不能算测量点** —— 否则导出和记录页默认列里会出现一列没有物理意义的数。
+            {"D9",new KeyValuePair<string,string>(PointRole.Diagnostic,"")}
         };
         static void Add(string id,string label,string group,string unit,string mode,bool confirmed=true,string alias="",double scale=1.0,string unitQualifier="",bool semanticConfirmed=true) {
             KeyValuePair<string,string> pair;
@@ -149,7 +153,8 @@ namespace ExperimentMonitor {
             Add("DU7","频率","市电","Hz","FLOAT ABCD",true,"市电电网频率");
             Add("DU8","累计电能","市电","kWh","FLOAT ABCD",true,"市电总电能");
             // 力控点表把 0x200C 记成"功率因数"，但 DDSU666 说明书 0x200C = RESERVED（保留，float 2 字）。
-            // 手册标 R/W ⇒ 读它不抛异常、只返回无意义值，所以从采集计划里删掉，只保留目录说明。
+            // 手册标 R/W ⇒ 读它不抛异常、只返回无意义值，所以它仍进采集（保持每轮 37 行），
+            // 但角色标成 diagnostic：不是测量点，不进导出、也不进记录页默认列。
             Add("D9","保留(0x200C)","市电","","FLOAT ABCD",false,"力控点表写功率因数；手册 0x200C=RESERVED",1.0,"",false);
             // 太阳能 DJSF6682（站号 1，直流表 Modbus 地址表 2026-11-06 截图）：
             // 0x0000 电压 int16 ×0.1V；0x0003 电流 int16 ×0.001A；0x000F 视在功率 int16 ×1VA。

@@ -74,6 +74,7 @@ namespace ExperimentMonitor {
                 if(args.Contains("--diag-paging")) return Diag.Paging(points,root,(string[])args);
                 if(args.Contains("--diag-columns")) return Diag.Columns(points,root,(string[])args);
                 if(args.Contains("--diag-header")) return Diag.Header(points,root,(string[])args);
+                if(args.Contains("--diag-blocks")) return Diag.Blocks(points,root,(string[])args);
                 if(args.Contains("--capture-ui")) { ExtendedTests.Preview(form,points,Path.Combine(root,"preview.png")); return 0; }
                     Application.Run(form);
                 }
@@ -471,6 +472,36 @@ namespace ExperimentMonitor {
             File.WriteAllText(Path.Combine(root,"diag-header.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
             Console.Out.WriteLine("DIAG header");
             return 0;
+        }
+        /// <summary>块读规划在真实点表上的实际结果：帧数、各块、理论耗时、逐点对比。</summary>
+        internal static int Blocks(List<Point> points,string root,string[] args) {
+            var facts=new Dictionary<string,object>();
+            try {
+                var blocks=BlockPlanner.Plan(points);
+                facts["pointCount"]=points.Count;
+                facts["blockCount"]=blocks.Count;
+                facts["perPointFrames"]=BlockPlanner.PerPointFrameCount(points);
+                facts["blockFrames"]=BlockPlanner.FrameCount(blocks);
+                facts["validateIssues"]=BlockPlanner.Validate(blocks,points).ToArray();
+                var list=new List<string>();
+                foreach(var b in blocks) list.Add(b.ToString());
+                facts["blocks"]=list;
+                // 理论下界耗时：Δ=(5+2N)·10/9600+1 ms
+                Func<int,double> minMs=n=>Modbus.PhysicalFloorMs(n,9600);
+                double perPointMs=0; foreach(Point p in points) perPointMs+=minMs(p.binding.register_count);
+                double blockMs=0; foreach(var b in blocks) blockMs+=minMs(b.Count);
+                facts["perPointMsFloor"]=Math.Round(perPointMs,1);
+                facts["blockMsFloor"]=Math.Round(blockMs,1);
+                facts["savedMsFloor"]=Math.Round(perPointMs-blockMs,1);
+                facts["d9InPoints"]=points.Any(p=>p.name=="D9");
+                facts["d9Binding"]=points.Where(p=>p.name=="D9").Select(p=>p.binding.slave+"/"+p.binding.address_zero_based+"/"+p.binding.register_count).ToArray();
+                facts["d9Role"]=PointCatalog.Get("D9").Role.ToString();
+                facts["d9Exportable"]=ExperimentExport.ExportablePoint("D9");
+                facts["d9DefaultColumn"]=HistoryPage.DefaultColumnVisible("D9");
+            } catch(Exception ex) { facts["error"]=ex.GetType().Name+"："+ex.Message; }
+            File.WriteAllText(Path.Combine(root,"diag-blocks.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(facts),new System.Text.UTF8Encoding(false));
+            Console.Out.WriteLine("DIAG blocks");
+            return facts.ContainsKey("error")?1:0;
         }
         static void Collect(DashboardForm form,int tab,Dictionary<string,object> facts) {
             facts["tab"]=tab;

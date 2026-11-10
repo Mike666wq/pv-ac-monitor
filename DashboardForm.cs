@@ -42,7 +42,9 @@ namespace ExperimentMonitor {
         /// <summary>输入防抖：边打边筛，不要每敲一个字符就整墙重排一次。</summary>
         readonly Timer filterTimer=new Timer{Interval=250};
         readonly Label connectionState=StatusLabel("未连接"),captureState=StatusLabel("未采集"),recordState=StatusLabel("本地记录待机"),cloudState=StatusLabel("云端未启用");
-        readonly Label counts=new Label { AutoSize=true,Text="点表已载入 · 4 台设备 / 37 个测点" };
+        // 初始文案不能写死"4 台设备 / 37 个测点" —— 点表一改它就变成假话。
+        // 真实值在 BuildShell 里按点表算好后填上。
+        readonly Label counts=new Label { AutoSize=true,Text="点表载入中…" };
         readonly TextBox log=new TextBox { Multiline=true,ReadOnly=true,Dock=DockStyle.Fill,ScrollBars=ScrollBars.Both,WordWrap=false,Font=new Font("Consolas",9) };
         readonly DataTable table=new DataTable();
         readonly Dictionary<string,DataRow> rows=new Dictionary<string,DataRow>();
@@ -121,7 +123,23 @@ namespace ExperimentMonitor {
             var divider=new Label { Text="│",AutoSize=true,ForeColor=Color.FromArgb(180,196,214),Padding=new Padding(4,4,4,0),Margin=Padding.Empty,BackColor=Color.Transparent };
             states.Controls.Add(connectionState);states.Controls.Add(captureState);states.Controls.Add(divider);states.Controls.Add(recordState);states.Controls.Add(cloudState);
             counts.AutoSize=true;counts.AutoEllipsis=true;counts.MaximumSize=new Size(420,0);counts.Dock=DockStyle.Right;counts.TextAlign=ContentAlignment.MiddleLeft;counts.Padding=new Padding(8,6,4,0);counts.Margin=Padding.Empty;counts.ForeColor=UiTheme.Muted;counts.BackColor=Color.Transparent;
+            // 初始文案按点表实算：写死"4 台设备 / 37 个测点"在点表一改就成了假话。
+            counts.Text="点表已载入 · "+PointTableSummary();
             statusBar.Controls.Add(states);statusBar.Controls.Add(counts);shell.Controls.Add(statusBar,0,3);
+        }
+
+        /// <summary>点表摘要：几台设备 / 几个测点。按实际点表算，不写死。</summary>
+        string PointTableSummary() {
+            int devices=0;
+            var slaves=new HashSet<int>();
+            int total=0;
+            if(points!=null) foreach(Point p in points) {
+                if(p==null||p.binding==null) continue;
+                total++;
+                slaves.Add(p.binding.slave);
+            }
+            devices=slaves.Count;
+            return devices+" 台设备 / "+total+" 个测点";
         }
 
         void BuildPages() {
