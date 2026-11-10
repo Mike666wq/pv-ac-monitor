@@ -82,10 +82,17 @@ namespace ExperimentMonitor {
                     inner.SelectedIndex=2;Field<Button>(history,"pointRun").PerformClick();
                     await Wait(()=>Field<DataGridView>(history,"pointTable").Rows.Count>0,"测点统计未出结果");
                     DataGridView pointsTable=Field<DataGridView>(history,"pointTable");
-                    check(pointsTable.Rows.Count>0&&pointsTable.Columns.Count==13,"测点统计表按测点列出统计");
+                    check(pointsTable.Rows.Count>0&&pointsTable.Columns.Count==15,"测点统计表按测点列出统计");
                     int t1Index=-1;for(int i=0;i<pointsTable.Rows.Count;i++)if(Convert.ToString(pointsTable.Rows[i].Cells[0].Value)=="T1"){t1Index=i;break;}
                     check(t1Index>=0,"测点统计里包含 T1");
-                    pointsTable.Rows[t1Index].Cells[11].Value="5";pointsTable.Rows[t1Index].Cells[12].Value="40";
+                    // 按列名定位，不写死索引 —— 点统计表加过列（异常点/未读取点），写死索引会写错列。
+                    int loCol=-1,hiCol=-1;
+                    for(int ci=0;ci<pointsTable.Columns.Count;ci++){
+                        if(pointsTable.Columns[ci].HeaderText=="下限")loCol=ci;
+                        if(pointsTable.Columns[ci].HeaderText=="上限")hiCol=ci;
+                    }
+                    check(loCol>0&&hiCol==loCol+1,"测点统计表的下限/上限列存在且相邻（"+loCol+"/"+hiCol+"）");
+                    pointsTable.Rows[t1Index].Cells[loCol].Value="5";pointsTable.Rows[t1Index].Cells[hiCol].Value="40";
                     Field<Button>(history,"limitsSave").PerformClick();
                     await Wait(()=>File.Exists(Path.Combine(isolated,"limits.json")),"阈值文件未写入");
                     check(LimitStore.Load(isolated).ContainsKey("T1"),"阈值保存后可重新读回");

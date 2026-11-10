@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
   "mode": "live",
-  "requireOperatorAck": true,
   "autoLockIdleSeconds": 1800,
   "enforceInterlocks": false,
   "requireConfirmed": false,
@@ -10,8 +9,7 @@
     "remoteExpected": null,
     "faultPoint": "D2208",
     "faultExpected": 0,
-    "maxAgeSeconds": 10,
-    "requireAcquiring": true
+      "maxAgeSeconds": 10
   },
   "limits": {
     "minIntervalMs": 1000,
@@ -30,7 +28,6 @@
       "address": 2202,
       "min": 0,
       "max": 60,
-      "step": 1,
       "confirmed": false,
       "allowWrite": false,
       "feedbackPoints": [],
@@ -45,7 +42,6 @@
       "address": 2201,
       "min": 0,
       "max": 10,
-      "step": 1,
       "confirmed": false,
       "allowWrite": false,
       "feedbackPoints": [],
@@ -60,7 +56,6 @@
       "address": 2000,
       "min": 0,
       "max": 100,
-      "step": 1,
       "confirmed": false,
       "allowWrite": false,
       "feedbackPoints": [],
@@ -75,7 +70,6 @@
       "address": 2207,
       "min": 0,
       "max": 100,
-      "step": 1,
       "confirmed": false,
       "allowWrite": false,
       "feedbackPoints": [],

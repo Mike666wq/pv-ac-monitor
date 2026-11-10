@@ -45,6 +45,10 @@ namespace ExperimentMonitor {
                 bool isTestRun=args.Any(a=>a.StartsWith("--test")||a=="--self-test"||a.StartsWith("--capture-ui"));
                 Func<bool> degradedReplace=null;
                 if(isTestRun) degradedReplace=AtomicFile.InstallFallback();
+                // 用**产品自己的解析器**校验随包配置。PowerShell 的 ConvertFrom-Json 会放过
+                // 尾随逗号，而 JavaScriptSerializer 不会 —— 0.8.5 就因为一个尾随逗号把
+                // control-config.json 打进了发布包，直到包内自检才发现。构建时先验一遍。
+                if(args.Contains("--check-config")) return ShippedConfigCheck.Run(points,root);
                 if(args.Contains("--export-config")) {File.WriteAllText(Path.Combine(root,"point-contract.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{module="experiment",schemaVersion=1,catalogVersion=PointCatalog.Version,points=points.Select(p=>new {id=p.name,equipmentId=p.binding.device,slave=p.binding.slave,addressZeroBased=p.binding.address_zero_based,registerCount=p.binding.register_count,metadata=PointCatalog.Get(p)}).ToArray()}));return 0;}
                 if(args.Contains("--self-test")) { SelfTests.Run(points,root); ExtendedTests.Run(points,root); return 0; }
                 // 逐套件隔离执行：一个套件失败不会掩埋其它套件的结果，且显式申报没有用例的缺口。
@@ -84,6 +88,28 @@ namespace ExperimentMonitor {
                 else MessageBox.Show(ex.Message,"实验监控 Demo 启动失败",MessageBoxButtons.OK,MessageBoxIcon.Error);
                 return 1;
             }
+        }
+    }
+    /// <summary>校验随包配置能否被生产解析器接受。任何一条不过就以非零退出。</summary>
+    /// <remarks>PowerShell 的 ConvertFrom-Json 会放过尾随逗号，JavaScriptSerializer 不会 ——
+    /// 0.8.5 就因为一个尾随逗号把 control-config.json 打进了发布包，直到包内自检才发现。
+    /// 构建时用产品自己的解析器先验一遍。</remarks>
+    static partial class ShippedConfigCheck {
+        internal static int Run(List<Point> points,string root) {
+            int failures=0;
+            try {
+                var loaded=Configuration.Load(Path.Combine(root,"protocol.json"));
+                if(loaded==null||loaded.Count==0) {
+                    Console.Error.WriteLine("protocol.json：解析不出任何测点"); failures++;
+                } else Console.Out.WriteLine("protocol.json：OK（"+loaded.Count+" 个点）");
+            } catch(Exception ex) { Console.Error.WriteLine("protocol.json："+ex.GetType().Name+"："+ex.Message); failures++; }
+            try {
+                string error;
+                ControlConfig config=ControlConfig.Load(root,points,out error);
+                if(config==null||!String.IsNullOrEmpty(error)) { Console.Error.WriteLine("control-config.json："+(error??"加载失败")); failures++; }
+                else Console.Out.WriteLine("control-config.json：OK（mode="+config.mode+"，"+config.targets.Count+" 个目标）");
+            } catch(Exception ex) { Console.Error.WriteLine("control-config.json："+ex.GetType().Name+"："+ex.Message); failures++; }
+            return failures==0?0:1;
         }
     }
     static partial class Diag {

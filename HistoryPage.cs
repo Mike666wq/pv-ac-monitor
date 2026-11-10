@@ -161,11 +161,11 @@ namespace ExperimentMonitor {
             pointRun.Margin=Padding.Empty;pointStop.Margin=Padding.Empty;limitsSave.Margin=Padding.Empty;pointLocate.Margin=Padding.Empty;pointStatus.Margin=new Padding(10,11,4,0);
             var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42,WrapContents=false,BackColor=Color.White,Padding=new Padding(2,2,0,0)};
             bar.Controls.Add(pointRun);bar.Controls.Add(pointStop);bar.Controls.Add(limitsSave);bar.Controls.Add(pointLocate);bar.Controls.Add(pointStatus);
-            string[] headers={"测点","名称","单位","有效点","超时点","越限点","最小","最大","均值","标准差","平均间隔","下限","上限"};
-            int[] weights={58,90,44,60,58,58,84,84,84,74,74,70,70};
-            for(int i=0;i<headers.Length;i++){pointTable.Columns.Add(headers[i],headers[i]);pointTable.Columns[i].FillWeight=weights[i];pointTable.Columns[i].SortMode=DataGridViewColumnSortMode.NotSortable;if(i<11)pointTable.Columns[i].ReadOnly=true;}
-            pointTable.Columns[11].DefaultCellStyle.BackColor=Color.FromArgb(248,251,254);
-            pointTable.Columns[12].DefaultCellStyle.BackColor=Color.FromArgb(248,251,254);
+            string[] headers={"测点","名称","单位","有效点","超时点","异常点","未读取点","越限点","最小","最大","均值","标准差","平均间隔","下限","上限"};
+            int[] weights={58,90,44,60,58,58,66,58,84,84,84,74,74,70,70};
+            for(int i=0;i<headers.Length;i++){pointTable.Columns.Add(headers[i],headers[i]);pointTable.Columns[i].FillWeight=weights[i];pointTable.Columns[i].SortMode=DataGridViewColumnSortMode.NotSortable;if(i<13)pointTable.Columns[i].ReadOnly=true;}
+            pointTable.Columns[13].DefaultCellStyle.BackColor=Color.FromArgb(248,251,254);
+            pointTable.Columns[14].DefaultCellStyle.BackColor=Color.FromArgb(248,251,254);
             page.Controls.Add(pointTable);page.Controls.Add(bar);
         }
         static string Duration(TimeSpan span){
@@ -250,6 +250,8 @@ namespace ExperimentMonitor {
                         p.Point,p.Label,p.Unit,
                         p.Good.ToString("N0"),
                         p.Timeout.ToString("N0"),
+                        p.Error.ToString("N0"),
+                        p.Skipped.ToString("N0"),
                         p.OverLimit<0?"—":p.OverLimit.ToString("N0"),
                         p.Min.HasValue?p.Min.Value.ToString("0.###"):"—",
                         p.Max.HasValue?p.Max.Value.ToString("0.###"):"—",
@@ -259,21 +261,34 @@ namespace ExperimentMonitor {
                         p.Lo.HasValue?p.Lo.Value.ToString("0.###"):"",
                         p.Hi.HasValue?p.Hi.Value.ToString("0.###"):"");
                     pointTable.Rows[index].Tag=p;
-                    if(p.OverLimit>0)pointTable.Rows[index].Cells[5].Style.ForeColor=Color.Firebrick;
+                    if(p.OverLimit>0)pointTable.Rows[index].Cells[7].Style.ForeColor=Color.Firebrick;
+                    if(p.Error>0)pointTable.Rows[index].Cells[5].Style.ForeColor=Color.Firebrick;
                 }
             }finally{pointTable.ResumeLayout();}
         }
         PointSummary SelectedPointRow(){
             return pointTable.CurrentRow==null?null:pointTable.CurrentRow.Tag as PointSummary;
         }
+        /// <summary>按表头文字找列号；找不到返回 -1。加列时不必再改所有写死的索引。</summary>
+        static int ColumnIndexByHeader(DataGridView table,string header) {
+            if (table == null || String.IsNullOrEmpty(header)) return -1;
+            foreach (DataGridViewColumn column in table.Columns)
+                if (String.Equals(column.HeaderText, header, StringComparison.Ordinal)) return column.Index;
+            return -1;
+        }
+
         void SaveLimits(){
+                // 下限/上限按**列名**定位，不写死索引 —— 前面加过列（异常点/未读取点），
+                // 写死索引会让保存读到别的列上去，而且不报错，只表现为"阈值没保存"。
             try{
+                int loCol=ColumnIndexByHeader(pointTable,"下限"),hiCol=ColumnIndexByHeader(pointTable,"上限");
+                if(loCol<0||hiCol<0)throw new InvalidOperationException("测点统计表缺少下限/上限列");
                 var updated=new Dictionary<string,Limit>(StringComparer.Ordinal);
                 foreach(DataGridViewRow row in pointTable.Rows){
                     PointSummary summary=row.Tag as PointSummary;
                     if(summary==null)continue;
-                    string lo=(row.Cells[11].Value??"").ToString().Trim();
-                    string hi=(row.Cells[12].Value??"").ToString().Trim();
+                    string lo=(row.Cells[loCol].Value??"").ToString().Trim();
+                    string hi=(row.Cells[hiCol].Value??"").ToString().Trim();
                     var limit=new Limit();double value;
                     if(lo.Length>0){
                         if(!double.TryParse(lo,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out value))throw new ArgumentException("测点 "+summary.Point+" 的下限不是数字");

@@ -98,20 +98,25 @@
 
 ## 3. 尚未修复 —— 补进方案（按优先级）
 
-### P1-6　死字段：声明了但没有生产读取点
+### P1-6　死字段：声明了但没有生产读取点 —— **已清理**
 
-| 字段 | 位置 | 现状 | 补进方案 |
-|---|---|---|---|
-| `requireConfirmed` | `ControlConfig.cs:86` | 只剩声明+注释 | **删掉**。它已废弃，留着只会让人以为它还在起作用；`README.md:42` 已经解释了 0.7.x 的教训，不需要这个字段 |
-| `requireOperatorAck` | `ControlConfig.cs:77` | 零读取；配套 `ControlConfirmForm` 全仓只定义不实例化 | **删掉字段与 ControlConfirmForm.cs**，或**实现二次确认**。0.8.0 已明确否决"每次弹窗"（实测写入是成组爆发），所以建议删而不是实现 |
-| `requireAcquiring` | `ControlConfig.cs:29` | 零读取；"必须采集中"是硬编码 | **删掉**，或接进门禁（`ControlReadinessCore` 里那一行硬编码改成读配置） |
-| `Held` | `ControlConfig.cs:52` | 死属性（状态字符串 `held` 在用） | 删 |
-| `Command.Confirmed` / `.Preview` | `ControlConfig.cs:38` | 死字段 | 删 |
-| `PointSummary.Error` | `HistoryStats.cs:31,186` | 算出来没人消费；且把 skipped/ambiguous/protocol/decode 混成一列 | **要么显示、要么删**。建议显示为点统计表的「异常点」列（口径与 `Quality.IsFailure` 对齐），因为现场确实需要区分"超时"和"其它异常" |
-| `ControlTarget.kind` / `.step` | `ControlConfig.cs:13,15` | 只校验不消费 | 删，或接进 UI（把 step 显示成"每次步进多少"） |
-| `ControlEvent.Target` | `ControlConfig.cs:61` | 写入值 = `result.Point`，完全重复 | 删 |
+| 字段 | 原状 | 处理 |
+|---|---|---|
+| `requireOperatorAck` | 零读取；配套 `ControlConfirmForm` 全仓只定义不实例化 | **删除字段 + 删除 ControlConfirmForm.cs**。0.8.0 已明确否决"每次弹窗"（实测写入是成组爆发），实现它等于把设计推翻 |
+| `requireAcquiring` | 零读取；"必须采集中"是硬编码 | **删除字段**（硬编码的那条门禁仍在） |
+| `ControlTarget.step` | 只校验 `step>0`，没有任何消费者；随包配置里 4 个目标都写着 `step: 1` | **删除字段 + 删除校验 + 从随包配置移除**。数值步进没有任何界面/引擎在用 |
+| `ControlCommand.Confirmed` / `.Preview` | 零读取 | **删除** |
+| `ControlResult.Held` | 零读取（状态字符串 `held` 在用） | **删除属性** |
+| `ControlEvent.Target` | 写入值恒等于 `Point` | **删除属性**；数据库的 `target` 列保留（迁移承诺"只加不删"），改为写 `point` 的值，旧库与新库形状一致 |
+| `PointSummary.Error` | 算出来没人消费；且把 skipped/ambiguous/protocol/decode 混成一列 | **不删，改为显示**：口径对齐 `Quality.IsFailure`（**排除 skipped**），并补上一直缺失的**「未读取点」**维度；记录页「测点统计」表新增「异常点」「未读取点」两列 |
+| `requireConfirmed` | 只剩声明与注释 | **保留**。现场老配置文件里可能还写着它，而回归测试要证明"配置里写了 `requireConfirmed=false` 也照样挡得住" —— 字段在，才写得出来、才验得掉。注释已改成说明这一点 |
+| `ControlTarget.kind` | 只校验 `kind=="int16"`，不用来解析也不用来显示 | **保留**。它是**被校验的配置契约**：程序只支持 16 位单寄存器写入，配置写成别的类型在加载时直接被拒。删掉它反而放松了校验 |
 
-**做法**：一次性删除 + 删对应的测试断言，避免"测试保护死代码"（`ModeCompatibilityWarning` 就是这么变成死代码的）。
+> 「保留」的两个字段都不是"没实现"：`requireConfirmed` 是回归护栏，`kind` 是配置契约。
+> 真正的死代码（无消费者、无校验价值、随包配置里还在骗人）已经全部清掉。
+
+同步从随包 `control-config.json` 移除 `requireOperatorAck` / `requireAcquiring` / 4 处 `step`，
+并保留 `requireConfirmed`（它是老配置的兼容入口）。
 
 ### P1-7　块读未接入 —— 但实测收益远低于预期，**不建议现在接**
 

@@ -118,10 +118,15 @@ using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new 
     for(int round=20;round<=21;round++){long ru=statsBase.AddMinutes(round).Ticks;timeout.Parameters.Clear();timeout.Parameters.AddWithValue("@u",ru);timeout.Parameters.AddWithValue("@r",round);timeout.Parameters.AddWithValue("@rs",ru);timeout.ExecuteNonQuery();}}
    using(var legacy=new SQLiteCommand("INSERT INTO observations(utc_ticks,source,session,experiment,round,point,description,device,slave,address,count,unit,mode,status,value,number,elapsed_ms,tx,rx,payload,raw_number,quality,config_version,round_started_utc_ticks) VALUES(@u,'serial',NULL,'',30,'T0','测点','DS666',1,125,2,'℃','FLOAT ABCD','正常','5',5.0,3,'','','',5.0,'good','test',@rs)",c)){
     long ru=statsBase.AddMinutes(30).Ticks;legacy.Parameters.AddWithValue("@u",ru);legacy.Parameters.AddWithValue("@rs",ru);legacy.ExecuteNonQuery();}
+    // 未读取（站隔离期跳过）与协议异常各来几行，用来验证"异常点"不含 skipped 的新口径。
+    using(var skipped=new SQLiteCommand("INSERT INTO observations(utc_ticks,source,session,experiment,round,point,description,device,slave,address,count,unit,mode,status,value,number,elapsed_ms,tx,rx,payload,raw_number,quality,config_version,round_started_utc_ticks) VALUES(@u,'serial','sessC','',@r,'T1','测点','DS666',1,125,2,'℃','FLOAT ABCD','本轮未读取',NULL,NULL,3,'','','',NULL,'skipped','test',@rs)",c)){
+     for(int round=40;round<=42;round++){long ru=statsBase.AddMinutes(round).Ticks;skipped.Parameters.Clear();skipped.Parameters.AddWithValue("@u",ru);skipped.Parameters.AddWithValue("@r",round);skipped.Parameters.AddWithValue("@rs",ru);skipped.ExecuteNonQuery();}}
+    using(var proto=new SQLiteCommand("INSERT INTO observations(utc_ticks,source,session,experiment,round,point,description,device,slave,address,count,unit,mode,status,value,number,elapsed_ms,tx,rx,payload,raw_number,quality,config_version,round_started_utc_ticks) VALUES(@u,'serial','sessD','',@r,'T1','测点','DS666',1,125,2,'℃','FLOAT ABCD','设备异常 0x83',NULL,NULL,3,'','','',NULL,'protocol_exception','test',@rs)",c)){
+     long ru=statsBase.AddMinutes(50).Ticks;proto.Parameters.AddWithValue("@u",ru);proto.Parameters.AddWithValue("@r",50);proto.Parameters.AddWithValue("@rs",ru);proto.ExecuteNonQuery();}
   }t.Commit();}}
  var statsFilter=new HistoryFilter{FromUtc=new DateTime(2026,10,31,0,0,0,DateTimeKind.Utc),ToUtc=new DateTime(2026,11,2,0,0,0,DateTimeKind.Utc),Source="serial"};
  List<SessionSummary> sessions=HistoryStats.Sessions(statsRoot,statsFilter,null,CancellationToken.None);
- Check(sessions.Count==3,"实验段按会话分成三段(含无会话旧数据)");tests++;
+ Check(sessions.Count==5,"实验段按会话分段(含无会话旧数据、未读取段、协议异常段)");tests++;
  SessionSummary sessA=sessions.Single(x=>x.Session=="sessA");
  Check(sessA.Rounds==9&&sessA.Records==27&&sessA.GoodRounds==9&&sessA.TimeoutRounds==0,"实验段的轮数与记录数正确");tests++;
  Check(sessA.ExpectedRounds==10&&sessA.MissingRounds==1&&sessA.MaxGapTicks==TimeSpan.FromMinutes(2).Ticks,"实验段识别出缺 1 轮与最大间隔 2 分钟");tests++;
@@ -134,6 +139,14 @@ using(SQLiteConnection probe=ExperimentHistory.OpenRead(bigDb)){using(var q=new 
  List<PointSummary> points=HistoryStats.Points(statsRoot,statsFilter,statsLimits,CancellationToken.None);
  PointSummary t0=points.Single(x=>x.Point=="T0");
  Check(t0.Good==10&&t0.Timeout==2&&t0.OverLimit==4,"测点统计的有效点与越限点正确");tests++;
+  // 异常点必须与 Quality.IsFailure 同一口径：不含 skipped（未读取）。
+  // 过去把 skipped 也算进异常，站隔离期一整轮的行会把"异常点"灌满，看着像设备在报错。
+  PointSummary t1=points.Single(x=>x.Point=="T1");
+  Check(t1.Skipped==3,"未读取行单独计入「未读取点」（3 行）");tests++;
+  Check(t1.Error==1,"异常点只算真正的失败（协议异常 1 行），不含未读取（实际 "+t1.Error+"）");tests++;
+  Check(t1.Good==9&&t1.Timeout==0,"T1 的 9 行有效数据照常计入（未读取与异常不吞掉有效点）");tests++;
+  Check(t0.Skipped==0&&t0.Error==0,"T0 没有未读取行也没有异常行（口径不串）");tests++;
+  Check(t1.Good+t1.Error+t1.Timeout+t1.Skipped==13,"T1 的 13 行被分到四个互斥口径里（有效 9 + 异常 1 + 超时 0 + 未读取 3）");tests++;
  Check(t0.Min==1&&t0.Max==10&&Math.Abs(t0.Mean.Value-5.4)<1e-9,"测点统计的最值与均值正确");tests++;
  Check(points.Single(x=>x.Point=="T1").OverLimit==-1,"未配置阈值的测点不做越限判定");tests++;
  string limitRoot=Scratch(root,".limit-tests");Directory.CreateDirectory(limitRoot);

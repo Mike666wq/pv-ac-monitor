@@ -10,9 +10,12 @@ using System.Web.Script.Serialization;
 namespace ExperimentMonitor {
     /// <summary>控制功能的本地配置。默认关闭；只有 confirmed && allowWrite 的目标才允许真实写入。</summary>
     public sealed class ControlTarget {
+        /// <summary>kind 是**被校验的配置契约**：程序只支持 16 位单寄存器写入，
+        /// 配置里写成别的类型会在加载时直接被拒（见 Validate）。它不是"没实现"的字段 ——
+        /// 它守的是"别把一个 32 位目标当成 16 位写"这件事。</summary>
         public string point="",label="",kind="int16",unit="",note="";
         public int slave,address;
-        public double min,max,step=1;
+        public double min,max;
         public bool confirmed,allowWrite;
         /// <summary>
         /// 因果判据：写入这个点之后，真正能证明"设备动作了"的返回信号。
@@ -26,7 +29,7 @@ namespace ExperimentMonitor {
     public sealed class ControlInterlocks {
         public string remotePoint="D2003";public int? remoteExpected=null;
         public string faultPoint="D2208";public int faultExpected=0;
-        public int maxAgeSeconds=10;public bool requireAcquiring=true;
+        public int maxAgeSeconds=10;
     }
     public sealed class ControlLimits {public int minIntervalMs=1000,maxWritesPerMinute=6,verifyWindowMs=1500,observeFeedbackSeconds=10;}
     /// <summary>控制页/引擎共用的门禁结果。Status=="ready" 才允许发送 06。</summary>
@@ -35,7 +38,7 @@ namespace ExperimentMonitor {
         public bool CanWrite{get{return Status=="ready";}}
     }
     public sealed class ControlCommand {
-        public string Point="",Operator="";public int Value;public bool Confirmed,Preview;
+        public string Point="",Operator="";public int Value;
         /// <summary>人工核对时的理由码：读数既不是写前旧值也不是写入新值时，必填。</summary>
         public string Reason="";
     }
@@ -48,8 +51,6 @@ namespace ExperimentMonitor {
         public byte[] PreReadTx=new byte[0],PreReadRx=new byte[0],ReadbackTx=new byte[0],ReadbackRx=new byte[0];
         public string OldSource="";public long ReadbackMs;
         public bool Applied{get{return Status=="applied";}}
-        /// <summary>held = 写后回读确认寄存器已改；applied = 下一轮采集观测也一致；reverted = 下一轮观测又变回去了。</summary>
-        public bool Held{get{return Status=="held"||Status=="applied";}}
     }
     public sealed class ControlEvent {
         public long UtcTicks;public string Source="",Session="",Operator="",Point="",Label="";
@@ -57,8 +58,6 @@ namespace ExperimentMonitor {
         public string Status="",Detail="",Tx="",Rx="",ConfigVersion="";public long ElapsedMs;
         /// <summary>一笔写入的唯一标识。同一笔写入只允许有一个终态。</summary>
         public string WriteId="";
-        /// <summary>目标点（与 Point 同义，但 Point 在旧库里是显示名，target 是稳定标识）。</summary>
-        public string Target="";
         /// <summary>证据串：tx|rx|pre|rb|effect|fb|gate|note|ms|epoch|noise|decision。
         /// 同一批信息同生共死放进一列，避免给审计表反复加列。</summary>
         public string Evidence="";
@@ -74,12 +73,14 @@ namespace ExperimentMonitor {
         /// 预演（只生成 06 报文、不发送）一直都有，是界面上的独立按钮，与 mode 无关。
         /// </summary>
         public string mode="disabled";
-        public bool requireOperatorAck=true;
         public int autoLockIdleSeconds=0;
         /// <summary>联锁不满足时是否拦截发送。默认 false：联锁只做提示，现场联锁语义未确认时不阻断测试。</summary>
         public bool enforceInterlocks=false;
         /// <summary>
-        /// 已废弃（0.8 起不再影响任何门禁）。confirmed 与 allowWrite 现在**各自独立生效**：
+        /// 已废弃（0.8 起不再影响任何门禁）。**保留这个字段是有意的**：
+        /// 现场的老配置文件里可能还写着它，而回归测试要证明"配置里写了 requireConfirmed=false
+        /// 也照样挡得住" —— 字段在，才写得出来、才验得掉。
+        /// confirmed 与 allowWrite 现在**各自独立生效**：
         /// 只要目标点 confirmed=false 或 allowWrite=false，就不允许真实写入，与本字段无关。
         /// 保留字段只为兼容旧配置文件；界面上会明确标出"已废弃"。
         /// </summary>
@@ -158,8 +159,7 @@ namespace ExperimentMonitor {
                 if(target.kind!="int16")return target.point+" kind 仅支持 int16";
                 if(target.min<0||target.max>65535||target.min>target.max)return target.point+" 写入范围必须为 0..65535 且 min<=max";
                 if(target.max<=target.min)return target.point+" max 必须大于 min（0..0 只能写 0，禁止）";
-                if(target.step<=0)return target.point+" step 必须大于 0";
-            }
+                }
             return "";
         }
         public static string Describe(ControlTarget t){

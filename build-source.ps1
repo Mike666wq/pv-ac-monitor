@@ -1,4 +1,4 @@
-﻿param([switch]$Test)
+param([switch]$Test)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
@@ -69,6 +69,19 @@ function Copy-RuntimeFiles([string]$destination) {
 }
 
 Copy-RuntimeFiles $outputRoot
+
+# 随包配置必须能被**生产解析器**接受。PowerShell 的 ConvertFrom-Json 会放过尾随逗号，
+# 而 JavaScriptSerializer 不会 —— 0.8.5 就因为一个尾随逗号把坏配置打进了发布包，
+# 直到包内自检才暴露。这里用产品自己的解析器在构建时先验一遍。
+$checker = Join-Path $outputRoot 'ExperimentMonitorDemo.exe'
+if (Test-Path -LiteralPath $checker) {
+    $checkOutput = & $checker '--check-config' ('--root=' + $projectRoot) 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $checkOutput | ForEach-Object { Write-Output $_ }
+        throw ('随包配置未通过校验（' + $checker + ' --check-config）')
+    }
+    Write-Output ('随包配置校验通过：' + (($checkOutput | Where-Object { $_ -match 'OK' }) -join '；'))
+}
 Write-Output ('Build succeeded: ' + $exePath)
 
 if ($Test) {

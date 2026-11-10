@@ -32,6 +32,9 @@ namespace ExperimentMonitor {
     public sealed class PointSummary {
         public string Point,Label,Unit;
         public long Good,Timeout,Error,OverLimit=-1;
+        /// <summary>本轮没有真正读取这个点的次数（站隔离期跳过 / 同站前序点失败）。
+        /// 它不是一次新的失败 —— 失败已经在真正失败的那个点上计过了（与 Quality.IsFailure 一致）。</summary>
+        public long Skipped;
         public double? Min,Max,Mean,StdDev;
         public long AverageIntervalTicks;
         public double? Lo,Hi;
@@ -44,7 +47,7 @@ namespace ExperimentMonitor {
             public string SessionKey;public long MinUtc,MaxUtc,Rows,Good,Timeouts;public int Devices,Points;
         }
         sealed class PointAgg {
-            public long Total,Good,Timeout,Other,NumberCount,SumMin,SumMax;
+            public long Total,Good,Timeout,Other,Skipped,NumberCount,SumMin,SumMax;
             public double Sum,SumSquares;public long MinUtc=long.MaxValue,MaxUtc=long.MinValue;
         }
         static string SessionKey(string file,string session) { return String.IsNullOrEmpty(session)?"\u001flegacy:"+file:session; }
@@ -168,19 +171,23 @@ namespace ExperimentMonitor {
                 using(var c=ExperimentHistory.OpenRead(file))
                 using(var q=ExperimentHistory.Command(c,f,
                     "SELECT point,COUNT(*),SUM(CASE WHEN quality='" + Quality.Good + "' THEN 1 ELSE 0 END),SUM(CASE WHEN quality='" + Quality.Timeout + "' THEN 1 ELSE 0 END),"
-                    +"SUM(CASE WHEN quality IS NOT NULL AND quality<>'good' AND quality<>'timeout' THEN 1 ELSE 0 END),"
+                    +"SUM(CASE WHEN quality='" + Quality.Skipped + "' THEN 1 ELSE 0 END),"
+                    // 异常点：既不是 good、也不是 timeout、也不是 skipped —— 与 Quality.IsFailure 同一口径。
+                    // 过去把 skipped 也算进异常，站隔离期一整轮的行会把"异常点"灌满，看着像设备在报错。
+                    +"SUM(CASE WHEN quality IS NOT NULL AND quality<>'good' AND quality<>'timeout' AND quality<>'" + Quality.Skipped + "' THEN 1 ELSE 0 END),"
                     +"MIN(number),MAX(number),SUM(number),SUM(number*number),COUNT(number),MIN(utc_ticks),MAX(utc_ticks)",long.MaxValue)) {
                     q.CommandText+=" GROUP BY point";
                     using(var r=q.ExecuteReader()) while(r.Read()) {
                         string point=Text(r.GetValue(0));
                         PointAgg agg;if(!aggregates.TryGetValue(point,out agg)){agg=new PointAgg();aggregates.Add(point,agg);}
-                        agg.Total+=Convert.ToInt64(r.GetValue(1));agg.Good+=Convert.ToInt64(r.GetValue(2));agg.Timeout+=Convert.ToInt64(r.GetValue(3));agg.Other+=Convert.ToInt64(r.GetValue(4));
-                        if(!r.IsDBNull(5)){long min=Convert.ToInt64(r.GetValue(5));if(agg.NumberCount==0||min<agg.SumMin)agg.SumMin=min;}
-                        if(!r.IsDBNull(6)){long max=Convert.ToInt64(r.GetValue(6));if(agg.NumberCount==0||max>agg.SumMax)agg.SumMax=max;}
-                        if(!r.IsDBNull(7))agg.Sum+=Convert.ToDouble(r.GetValue(7),CultureInfo.InvariantCulture);
-                        if(!r.IsDBNull(8))agg.SumSquares+=Convert.ToDouble(r.GetValue(8),CultureInfo.InvariantCulture);
-                        agg.NumberCount+=Convert.ToInt64(r.GetValue(9));
-                        long from=Convert.ToInt64(r.GetValue(10)),to=Convert.ToInt64(r.GetValue(11));
+                        agg.Total+=Convert.ToInt64(r.GetValue(1));agg.Good+=Convert.ToInt64(r.GetValue(2));agg.Timeout+=Convert.ToInt64(r.GetValue(3));
+                        agg.Skipped+=Convert.ToInt64(r.GetValue(4));agg.Other+=Convert.ToInt64(r.GetValue(5));
+                        if(!r.IsDBNull(6)){long min=Convert.ToInt64(r.GetValue(6));if(agg.NumberCount==0||min<agg.SumMin)agg.SumMin=min;}
+                        if(!r.IsDBNull(7)){long max=Convert.ToInt64(r.GetValue(7));if(agg.NumberCount==0||max>agg.SumMax)agg.SumMax=max;}
+                        if(!r.IsDBNull(8))agg.Sum+=Convert.ToDouble(r.GetValue(8),CultureInfo.InvariantCulture);
+                        if(!r.IsDBNull(9))agg.SumSquares+=Convert.ToDouble(r.GetValue(9),CultureInfo.InvariantCulture);
+                        agg.NumberCount+=Convert.ToInt64(r.GetValue(10));
+                        long from=Convert.ToInt64(r.GetValue(11)),to=Convert.ToInt64(r.GetValue(12));
                         if(from<agg.MinUtc)agg.MinUtc=from;
                         if(to>agg.MaxUtc)agg.MaxUtc=to;
                     }
@@ -191,7 +198,7 @@ namespace ExperimentMonitor {
             foreach(var pair in aggregates) {
                 PointAgg agg=pair.Value;
                 PointInfo info=PointCatalog.Get(pair.Key);
-                var summary=new PointSummary{Point=pair.Key,Label=info.Label,Unit=info.Unit,Good=agg.Good,Timeout=agg.Timeout,Error=agg.Other};
+                var summary=new PointSummary{Point=pair.Key,Label=info.Label,Unit=info.Unit,Good=agg.Good,Timeout=agg.Timeout,Error=agg.Other,Skipped=agg.Skipped};
                 if(agg.NumberCount>0) {
                     summary.Min=agg.SumMin;summary.Max=agg.SumMax;
                     summary.Mean=agg.Sum/agg.NumberCount;

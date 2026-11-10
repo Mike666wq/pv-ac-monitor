@@ -117,16 +117,16 @@ namespace ExperimentMonitor {
             bool simulation;
             lock (sync) simulation = connected && connectedSimulation;
             if (!simulation) throw new InvalidOperationException("只能在模拟数据已连接时加载演示配置");
-            var demo = new ControlConfig { mode = "preview", Version = "simulation-demo", requireOperatorAck = true, autoLockIdleSeconds = 600 };
+            var demo = new ControlConfig { mode = "preview", Version = "simulation-demo", autoLockIdleSeconds = 600 };
             demo.interlocks.remoteExpected = 1;
             demo.interlocks.faultExpected = 0;
             demo.interlocks.maxAgeSeconds = 30;
             demo.limits.minIntervalMs = 1000;
             demo.limits.maxWritesPerMinute = 6;
-            demo.targets.Add(new ControlTarget { point = "D2202", label = "主机温度设定", kind = "int16", unit = "℃", slave = 2, address = 2202, min = 16, max = 30, step = 1, confirmed = true, allowWrite = true, note = "模拟演示" });
-            demo.targets.Add(new ControlTarget { point = "D2001", label = "模式控制", kind = "int16", unit = "", slave = 2, address = 2201, min = 0, max = 10, step = 1, confirmed = true, allowWrite = true, note = "模拟演示" });
-            demo.targets.Add(new ControlTarget { point = "D2000", label = "送风风机速度", kind = "int16", unit = "", slave = 2, address = 2000, min = 0, max = 100, step = 1, confirmed = true, allowWrite = true, note = "模拟演示" });
-            demo.targets.Add(new ControlTarget { point = "D2207", label = "放冷反馈设定", kind = "int16", unit = "", slave = 2, address = 2207, min = 0, max = 100, step = 1, confirmed = true, allowWrite = true, note = "模拟演示" });
+            demo.targets.Add(new ControlTarget { point = "D2202", label = "主机温度设定", kind = "int16", unit = "℃", slave = 2, address = 2202, min = 16, max = 30, confirmed = true, allowWrite = true, note = "模拟演示" });
+            demo.targets.Add(new ControlTarget { point = "D2001", label = "模式控制", kind = "int16", unit = "", slave = 2, address = 2201, min = 0, max = 10, confirmed = true, allowWrite = true, note = "模拟演示" });
+            demo.targets.Add(new ControlTarget { point = "D2000", label = "送风风机速度", kind = "int16", unit = "", slave = 2, address = 2000, min = 0, max = 100, confirmed = true, allowWrite = true, note = "模拟演示" });
+            demo.targets.Add(new ControlTarget { point = "D2207", label = "放冷反馈设定", kind = "int16", unit = "", slave = 2, address = 2207, min = 0, max = 100, confirmed = true, allowWrite = true, note = "模拟演示" });
             lock (controlSync) {
                 controlSettings = demo;
                 controlConfigError = "";
@@ -398,7 +398,7 @@ namespace ExperimentMonitor {
             string range = RangeProblem(target, value);
             if (range != null) return Blocked(result, "range", range);
             result.Label = target.label; result.Slave = target.slave; result.Address = target.address;
-            var pending = new PendingControl { WriteId = result.WriteId, Command = new ControlCommand { Point = point, Value = value, Operator = operatorName, Confirmed = true } };
+            var pending = new PendingControl { WriteId = result.WriteId, Command = new ControlCommand { Point = point, Value = value, Operator = operatorName } };
             lock (controlSync) {
                 if (!controlArmed || worker == null) return Blocked(result, "not_armed", "控制未解锁或采集已停止");
                 controlQueue.Add(pending);
@@ -760,7 +760,6 @@ namespace ExperimentMonitor {
                 ElapsedMs = result.Milliseconds,
                 ConfigVersion = config == null ? "" : config.Version,
                 WriteId = result.WriteId ?? "",
-                Target = result.Point ?? "",
                 Evidence = BuildEvidence(result)
             };
             bool ok = true;

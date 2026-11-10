@@ -96,7 +96,7 @@ namespace ExperimentMonitor {
             config.limits.maxWritesPerMinute=6;
             config.targets.Add(new ControlTarget {
                 point="D2202",label="主机温度设定",kind="int16",
-                slave=2,address=2202,min=16,max=30,step=1,
+                slave=2,address=2202,min=16,max=30,
                 confirmed=true,allowWrite=true
             });
             return config;
