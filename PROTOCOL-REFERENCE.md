@@ -585,16 +585,27 @@ App 原来把 14 条里的 11 个 PLC 状态/控制点写成 `U16 / I16`、3 个
 
 ### 6.2 测试结果
 
-| 套件 | 结果 |
+| 套件 | 结果（2026-11-10 于 0.8.7 复核） |
 |---|---|
-| `--test-storage` | **81 项通过**（storage 53 / records 22 / export-failure 6） |
-| `--test-control` | **60 项通过** |
+| `--self-test` | **107 项通过** |
+| `--test-core` | **9 项通过** |
+| `--test-late-frame` | **42 项通过**（迟到帧闸门逐毫秒边界） |
+| `--test-block-read` | **67 项通过**（块读与逐点读逐位对拍） |
+| `--test-storage` 合并项 | **92 项通过**（storage + records + export-failure） |
+| `--test-cloud` | **16 项通过** |
+| `--test-trend` | **8 项通过** |
+| `--test-control` | **109 项通过** |
 | `--test-workflow` | **20 项通过** |
-| `--self-test`（SelfTests 部分） | **34 项通过**（含本次新增 4 项）后再跑到 `ExtendedTests` |
-| `--test-core` | 环境限制失败：`PartitionCycle.Save()` 的 `File.Replace` 在 DSH 沙箱被拒（与 HEAD 相同，非本次改动） |
-| `--test-ui` | 环境限制失败：`PageWorkflowTests.CloudSettings` 的"清除令牌"需要凭据管理器（与 HEAD 相同） |
+| `--test-resources` | **5 项通过** |
+| `--test-ui` | **4140 项通过** |
+| `--test-station` | **31 项通过**（站号离线状态的可见性） |
+| `--test-all` | **13 套件全通过 / 4646 项断言**（`integration` 另有 4419 项重复计数） |
 
-> 构建：`build-source.ps1` 通过，根目录 exe 已更新为 **0.7.1.0**。
+> 构建：`build-source.ps1` 通过，根目录 exe 已更新为 **0.8.7.0**。
+>
+> ⚠ 本表在 0.7.1 时代曾记录"`--test-core` / `--test-ui` 因 DSH 沙箱环境限制失败"。
+> 那是**当时那台受限进程树**的事实，不是产品缺陷；在正常环境（含 CI 的 windows-latest）
+> 这些套件全部通过。不要把它当成"已知失败"继续沿用。
 
 ---
 
