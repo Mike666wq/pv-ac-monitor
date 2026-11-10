@@ -140,6 +140,44 @@ namespace ExperimentMonitor {
         }
 
         /// <summary>
+        /// 某站的卡片文案前缀，例如「站6 离线」。不在退避窗口内就返回 null（正常时不加前缀）。
+        /// </summary>
+        string OfflineStationLabel(int slave) {
+            if (slave <= 0) return null;
+            lock (stationDownSync) { string label; return stationDown.TryGetValue(slave, out label) ? label : null; }
+        }
+
+        readonly object stationDownSync = new object();
+        readonly Dictionary<int,string> stationDown = new Dictionary<int,string>();
+
+        /// <summary>按引擎的站状态重建"离线站"缓存，1 Hz 调用，避免每条观测都去锁引擎。</summary>
+        void RefreshStationDown() {
+            var next = new Dictionary<int,string>();
+            List<MonitorEngine.StationLinkState> states;
+            try { states = Engine.StationLinkStates(); } catch { states = null; }
+            if (states != null)
+                foreach (var s in states)
+                    if (s != null && s.RetryInSeconds > 0) next[s.Slave] = "站" + s.Slave + " 离线";
+            lock (stationDownSync) {
+                stationDown.Clear();
+                foreach (var pair in next) stationDown[pair.Key] = pair.Value;
+            }
+        }
+
+        /// <summary>
+        /// 离线站的卡片状态文案：把"为什么没有值"直接写出来，而不是只写"未接入/陈旧"。
+        ///
+        /// 站号进入退避后整片的点都没有新值。只写「未接入」的话，现场分不清是
+        /// 设备没接、还是程序没在轮询这个点；写上「站6 离线」就一眼能对上状态栏。
+        /// 纯函数，便于离线钉死文案。
+        /// </summary>
+        internal static string OfflineStationCardText(string stationLabel, bool hasOld, double staleSeconds) {
+            if (String.IsNullOrEmpty(stationLabel)) return null;
+            if (!hasOld) return stationLabel + " · 未接入";
+            return stationLabel + " · 陈旧 " + AgeText(staleSeconds);
+        }
+
+        /// <summary>
         /// 把站号状态拼成状态栏后缀。纯函数，便于离线钉死文案：
         /// 只列**正在退避窗口内**的站（已经可以重试的不算"离线中"），
         /// 正常时返回空串，不占状态栏地方。
@@ -493,7 +531,7 @@ namespace ExperimentMonitor {
             return current.HasValue&&current.Value<0.5;
         }
         void Dispatch(Action action){if(closed||IsDisposed)return;try{if(IsHandleCreated)BeginInvoke(action);}catch(InvalidOperationException){} }
-        void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"▤ 记录 · 已停止":"▤ 记录 · 待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;headerAction.Text=connected?"断开连接":"连接";headerAction.Enabled=connected||!running;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;connectionState.Text=connected?(Engine.ConnectedSimulation?"● 链路 · 模拟 · "+DeviceHealth():string.Concat("● 链路 · 已连接 · ",Engine.ConnectedPort," · ",DeviceHealth()))+StationHealthSuffix():"○ 链路 · 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"▶ 采集 · 运行中":"⏸ 采集 · 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
+        void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"▤ 记录 · 已停止":"▤ 记录 · 待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;headerAction.Text=connected?"断开连接":"连接";headerAction.Enabled=connected||!running;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;RefreshStationDown();connectionState.Text=connected?(Engine.ConnectedSimulation?"● 链路 · 模拟 · "+DeviceHealth():string.Concat("● 链路 · 已连接 · ",Engine.ConnectedPort," · ",DeviceHealth()))+StationHealthSuffix():"○ 链路 · 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"▶ 采集 · 运行中":"⏸ 采集 · 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
         void ConnectCaptureSource(){try{if(!simulation.Checked&&String.IsNullOrWhiteSpace(port.Text))throw new InvalidOperationException("没有可用串口。请接入 USB-RS485 转换器后点击刷新。");Engine.Connect(simulation.Checked,port.Text,9600);SaveSettings();RefreshControls();}catch(Exception ex){MessageBox.Show(this,"连接失败："+ex.Message,"连接",MessageBoxButtons.OK,MessageBoxIcon.Error);}}
         void SetConnection(bool connected,string source){string key=source??Engine.ActiveSource;if(connected){if(displayedSource!=null&&key!=displayedSource)ResetDisplay();displayedSource=key;connectionState.Text=(key=="simulation"?"● 链路 · 模拟 · "+DeviceHealth():"● 链路 · 已连接 · "+Engine.ConnectedPort+" · 9600 8N1 · "+DeviceHealth())+StationHealthSuffix();connectionState.ForeColor=UiTheme.Green;AppendLog("连接状态："+connectionState.Text);if(historyPage!=null)historyPage.SetActiveSource(key);}else{connectionState.Text="○ 未连接";connectionState.ForeColor=UiTheme.Muted;MarkLastValuesStale("连接已断开");AppendLog("连接已断开 · 最后采样保留");}RefreshControls();}
         void MarkLastValuesStale(string label){foreach(var p in lastGood){Label[] c;if(cards.TryGetValue(p.Key,out c)){c[3].Text=label+" · "+p.Value.ToLocalTime().ToString("HH:mm:ss");c[3].ForeColor=UiTheme.Warning;}DataRow r;if(rows.TryGetValue(p.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期 · "+label;}}
@@ -516,14 +554,18 @@ namespace ExperimentMonitor {
                         c[3].Text=doubt+"正常 · "+timestamp.ToLocalTime().ToString("HH:mm:ss");
                     } else if(!hasOld) {
                         // 从来没有读到过：不能显示"正常"，也不该显示数字。
-                        c[3].Text=doubt+"○ 未接入";
+                        // 若这个站正在退避，把站号写出来 —— 否则"未接入"分不清是设备没接、
+                        // 还是程序根本没在轮询这个点（两者处置方式完全不同）。
+                        string offlineNever=OfflineStationCardText(OfflineStationLabel(o.Slave),false,0);
+                        c[3].Text=offlineNever!=null?doubt+"○ "+offlineNever:doubt+"○ 未接入";
                     } else {
                         double staleSeconds=(DateTime.UtcNow-previous).TotalSeconds;
                         // 陈旧分两档：短时间内保留最后有效值（可能只是这一轮没读到），
                         // 超过 60 秒就清空 —— 一个 10 分钟前的数字看起来和现在的数字一模一样，
                         // 那是最容易误导人的形态。
                         if(staleSeconds>StaleLimitSeconds) c[1].Text="—";
-                        c[3].Text=doubt+QualityLabel(o.Quality)+" · 陈旧 "+AgeText(staleSeconds);
+                        string offlineStale=OfflineStationCardText(OfflineStationLabel(o.Slave),true,staleSeconds);
+                        c[3].Text=offlineStale!=null?doubt+offlineStale:doubt+QualityLabel(o.Quality)+" · 陈旧 "+AgeText(staleSeconds);
                     }
                 }
                 c[3].ForeColor=valid?UiTheme.Green:(Quality.IsFailure(o.Quality)?UiTheme.Danger:UiTheme.Muted);tips.SetToolTip(c[1],valid?"实际值："+(o.Value??DisplayNumber(o))+"\r\n采样时间："+o.Utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff"):o.Value);}

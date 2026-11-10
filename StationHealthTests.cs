@@ -146,6 +146,19 @@ namespace ExperimentMonitor {
                     "多个站同时离线时列出第一个并注明还有几个（" + two + "）");
                 Check(checks, !two.Contains("站6 无响应") || two.IndexOf("站3") < two.IndexOf("站6"),
                     "多个站时按站号升序，第一个是最小的（" + two + "）");
+                // ── 点卡片的站级文案（纯函数）──
+                // 退避期间整片的点都没有新值。只写"未接入/陈旧"的话，现场分不清是
+                // 设备没接、还是程序根本没在轮询这个点。
+                Check(checks, DashboardForm.OfflineStationCardText(null, false, 0) == null,
+                    "站不处于退避时不加站级前缀（返回 null，普通文案接管）");
+                Check(checks, DashboardForm.OfflineStationCardText("", true, 10) == null, "空前缀同样视为不显示（防止拼出半截文案）");
+
+                string neverRead = DashboardForm.OfflineStationCardText("站6 离线", false, 0);
+                Check(checks, neverRead == "站6 离线 · 未接入", "从未读到的点在退避站上写明站号（" + neverRead + "）");
+
+                string staleText = DashboardForm.OfflineStationCardText("站6 离线", true, 725);
+                Check(checks, staleText == "站6 离线 · 陈旧 12m", "有旧值的点在退避站上写明站号与陈旧时长（" + staleText + "）");
+                Check(checks, staleText.Contains("站6"), "卡片文案里的站号与状态栏用的是同一个（" + staleText + "）");
             } catch (Exception ex) {
                 checks.Add("异常：" + ex.Message);
                 throw;
