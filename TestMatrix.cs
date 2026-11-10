@@ -82,6 +82,11 @@ namespace ExperimentMonitor {
                 Write(root, "resource-test-result.json", checks.Count, checks);
             });
             Run(entries, "ui", root, "ui-test-result.json", () => UiLayoutTests.Run(points, root));
+            // 站号失败/退避状态对界面可见：让"设备没接"和"程序卡住"区分得开。
+            Run(entries, "station-health", root, "station-health-test-result.json", () => {
+                var checks = StationHealthTests.Run(points, root);
+                Write(root, "station-health-test-result.json", checks.Count, checks);
+            });
             // 集成路径：ExtendedTests 会再跑一遍上面多数套件，并额外做"37 点一整轮、
             // 点表标签/角色、界面与导出点集一致"这类跨模块检查。放在最后跑，
             // 前九个套件已经各自读完自己的结果文件，不会被它覆盖影响。

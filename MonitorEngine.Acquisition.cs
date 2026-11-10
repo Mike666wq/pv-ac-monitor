@@ -22,6 +22,30 @@ namespace ExperimentMonitor {
             public CancellationToken Token;
         }
 
+        /// <summary>
+        /// 一个站号的链路状态快照，给界面用。
+        ///
+        /// 为什么要暴露这个：站号连续超时后会进入退避（5/10/20/40/60/120/300 秒），
+        /// 期间该站被跳过、每轮只写 skipped 行。界面如果不说明，现场看到的就是
+        /// "市电那一整片一直是 —"，分不清是设备没接、还是程序卡住了。
+        /// </summary>
+        public sealed class StationLinkState {
+            public int Slave;
+            /// <summary>连续失败次数；归零表示已恢复。</summary>
+            public int Failures;
+            /// <summary>下一次允许探测的时刻（UTC）。</summary>
+            public DateTime NextProbeUtc;
+            /// <summary>距离下次探测还有多少秒（向上取整，最小 0）。</summary>
+            public int RetryInSeconds {
+                get {
+                    double left = (NextProbeUtc - DateTime.UtcNow).TotalSeconds;
+                    return left <= 0 ? 0 : (int)Math.Ceiling(left);
+                }
+            }
+            public override string ToString() {
+                return "站" + Slave + " 无响应 ×" + Failures + (RetryInSeconds > 0 ? "，" + RetryInSeconds + " 秒后重试" : "");
+            }
+        }
         /// <summary>站号连续失败后的重试间隔（秒）：5/10/20/40/60/120/300，之后封顶 300 秒。</summary>
         static int BackoffSeconds(int failures) {
             int[] steps = { 5, 10, 20, 40, 60, 120, 300 };
@@ -64,9 +88,13 @@ namespace ExperimentMonitor {
                 PublishObservation(o);
                 ctx.Log("SAMPLE round=" + ctx.Round + " point=" + o.Point + " quality=" + o.Quality + " value=" + o.Value);
                 if (o.Quality == Quality.Timeout || o.Quality == Quality.Error || o.Quality == Quality.Ambiguous) {
-                    int n; ctx.Failed.TryGetValue(slave, out n); ctx.Failed[slave] = ++n;
-                    int delay = BackoffSeconds(n);
-                    ctx.ProbeAt[slave] = DateTime.UtcNow.AddSeconds(delay);
+                    int n, delay;
+                    // 这两个字典由界面并发读取（StationLinkStates），写侧必须加同一把锁。
+                    lock (stationSync) {
+                        ctx.Failed.TryGetValue(slave, out n); ctx.Failed[slave] = ++n;
+                        delay = BackoffSeconds(n);
+                        ctx.ProbeAt[slave] = DateTime.UtcNow.AddSeconds(delay);
+                    }
                     ctx.Log("站号 " + slave + " 无有效响应，本轮其余点记为未读取，" + delay + " 秒后重试；其他设备继续");
                     EmitSkippedRows(groupPoints.GetRange(pi + 1, groupPoints.Count - pi - 1),
                         "同站前序点 " + o.Point + " " + Quality.Label(o.Quality) + "，本轮未读取", ctx);
@@ -94,10 +122,15 @@ namespace ExperimentMonitor {
                     }
                     return;
                 }
-                if (o.Quality == Quality.Good && ctx.Failed.ContainsKey(slave)) {
-                    ctx.Failed.Remove(slave); ctx.ProbeAt.Remove(slave);
-                    ctx.Log("站号 " + slave + " 已恢复");
+                bool recovered = false;
+                // 与写侧共用同一把锁：界面通过 StationLinkStates 并发读这两个字典。
+                lock (stationSync) {
+                    if (o.Quality == Quality.Good && ctx.Failed.ContainsKey(slave)) {
+                        ctx.Failed.Remove(slave); ctx.ProbeAt.Remove(slave);
+                        recovered = true;
+                    }
                 }
+                if (recovered) ctx.Log("站号 " + slave + " 已恢复");
             }
         }
 

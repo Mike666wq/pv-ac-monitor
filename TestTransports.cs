@@ -124,6 +124,13 @@ namespace ExperimentMonitor {
         /// 于是往返时间被精确指定，边界可以逐毫秒验证。
         /// </summary>
         public int FakeRoundTripMs = -1;
+        /// <summary>
+        /// 缺席的脚本步骤返回一帧**正常响应**（数据全 0），而不是抛超时。
+        ///
+        /// 用途：只想让**某一个站**失败时，其它站的读取必须是好的 —— 否则"脚本耗尽"
+        /// 会把每个站都判成超时，验证不了"只有目标站在退避"这件事。
+        /// </summary>
+        public bool FillMissing;
         /// <summary>每次 Read 调用都会记录，便于断言"第几笔读拿到了哪一帧"。</summary>
         public readonly List<string> Trace = new List<string>();
 
@@ -143,7 +150,16 @@ namespace ExperimentMonitor {
                 if (candidate.Slave >= 0 && candidate.Slave != slave) break;
                 step = Script.Dequeue(); break;
             }
-            if (step == null) throw new TimeoutException("脚本已耗尽，无可投递的帧（站号 " + slave + "）");
+            if (step == null) {
+                if (!FillMissing) throw new TimeoutException("脚本已耗尽，无可投递的帧（站号 " + slave + "）");
+                var filler = new byte[3 + count * 2];
+                filler[0] = (byte)slave; filler[1] = 3; filler[2] = (byte)(count * 2);
+                Trace.Add(slave + "/" + address + "/" + count + " -> filler");
+                log("[脚本] RX(填充) " + Modbus.Hex(filler));
+                if (FakeRoundTripMs >= 0)
+                    LastRequestSentTicks = Stopwatch.GetTimestamp() - (long)(FakeRoundTripMs * Stopwatch.Frequency / 1000.0);
+                return Modbus.WithCrc(filler);
+            }
             if (step.DelayMs > 0) {
                 if (token.WaitHandle.WaitOne(step.DelayMs)) token.ThrowIfCancellationRequested();
             }

@@ -108,6 +108,23 @@ namespace ExperimentMonitor {
             File.WriteAllText(Path.Combine(dir,"control-config.json"),new JavaScriptSerializer().Serialize(config),new UTF8Encoding(false));
         }
 
+        /// <summary>
+        /// 等控制工人线程把 held 结果发布到 LastControlResult 再继续。
+        ///
+        /// 工人线程的顺序是：ExecuteOne 返回 → pending.Done.Set() → LastControlResult = held。
+        /// Done.Set() 会先把 ExecuteControl 唤醒，所以"写入刚返回"的那一刻，
+        /// LastControlResult 可能还是旧值；如果测试此时喂观测并让状态机判出 applied，
+        /// 随后工人线程写回的 held 会把 applied **覆盖**掉 —— 表现为偶发失败。
+        /// </summary>
+        static void WaitControlPublished(MonitorEngine engine, long timeoutMs=3000) {
+            var watch = Stopwatch.StartNew();
+            while (watch.ElapsedMilliseconds < timeoutMs) {
+                ControlResult last = engine.LastControlResult;
+                if (last != null && last.Status == "held") return;
+                Thread.Sleep(5);
+            }
+        }
+
         static MonitorEngine StartEngine(List<Point> points,string dir,FakeControlTransport fake,bool autoStart) {
             var engine=new MonitorEngine(points,dir);
             try {
@@ -307,6 +324,7 @@ namespace ExperimentMonitor {
             engine.ArmControl("tester");
             ControlResult r=engine.ExecuteControl("D2202",26,"tester");
             Check(r.Status=="held","坏质量场景：写入先进入 held",checks);
+            WaitControlPublished(engine);
             // 直接构造观测，不经过 Collector.Read —— 这条用例测的是**效果确认的状态机**，
             // 不是采集/解码链路。走 Sample() 会让结果取决于那一次读的质量，
             // 在忙机器上偶发地拿不到数值，表现为"偶发失败"而不是被测逻辑出错。

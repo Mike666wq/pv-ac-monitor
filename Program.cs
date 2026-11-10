@@ -66,6 +66,7 @@ namespace ExperimentMonitor {
                 // 诊断：切到指定页签后，让消息泵空跑 5 秒，量 CPU 与内存增量。
                 // 用来回答"界面停在某一页会不会持续吃 CPU"——UI Automation 在控件量大的
                 // 窗口上单次读树会超过 30 秒，量不出来的事情必须换进程内驱动。
+                if(args.Contains("--test-station")) { var c=StationHealthTests.Run(points,root); File.WriteAllText(Path.Combine(root,"station-health-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=c.Count,checks=c}),new System.Text.UTF8Encoding(false)); return 0; }
                 if(args.Contains("--test-control")) { var checks=ControlTests.Run(points,root);File.WriteAllText(Path.Combine(root,"control-test-result.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{passed=true,count=checks.Count,checks=checks,hardware_tested=false}));return 0; }
                 if(args.Contains("--test-workflow")) { WorkflowTests.Run(points,root);return 0; }
                 using(var form=new DashboardForm(points,root)) {

@@ -128,6 +128,24 @@ namespace ExperimentMonitor {
             statusBar.Controls.Add(states);statusBar.Controls.Add(counts);shell.Controls.Add(statusBar,0,3);
         }
 
+        /// <summary>
+        /// 站号失败/退避的界面后缀，例如「（站6 无响应 ×5，60 秒后重试）」。
+        ///
+        /// 为什么必须有这段：站号连续超时后会进入退避，期间该站整片显示 —，
+        /// 现场分不清"设备没接"和"程序卡住"。把失败次数和下次重试时间直接写出来，
+        /// 这两个问题才区分得开。
+        /// </summary>
+        string StationHealthSuffix() {
+            List<MonitorEngine.StationLinkState> states;
+            try { states = Engine.StationLinkStates(); } catch { return ""; }
+            if (states == null || states.Count == 0) return "";
+            // 只列正在退避的（已经可以重试的不算"离线中"）。
+            var active = states.Where(s => s.RetryInSeconds > 0).ToList();
+            if (active.Count == 0) return "";
+            string first = active[0].ToString();
+            return active.Count == 1 ? "（" + first + "）" : "（" + first + " 等 " + active.Count + " 个站）";
+        }
+
         /// <summary>点表摘要：几台设备 / 几个测点。按实际点表算，不写死。</summary>
         string PointTableSummary() {
             int devices=0;
@@ -467,9 +485,9 @@ namespace ExperimentMonitor {
             return current.HasValue&&current.Value<0.5;
         }
         void Dispatch(Action action){if(closed||IsDisposed)return;try{if(IsHandleCreated)BeginInvoke(action);}catch(InvalidOperationException){} }
-        void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"▤ 记录 · 已停止":"▤ 记录 · 待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;headerAction.Text=connected?"断开连接":"连接";headerAction.Enabled=connected||!running;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;connectionState.Text=connected?(Engine.ConnectedSimulation?"● 链路 · 模拟 · "+DeviceHealth():"● 链路 · 已连接 · "+Engine.ConnectedPort+" · "+DeviceHealth()):"○ 链路 · 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"▶ 采集 · 运行中":"⏸ 采集 · 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
+        void RefreshControls(){bool connected=Engine.IsConnected,running=Engine.IsRunning;if(!running&&String.IsNullOrEmpty(Engine.LastStoreError)){recordState.Text=Engine.CompletedCaptures>0?"▤ 记录 · 已停止":"▤ 记录 · 待机";recordState.ForeColor=UiTheme.Muted;}start.Enabled=once.Enabled=connected&&!running;stop.Enabled=running;headerAction.Text=connected?"断开连接":"连接";headerAction.Enabled=connected||!running;simulation.Enabled=port.Enabled=!connected&&!running;refresh.Enabled=!connected&&!running;timeout.Enabled=!running;period.Enabled=true;connectionState.Text=connected?(Engine.ConnectedSimulation?"● 链路 · 模拟 · "+DeviceHealth():string.Concat("● 链路 · 已连接 · ",Engine.ConnectedPort," · ",DeviceHealth()))+StationHealthSuffix():"○ 链路 · 未连接";connectionState.ForeColor=connected?UiTheme.Green:UiTheme.Muted;captureState.Text=running?"▶ 采集 · 运行中":"⏸ 采集 · 已停止";captureState.ForeColor=running?UiTheme.Green:UiTheme.Muted;}
         void ConnectCaptureSource(){try{if(!simulation.Checked&&String.IsNullOrWhiteSpace(port.Text))throw new InvalidOperationException("没有可用串口。请接入 USB-RS485 转换器后点击刷新。");Engine.Connect(simulation.Checked,port.Text,9600);SaveSettings();RefreshControls();}catch(Exception ex){MessageBox.Show(this,"连接失败："+ex.Message,"连接",MessageBoxButtons.OK,MessageBoxIcon.Error);}}
-        void SetConnection(bool connected,string source){string key=source??Engine.ActiveSource;if(connected){if(displayedSource!=null&&key!=displayedSource)ResetDisplay();displayedSource=key;connectionState.Text=key=="simulation"?"● 链路 · 模拟 · "+DeviceHealth():"● 链路 · 已连接 · "+Engine.ConnectedPort+" · 9600 8N1 · "+DeviceHealth();connectionState.ForeColor=UiTheme.Green;AppendLog("连接状态："+connectionState.Text);if(historyPage!=null)historyPage.SetActiveSource(key);}else{connectionState.Text="○ 未连接";connectionState.ForeColor=UiTheme.Muted;MarkLastValuesStale("连接已断开");AppendLog("连接已断开 · 最后采样保留");}RefreshControls();}
+        void SetConnection(bool connected,string source){string key=source??Engine.ActiveSource;if(connected){if(displayedSource!=null&&key!=displayedSource)ResetDisplay();displayedSource=key;connectionState.Text=(key=="simulation"?"● 链路 · 模拟 · "+DeviceHealth():"● 链路 · 已连接 · "+Engine.ConnectedPort+" · 9600 8N1 · "+DeviceHealth())+StationHealthSuffix();connectionState.ForeColor=UiTheme.Green;AppendLog("连接状态："+connectionState.Text);if(historyPage!=null)historyPage.SetActiveSource(key);}else{connectionState.Text="○ 未连接";connectionState.ForeColor=UiTheme.Muted;MarkLastValuesStale("连接已断开");AppendLog("连接已断开 · 最后采样保留");}RefreshControls();}
         void MarkLastValuesStale(string label){foreach(var p in lastGood){Label[] c;if(cards.TryGetValue(p.Key,out c)){c[3].Text=label+" · "+p.Value.ToLocalTime().ToString("HH:mm:ss");c[3].ForeColor=UiTheme.Warning;}DataRow r;if(rows.TryGetValue(p.Key,out r)&&r["质量"].ToString()=="正常")r["质量"]="过期 · "+label;}}
         void StartCapture(bool single){try{if(!Engine.IsConnected)throw new InvalidOperationException("请先连接数据源");SaveSettings();shownStoreError=null;good=bad=0;Engine.SetPeriodSeconds((int)period.Value);if(single)Engine.StartOnce((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));else Engine.Start((int)period.Value,(int)timeout.Value,points.Select(p=>p.name));RefreshControls();captureState.Text=single?"▶ 采集 · 运行中（单轮）":"▶ 采集 · 运行中";}catch(Exception ex){ShowError(single?"单轮采集失败":"开始采集失败",ex);}}
         void StopCapture(){try{Engine.Stop();captureState.Text="⏸ 采集 · 已停止 · 连接保持";MarkLastValuesStale("采集已停止");RefreshControls();}catch(Exception ex){ShowError("停止采集失败",ex);}}

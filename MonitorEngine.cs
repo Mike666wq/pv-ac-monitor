@@ -15,6 +15,27 @@ namespace ExperimentMonitor {
     }
     public sealed class PolicyChange { public string Type, Source, Detail; public DateTime Utc; public long Round; }
     public sealed partial class MonitorEngine:IDisposable {
+        // 站号级失败与退避状态：跨轮保留（退避才有意义），同时对界面只读可见。
+        readonly object stationSync=new object();
+        Dictionary<int,int> stationFailures=new Dictionary<int,int>();
+        Dictionary<int,DateTime> stationProbeAt=new Dictionary<int,DateTime>();
+
+        /// <summary>
+        /// 当前处于失败/退避状态的站号快照（只读、可并发调用）。
+        /// 界面用它把"设备没接"和"程序卡住"区分开。
+        /// </summary>
+        public List<StationLinkState> StationLinkStates() {
+            var result=new List<StationLinkState>();
+            lock(stationSync) {
+                foreach(var pair in stationFailures) {
+                    DateTime probe;
+                    stationProbeAt.TryGetValue(pair.Key,out probe);
+                    result.Add(new StationLinkState{Slave=pair.Key,Failures=pair.Value,NextProbeUtc=probe});
+                }
+            }
+            result.Sort((a,b)=>a.Slave.CompareTo(b.Slave));
+            return result;
+        }
         readonly List<Point> points; readonly string root; readonly object sync=new object();
         Thread worker; CancellationTokenSource cancel; bool disposed, disconnecting, diagnosticBusy, connected, connectedSimulation; string connectedPort=""; int connectedBaud;
         CancellationTokenSource diagnosticCancel; readonly ManualResetEvent diagnosticComplete=new ManualResetEvent(true);
@@ -79,7 +100,7 @@ namespace ExperimentMonitor {
         void StartCore(int period,int timeout,IEnumerable<string> selected,bool once){
             lock(sync){if(disposed)throw new ObjectDisposedException("MonitorEngine");if(disconnecting)throw new InvalidOperationException("正在断开连接");if(diagnosticBusy)throw new InvalidOperationException("诊断读取进行中，请完成后再采集");if(!connected||connectedTransport==null)throw new InvalidOperationException("请先连接数据源");if(worker!=null)throw new InvalidOperationException("采集已经运行");if(period<1||period>86400||timeout<1||timeout>30)throw new ArgumentOutOfRangeException("周期/超时");var ids=new HashSet<string>(selected??Enumerable.Empty<string>());var chosen=points.Where(p=>ids.Contains(p.name)).ToList();if(chosen.Count==0)throw new InvalidOperationException("请选择采集点");periodSeconds=period;currentTimeoutMs=timeout;lastStoreError=string.Empty;cancel=new CancellationTokenSource();var token=cancel.Token;single=once;bool sim=connectedSimulation;string port=connectedPort;int baud=connectedBaud;var transport=connectedTransport;var partition=GetPartition(sim?"simulation":"serial");worker=new Thread(()=>Run(sim,port,baud,timeout,chosen,token,transport,partition));worker.IsBackground=true;worker.Name="实验串口采集";try{worker.Start();}catch{worker=null;cancel.Dispose();cancel=null;throw;}}
         }
-        void Run(bool sim,string port,int baud,int timeout,List<Point> chosen,CancellationToken token,IReadTransport transport,PartitionCycle partition){string source=sim?"simulation":"serial",session=Guid.NewGuid().ToString("N"),config="",version="";var failed=new Dictionary<int,int>();var probeAt=new Dictionary<int,DateTime>();ExperimentStore store=null;StreamWriter events=null;long round=0;try{
+        void Run(bool sim,string port,int baud,int timeout,List<Point> chosen,CancellationToken token,IReadTransport transport,PartitionCycle partition){string source=sim?"simulation":"serial",session=Guid.NewGuid().ToString("N"),config="",version="";lock(stationSync){stationFailures=new Dictionary<int,int>();stationProbeAt=new Dictionary<int,DateTime>();}Dictionary<int,int> failed=stationFailures;Dictionary<int,DateTime> probeAt=stationProbeAt;ExperimentStore store=null;StreamWriter events=null;long round=0;try{
             config=File.ReadAllText(Path.Combine(root,"protocol.json"));using(var hash=SHA256.Create())version=PointCatalog.Version+"-"+BitConverter.ToString(hash.ComputeHash(System.Text.Encoding.UTF8.GetBytes(config))).Replace("-","");Directory.CreateDirectory(Path.Combine(root,"logs"));partition.EnsureInitialized(DateTime.UtcNow);events=OpenSessionLog(Path.Combine(root,"logs"),session);store=new ExperimentStore(Path.Combine(root,"data","storage"),source,new JavaScriptSerializer().Serialize(new{protocolJson=config,catalog=chosen.Select(p=>PointCatalog.Get(p)).ToArray(),configVersion=version}),partition.ActiveDays,partition.ResolvePath,session);store.Logged+=m=>Log(m);store.Ready.GetAwaiter().GetResult();lock(sync)Store=store;
             Action<string> log=s=>{try{bool raw=s.StartsWith("TX ",StringComparison.Ordinal)||s.StartsWith("RX ",StringComparison.Ordinal)||s.StartsWith("[模拟] TX ",StringComparison.Ordinal)||s.StartsWith("[模拟] RX ",StringComparison.Ordinal)||s.StartsWith("发送前丢弃 RX ",StringComparison.Ordinal);if(!raw||RecordRawLog){events.WriteLine(DateTime.UtcNow.ToString("o")+" "+s);events.Flush();}}catch{}Log(s);};State((sim?"模拟":"实机")+"已连接 · 正在采集 · "+port+" · "+baud+" 8N1");var clock=Stopwatch.StartNew();long next=0;int timeoutMs=timeout*1000;
             while(true){token.ThrowIfCancellationRequested();round++;lock(sync)activeRound=round;DateTime roundStarted=DateTime.UtcNow;string roundPath=partition.BeginRound(roundStarted,round);lock(sync)activeRoundPath=roundPath;try{
@@ -100,3 +121,4 @@ namespace ExperimentMonitor {
         public void Dispose(){lock(sync)if(disposed)return;Disconnect();lock(sync)disposed=true;foreach(var p in partitions.Values)p.Dispose();diagnosticComplete.Dispose();}
     }
 }
+
