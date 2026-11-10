@@ -136,11 +136,19 @@ namespace ExperimentMonitor {
         /// 这两个问题才区分得开。
         /// </summary>
         string StationHealthSuffix() {
-            List<MonitorEngine.StationLinkState> states;
-            try { states = Engine.StationLinkStates(); } catch { return ""; }
-            if (states == null || states.Count == 0) return "";
-            // 只列正在退避的（已经可以重试的不算"离线中"）。
-            var active = states.Where(s => s.RetryInSeconds > 0).ToList();
+            try { return FormatStationHealth(Engine.StationLinkStates()); } catch { return ""; }
+        }
+
+        /// <summary>
+        /// 把站号状态拼成状态栏后缀。纯函数，便于离线钉死文案：
+        /// 只列**正在退避窗口内**的站（已经可以重试的不算"离线中"），
+        /// 正常时返回空串，不占状态栏地方。
+        /// </summary>
+        internal static string FormatStationHealth(IEnumerable<MonitorEngine.StationLinkState> states) {
+            if (states == null) return "";
+            var active = states.Where(s => s != null && s.RetryInSeconds > 0)
+                               .OrderBy(s => s.Slave)
+                               .ToList();
             if (active.Count == 0) return "";
             string first = active[0].ToString();
             return active.Count == 1 ? "（" + first + "）" : "（" + first + " 等 " + active.Count + " 个站）";

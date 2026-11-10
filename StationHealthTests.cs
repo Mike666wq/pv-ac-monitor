@@ -118,6 +118,34 @@ namespace ExperimentMonitor {
                         Check(checks, engine2.StationLinkStates().Count == 0, "重新连接后失败状态被清空（不会一直挂着离线）");
                     }
                 }
+                // ── 状态栏文案（纯函数，不需要真机也不需要引擎）──
+                Check(checks, DashboardForm.FormatStationHealth(null) == "", "没有状态时后缀为空");
+                Check(checks, DashboardForm.FormatStationHealth(new List<MonitorEngine.StationLinkState>()) == "",
+                    "全健康时后缀为空（正常时不占状态栏地方）");
+
+                var healed = new MonitorEngine.StationLinkState {
+                    Slave = 6, Failures = 5, NextProbeUtc = DateTime.UtcNow.AddSeconds(-30)
+                };
+                Check(checks, healed.RetryInSeconds == 0, "已过重试时刻的站，剩余秒数为 0");
+                Check(checks, DashboardForm.FormatStationHealth(new[] { healed }) == "",
+                    "已到重试时刻的站不再显示为离线（否则会一直挂着）");
+
+                var down = new MonitorEngine.StationLinkState {
+                    Slave = 6, Failures = 5, NextProbeUtc = DateTime.UtcNow.AddSeconds(60)
+                };
+                string one = DashboardForm.FormatStationHealth(new[] { down });
+                Check(checks, one.StartsWith("（") && one.EndsWith("）"), "单个站离线时用括号包起来（" + one + "）");
+                Check(checks, one.Contains("站6") && one.Contains("×5"), "单个站离线时说明站号与失败次数（" + one + "）");
+                Check(checks, one.Contains("重试"), "单个站离线时给出重试时间（" + one + "）");
+
+                var down2 = new MonitorEngine.StationLinkState {
+                    Slave = 3, Failures = 2, NextProbeUtc = DateTime.UtcNow.AddSeconds(120)
+                };
+                string two = DashboardForm.FormatStationHealth(new[] { down, down2 });
+                Check(checks, two.Contains("站3") && two.Contains("等 2 个站"),
+                    "多个站同时离线时列出第一个并注明还有几个（" + two + "）");
+                Check(checks, !two.Contains("站6 无响应") || two.IndexOf("站3") < two.IndexOf("站6"),
+                    "多个站时按站号升序，第一个是最小的（" + two + "）");
             } catch (Exception ex) {
                 checks.Add("异常：" + ex.Message);
                 throw;
