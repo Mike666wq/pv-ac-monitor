@@ -20,7 +20,36 @@ foreach ($required in @($sqlitePath,$configPath,$protocolPath,(Join-Path $projec
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw ('Required build dependency is missing: ' + [IO.Path]::GetFileName($required)) }
 }
 
-$sources = @(Get-ChildItem -LiteralPath $projectRoot -Filter '*.cs' -File | Sort-Object Name | Select-Object -ExpandProperty FullName)
+# 共享基座源码：保存在仓库内 shared/ 目录，保证单仓独立构建与 CI 运行。
+$sharedRoot = Join-Path $projectRoot 'shared'
+$sharedSources = @()
+if (Test-Path -LiteralPath $sharedRoot -PathType Container) {
+    $sharedSources = @(Get-ChildItem -LiteralPath $sharedRoot -Filter '*.cs' -File | Sort-Object Name | Select-Object -ExpandProperty FullName)
+}
+if ($sharedSources.Count -eq 0) {
+    throw ('Shared base sources are missing in: ' + $sharedRoot)
+}
+
+# Verify each generated copy still matches its declared @source-sha256.
+# Line endings are normalized: this repo checks out *.cs as CRLF on Windows.
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+foreach ($shared in $sharedSources) {
+    $text = [System.IO.File]::ReadAllText($shared, [System.Text.Encoding]::UTF8)
+    $declared = [regex]::Match($text, '(?m)^// @source-sha256 ([0-9a-f]{64})?$').Groups[1].Value
+    $marker = '// @end-header'
+    $at = $text.IndexOf($marker)
+    if (-not $declared -or $at -lt 0) {
+        throw ('Shared copy is not generated (missing @source-sha256 / @end-header): ' + $shared)
+    }
+    $body = $text.Substring($at + $marker.Length) -replace '^?
+', '' -replace '
+', "`n"
+    $hash = -join ($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString('x2') })
+    if ($hash -ne $declared) {
+        throw ('Shared copy was modified: ' + $shared + '. Declared ' + $declared + ' / actual ' + $hash + '. Restore it or rerun _base/sync-base.mjs --write')
+    }
+}
+$sources = @($sharedSources) + @(Get-ChildItem -LiteralPath $projectRoot -Filter '*.cs' -File | Sort-Object Name | Select-Object -ExpandProperty FullName)
 if ($sources.Count -eq 0) { throw 'No C# source files were found beside build-source.ps1.' }
 $exePath = Join-Path $outputRoot 'ExperimentMonitorDemo.exe'
 $compilerArguments = @(

@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using System.Web.Script.Serialization;
 
+using Acme.Base;
 namespace ExperimentMonitor {
     /// <summary>Persistent source-specific database partition schedule.</summary>
     public sealed class PartitionCycle : IDisposable {

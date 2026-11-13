@@ -10,9 +10,13 @@ using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
 
+using Acme.Base;
 namespace ExperimentMonitor {
     static class Program {
         [STAThread] static int Main(string[] args) {
+            // 基座接线：日志目录名。云配置读取失败保持静默（沿用实验端原有行为）。
+            Acme.Base.CrashLogger.FallbackFolder="ExperimentMonitorDemo";
+            Acme.Cloud.CloudNetworkErrors.FallbackFolder="ExperimentMonitorDemo";
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             string root=AppDomain.CurrentDomain.BaseDirectory;

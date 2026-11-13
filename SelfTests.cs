@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Web.Script.Serialization;
 
+using Acme.Cloud;
 namespace ExperimentMonitor {
     static class SelfTests {
         static readonly List<string> passed=new List<string>();

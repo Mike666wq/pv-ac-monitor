@@ -3,6 +3,7 @@ using System.Drawing;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
+using Acme.Cloud;
 namespace ExperimentMonitor {
     public sealed class CloudPage:UserControl {
         CloudConfiguration config;readonly CloudPublisher publisher;

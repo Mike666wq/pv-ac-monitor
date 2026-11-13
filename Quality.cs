@@ -28,6 +28,16 @@ namespace ExperimentMonitor {
         public const string Ambiguous = "ambiguous";
         public const string Skipped = "skipped";
 
+        /// <summary>
+        /// 以下两个值**只在出网时生成**，本地采集不会产生它们：
+        ///   Stale   —— 上传新鲜度超时（CloudPublisher 判陈旧后把值清空、质量改成本值）
+        ///   Unknown —— 空质量的兜底，避免把 null 质量当作 good 传出去
+        /// 基座之前它们是散落在 CloudPublisher 里的字符串字面量，任何 IsMissing()/IsFailure()
+        /// 判断都会漏掉它们，导致"陈旧数据"在统计里被算成有效数据。
+        /// </summary>
+        public const string Stale = "stale";
+        public const string Unknown = "unknown";
+
         /// <summary>是否读到了有效数据。</summary>
         public static bool IsGood(string q) { return String.Equals(q, Good, StringComparison.Ordinal); }
 
@@ -41,7 +51,9 @@ namespace ExperimentMonitor {
         public static bool IsMissing(string q) {
             return String.Equals(q, Timeout, StringComparison.Ordinal)
                 || String.Equals(q, Skipped, StringComparison.Ordinal)
-                || String.Equals(q, Ambiguous, StringComparison.Ordinal);
+                || String.Equals(q, Ambiguous, StringComparison.Ordinal)
+                // 出网期生成：新鲜度超时的值不得被当成"读到了数据"
+                || String.Equals(q, Stale, StringComparison.Ordinal);
         }
 
         /// <summary>

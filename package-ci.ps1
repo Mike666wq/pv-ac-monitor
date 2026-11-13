@@ -86,9 +86,13 @@ try {
             bytes = (Get-Item -LiteralPath $outputFile).Length
         }
     }
+    $commitSha = $env:GITHUB_SHA
+    if (-not $commitSha) { try { $commitSha = (& git -C $PSScriptRoot rev-parse HEAD 2>$null) } catch { } }
+    if (-not $commitSha) { $commitSha = 'unknown' }
     $manifest = [ordered]@{
         app = 'PV AC Monitor'
         version = $Version
+        commit = $commitSha
         built_at = [DateTimeOffset]::UtcNow.ToString('o')
         platform = 'Windows x86/x64'
         framework = '.NET Framework 4.8'

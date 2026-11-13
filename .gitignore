@@ -28,6 +28,12 @@
 !/x86/
 !/tools/
 !/tools/control-runner/
+!/shared/
+!/shared/*.cs
+# 线协议样例：检查器读取的真实报文，必须入库（交接书 .md 仍留本地）
+!/cloud-integration/
+!/cloud-integration/example-*.json
+/cloud-integration/*.md
 !/tools/control-runner/*.cs
 !/tools/control-runner/*.ps1
 /x64/*

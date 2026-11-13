@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Globalization;
 using System.Net;
@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.Serialization.Json;
+using Acme.Cloud;
 namespace ExperimentMonitor {
     public static class CloudSelfTests {
         sealed class Fake : ICloudTransport {
