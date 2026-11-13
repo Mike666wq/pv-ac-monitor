@@ -31,20 +31,21 @@ if ($sharedSources.Count -eq 0) {
 }
 
 # Verify each generated copy still matches its declared @source-sha256.
-# Line endings are normalized: this repo checks out *.cs as CRLF on Windows.
+# Line endings are normalized before hashing: a Windows checkout may convert
+# LF to CRLF, and hashing raw bytes would then report a false "copy was modified".
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 foreach ($shared in $sharedSources) {
-    $text = [System.IO.File]::ReadAllText($shared, [System.Text.Encoding]::UTF8)
-    $declared = [regex]::Match($text, '(?m)^// @source-sha256 ([0-9a-f]{64})?$').Groups[1].Value
+    $full = if ([System.IO.Path]::IsPathRooted($shared)) { $shared } else { Join-Path $PSScriptRoot $shared }
+    $text = [System.IO.File]::ReadAllText($full, [System.Text.Encoding]::UTF8)
+    $declared = [regex]::Match($text, '// @source-sha256 ([0-9a-f]{64})').Groups[1].Value
     $marker = '// @end-header'
     $at = $text.IndexOf($marker)
     if (-not $declared -or $at -lt 0) {
         throw ('Shared copy is not generated (missing @source-sha256 / @end-header): ' + $shared)
     }
-    $body = $text.Substring($at + $marker.Length) -replace '^?
-', '' -replace '
-', "`n"
-    $hash = -join ($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString('x2') })
+    $body = $text.Substring($at + $marker.Length) -replace "`r`n", "`n"
+    if ($body.StartsWith("`n")) { $body = $body.Substring(1) }
+$hash = -join ($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString('x2') })
     if ($hash -ne $declared) {
         throw ('Shared copy was modified: ' + $shared + '. Declared ' + $declared + ' / actual ' + $hash + '. Restore it or rerun _base/sync-base.mjs --write')
     }
