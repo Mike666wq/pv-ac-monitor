@@ -345,7 +345,8 @@ namespace ExperimentMonitor {
                 // 形状谓词会先撞上它，于是 Both != Vertical 直接把 ui 套件打挂。
                 TextBox log=Find<TextBox>(page,c=>c.Name=="commLog");Control logContainer=log==null?null:log.Parent;ScrollableControl logScroll=logContainer==null?null:logContainer.Parent as ScrollableControl;bool logReachable=logContainer!=null&&(FullyVisible(logContainer,form)||(logScroll!=null&&logScroll.AutoScroll));Check(log!=null&&log.Dock==DockStyle.Fill&&log.ScrollBars==ScrollBars.Both&&log.ClientSize.Width>=200&&log.ClientSize.Height>=50&&logReachable,title+" 通信日志保持可用高度，并完整可见或可通过诊断页滚动访问"+(log==null?"":" · client="+log.ClientSize.Width+"x"+log.ClientSize.Height+" dock="+log.Dock+" bars="+log.ScrollBars+" reachable="+logReachable)+" · "+DescribeBounds(log));
             }
-            if(page.Text=="云端连接")Check(Find<Control>(page,c=>c.Text.Contains("HTTPS"))!=null,title+" 云端连接信息存在");
+            // 零配置改造后页面上不再有「服务地址（HTTPS…）」输入项，改为展示云端下发的接入状态。
+            if(page.Text=="云端连接")Check(Find<Control>(page,c=>c.Text.Contains("接入状态")||c.Text.Contains("云端授权"))!=null,title+" 云端接入状态信息存在");
             if(page.Text=="运行控制"){
                 Check(Find<Button>(page,c=>c.Text.StartsWith("控制开关"))!=null,title+" 控制开关存在");
                 Check(Find<Button>(page,c=>c.Text.StartsWith("发送全部"))!=null,title+" 批量发送入口存在");

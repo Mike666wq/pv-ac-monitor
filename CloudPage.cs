@@ -6,9 +6,14 @@ using System.Windows.Forms;
 using Acme.Cloud;
 namespace ExperimentMonitor {
     public sealed class CloudPage:UserControl {
+        // 云端只有一个站点，地址是编译期常量：现场不再需要填服务地址。
+        internal const string CloudEndpoint="https://pv-ac.bbben.xyz";
         CloudConfiguration config;readonly CloudPublisher publisher;
-        readonly TextBox endpoint=new TextBox{Width=520},alias=new TextBox{Width=320},token=new TextBox{Width=520,UseSystemPasswordChar=true};
-        readonly CheckBox enabled=new CheckBox{Text="启用实验云连接",AutoSize=true},simulation=new CheckBox{Text="允许上传模拟数据（联调时使用）",AutoSize=true};
+        // 零配置：服务地址、令牌、启用开关、别名、模拟开关全部由云端下发，页面上不再有输入框。
+        readonly Label aliasValue=new Label{AutoSize=true,ForeColor=UiTheme.Ink,Margin=new Padding(2,0,2,6)};
+        readonly Label machineValue=new Label{AutoSize=true,ForeColor=UiTheme.Ink,Margin=new Padding(2,0,2,6)};
+        readonly Label accessValue=new Label{AutoSize=true,MaximumSize=new Size(560,0),ForeColor=UiTheme.Ink};
+        readonly Label enrollStateValue=new Label{AutoSize=true,ForeColor=UiTheme.Ink};
         readonly Label status=new Label{AutoSize=true,MaximumSize=new Size(1000,0)};
         readonly Label contact=new Label{AutoSize=true},lease=new Label{AutoSize=true},uploads=new Label{AutoSize=true},diagnostic=new Label{AutoSize=true,MaximumSize=new Size(1000,0)};
         readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer{Interval=1000};
@@ -54,7 +59,12 @@ namespace ExperimentMonitor {
                 }
             }
             config=CloudConfiguration.Load(configPath,deviceId);
-            publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"));engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
+            // 地址与开关都由程序决定，不再读本地配置：云端才是唯一真相源。
+            // --root= 测试隔离时保持关闭，避免把测试数据发到真实云端。
+            config.Endpoint=CloudEndpoint;
+            config.Enabled=productionRoot;
+            // 接入状态写进实际生效的设置目录；--root= 测试根不写真实 ProgramData。
+            publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"),productionRoot?settingsDirectory:null);engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
             // 双栏分组布局(对齐 BMS 云端连接页):左 设备身份+连接设置,右 连接状态。
             // 左右两栏顶边平齐:不再单独放大标题(选项卡已标明页面);
             // 外边距 14、栏间距 12,左右框的边线严格对齐。
@@ -72,21 +82,20 @@ namespace ExperimentMonitor {
             var identity=Section("设备身份");
             identity.Controls.Add(FieldLabel("独立数据源"));
             identity.Controls.Add(new Label{Text=config.DeviceId,AutoSize=true,ForeColor=UiTheme.Ink,Margin=new Padding(2,0,2,6)});
-            identity.Controls.Add(FieldLabel("本地实验程序名称"));
-            identity.Controls.Add(new RoundedInputHost(alias){Margin=new Padding(2,0,2,4)});
+            identity.Controls.Add(FieldLabel("设备别名（由云端分配）"));
+            identity.Controls.Add(aliasValue);
+            identity.Controls.Add(FieldLabel("机器钥匙"));
+            identity.Controls.Add(machineValue);
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(identity,0,leftCol.RowCount-1);
-            var settings=Section("连接设置");
-            settings.Controls.Add(enabled);
-            settings.Controls.Add(FieldLabel("服务地址（HTTPS 域名根，与 BMS 使用同一云服务）"));
-            settings.Controls.Add(new RoundedInputHost(endpoint){Margin=new Padding(2,0,2,4)});
-            settings.Controls.Add(FieldLabel("实验设备令牌（留空保留已保存令牌）"));
-            settings.Controls.Add(new RoundedInputHost(token){Margin=new Padding(2,0,2,4)});
-            settings.Controls.Add(simulation);
-            var save=new StyledActionButton{Text="保存并应用",Width=150,BackColor=UiTheme.Blue};
-            var clear=new StyledActionButton{Text="清除保存的令牌",Width=150};
+            var settings=Section("云端授权");
+            settings.Controls.Add(FieldLabel("接入状态"));
+            settings.Controls.Add(enrollStateValue);
+            settings.Controls.Add(FieldLabel("允许上传范围（由云端下发，本地不填）"));
+            settings.Controls.Add(accessValue);
+            var reclaim=new StyledActionButton{Text="重新申请接入",Width=150,BackColor=UiTheme.Blue};
             var diagnose=new StyledActionButton{Text="连接诊断（只发心跳，不上传测点）",Width=280};
             var actions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,Margin=Padding.Empty,Padding=new Padding(0,4,0,0)};
-            actions.Controls.Add(save);actions.Controls.Add(clear);actions.Controls.Add(diagnose);settings.Controls.Add(actions);
+            actions.Controls.Add(reclaim);actions.Controls.Add(diagnose);settings.Controls.Add(actions);
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(settings,0,leftCol.RowCount-1);
             var credentials=Section("凭据备份");
             credentials.Controls.Add(new Label{Text="换机器或重装系统时用：导出后凭同一口令在另一台机器导入，独立数据源编号不变、无需重新注册。",AutoSize=true,MaximumSize=new Size(660,0),ForeColor=UiTheme.Muted,Margin=new Padding(2,0,2,6)});
@@ -113,9 +122,8 @@ namespace ExperimentMonitor {
             stateSection.Controls.Add(diagnostic);
             shell.Controls.Add(stateSection,1,0);
             diagnose.Click+=async(s,e)=>{diagnose.Enabled=false;diagnostic.Text="正在验证地址、网络、TLS、认证和云端接口响应…";try{var result=await publisher.DiagnoseAsync(CancellationToken.None);diagnostic.Text="诊断分类："+result.Category+"；"+result.Message+"（"+result.CompletedLocal+"）";}catch(Exception ex){diagnostic.Text="诊断失败："+ex.Message;}finally{diagnose.Enabled=true;}};
-            enabled.Checked=config.Enabled;simulation.Checked=config.IncludeSimulation;endpoint.Text=config.Endpoint;alias.Text=config.Alias;
-            save.Click+=(s,e)=> {try {var next=CloudConfiguration.Load(config.SavePath,config.DeviceId);next.Enabled=enabled.Checked;next.IncludeSimulation=simulation.Checked;next.Endpoint=endpoint.Text.Trim();next.Alias=alias.Text.Trim();if(token.Text.Length>0)next.Token=token.Text;next.Save();Volatile.Write(ref config,next);token.Clear();status.Text="已保存；等待下一次心跳更新租约";}catch(Exception ex){MessageBox.Show(this,ex.Message,"云连接设置",MessageBoxButtons.OK,MessageBoxIcon.Warning);}};
-            clear.Click+=(s,e)=>{try{var next=CloudConfiguration.Load(config.SavePath,config.DeviceId);next.Token="";next.Enabled=false;next.Save();Volatile.Write(ref config,next);enabled.Checked=false;token.Clear();status.Text="已清除令牌并关闭云连接";}catch(Exception ex){status.Text=ex.Message;}};
+            reclaim.Click+=delegate{Reclaim();};
+
             publisher.StatusChanged+=(s,e)=>PublishStatusLabel();timer.Tick+=(s,e)=>RefreshStatus();timer.Start();RefreshStatus();
             Disposed+=(s,e)=>{timer.Stop();timer.Dispose();engine.ObservationReceived-=OnObservation;engine.ConnectionChanged-=OnConnectionChanged;publisher.Dispose();};
         }
@@ -147,7 +155,7 @@ namespace ExperimentMonitor {
                     CloudIdentity.WriteMachineDeviceId("ExperimentMonitorDemo",imported.DeviceId);
                     imported.Save();
                     Volatile.Write(ref config,imported);
-                    token.Clear();status.Text="凭据已导入；独立数据源编号 "+imported.DeviceId+"，重启本程序后生效";
+                    status.Text="凭据已导入；独立数据源编号 "+imported.DeviceId+"，重启本程序后生效";
                     MessageBox.Show(this,"凭据已导入。独立数据源编号："+imported.DeviceId+"\r\n\r\n本地数据按编号区分，重启本程序后生效。","导入凭据",MessageBoxButtons.OK,MessageBoxIcon.Information);
                 }
                 catch(Exception e){MessageBox.Show(this,"导入失败："+e.Message,"导入凭据",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
@@ -184,7 +192,26 @@ namespace ExperimentMonitor {
         static Label FieldLabel(string text){return new Label{Text=text,AutoSize=true,ForeColor=UiTheme.Muted,Margin=new Padding(2,4,2,2)};}
         static Label Caption(string text){return new Label{Text=text,AutoSize=true,ForeColor=UiTheme.Muted,Margin=new Padding(2,3,2,3)};}
         static Label Value(Label label){label.AutoSize=true;label.ForeColor=UiTheme.Ink;label.Margin=new Padding(2,3,2,3);label.MaximumSize=new Size(280,0);return label;}
-        void RefreshStatus(){CloudPublisherStatus snapshot=publisher.SnapshotStatus;status.Text=snapshot.State;contact.Text=snapshot.LastContactLocal;lease.Text=snapshot.LeaseValid?"有效至 "+snapshot.LeaseUntilLocal:"无有效租约";uploads.Text=snapshot.LastUploadLocal+" · 确认 "+snapshot.Accepted+" · 失败 "+snapshot.Failed+" · 待发设备 "+snapshot.QueuedDevices+" · 测点 "+snapshot.QueuedPoints;EventHandler h=StatusChanged;if(h!=null)h(this,EventArgs.Empty);PublishStatusLabel();}
+        /// <summary>
+        /// 唯一保留的手动动作：把「我是谁」重新交回云端排队。
+        /// 用于设备被删除/令牌被撤销后由现场人员发起重新接入——仍然不需要填任何东西。
+        /// </summary>
+        void Reclaim()
+        {
+            string question="将清除本机保存的接入凭据，并重新向云端提交接入申请。\r\n管理员批准后自动恢复，期间本地采集与记录不受影响。\r\n\r\n继续？";
+            if(MessageBox.Show(this,question,"重新申请接入",MessageBoxButtons.OKCancel,MessageBoxIcon.Question)!=DialogResult.OK)return;
+            try
+            {
+                var next=CloudConfiguration.Load(config.SavePath,config.DeviceId);
+                next.Token="";next.Save();Volatile.Write(ref config,next);
+                publisher.ResetEnrollment();RefreshStatus();
+                MessageBox.Show(this,"已重新提交接入申请。请在云端「待批准设备」中确认。","重新申请接入",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            }
+            catch(Exception ex){MessageBox.Show(this,"重新申请失败："+ex.Message,"重新申请接入",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
+        }
+        void RefreshStatus(){CloudPublisherStatus snapshot=publisher.SnapshotStatus;
+            aliasValue.Text=publisher.EnrollmentAlias;machineValue.Text=publisher.MachineKeyMasked;accessValue.Text=publisher.EnrollmentAccess;enrollStateValue.Text=publisher.EnrollmentState;
+            status.Text=snapshot.State;contact.Text=snapshot.LastContactLocal;lease.Text=snapshot.LeaseValid?"有效至 "+snapshot.LeaseUntilLocal:"无有效租约";uploads.Text=snapshot.LastUploadLocal+" · 确认 "+snapshot.Accepted+" · 失败 "+snapshot.Failed+" · 待发设备 "+snapshot.QueuedDevices+" · 测点 "+snapshot.QueuedPoints;EventHandler h=StatusChanged;if(h!=null)h(this,EventArgs.Empty);PublishStatusLabel();}
         void PublishStatusLabel(){Action<string> h=CloudStatusChanged;if(h==null)return;string label=CurrentStatusLabel;try{if(IsHandleCreated&&InvokeRequired)BeginInvoke((Action)(()=>h(label)));else h(label);}catch{}}
         void OnObservation(Observation observation){publisher.Publish(observation);}
         void OnConnectionChanged(bool connected,string source){publisher.ResetCaptureSession();}

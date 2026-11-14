@@ -188,16 +188,19 @@ namespace ExperimentMonitor {
             using(var form=new DashboardForm(points,isolated)){
                 var cloud=new CloudPage(isolated,form.Engine);form.AttachCloudPage(cloud);form.ShowInTaskbar=false;form.Opacity=0;
                 form.Shown+=async(s,e)=>{try{
-                    form.MainNavigation.SelectedIndex=4;string mockToken="fixture-token-no-production";
-                    Field<CheckBox>(cloud,"enabled").Checked=false;Field<TextBox>(cloud,"endpoint").Text="https://example.invalid";Field<TextBox>(cloud,"alias").Text="test fixture";Field<TextBox>(cloud,"token").Text=mockToken;
-                    Find<Button>(cloud,b=>b.Text=="保存并应用").PerformClick();string path=Path.Combine(isolated,"cloud-settings.json");var saved=CloudConfiguration.Load(path);
-                    check(!saved.Enabled&&saved.Endpoint=="https://example.invalid"&&saved.Alias=="test fixture"&&saved.Token==mockToken,"云页面保存操作实际持久化当前配置");
-                    check(!File.ReadAllText(path).Contains(mockToken)&&Field<TextBox>(cloud,"token").Text.Length==0,"保存令牌受DPAPI保护且输入框清空");
-                    Find<Button>(cloud,b=>b.Text=="清除保存的令牌").PerformClick();saved=CloudConfiguration.Load(path);
-                    string clearStatus=Field<Label>(cloud,"status").Text;
-                    check(saved.Token.Length==0&&!saved.Enabled,"清除令牌实际清除凭据并禁用发布（状态："+clearStatus+"；文件令牌长度："+new FileInfo(path).Length+"）");
-                    Button diagnose=Find<Button>(cloud,b=>b.Text.StartsWith("连接诊断"));diagnose.PerformClick();DateTime end=DateTime.UtcNow.AddSeconds(3);while(!diagnose.Enabled&&DateTime.UtcNow<end)await Task.Delay(20);
-                    check(Field<Label>(cloud,"diagnostic").Text.Contains("认证"),"页面诊断对未配置令牌给出真实认证结果，不发送外部请求");
+                    form.MainNavigation.SelectedIndex=4;
+                    // 零配置改造：服务地址、令牌、启用开关、别名、模拟开关全部由云端下发，
+                    // 页面上不再有任何可编辑输入框。
+                    check(Find<TextBox>(cloud,t=>t.UseSystemPasswordChar)==null,"云端页不再有令牌输入框");
+                    check(Find<TextBox>(cloud,t=>t!=null)==null,"云端页不再有文本输入框");
+                    check(Find<CheckBox>(cloud,c=>c.Text.Contains("启用"))==null,"云端页不再有启用开关");
+                    check(Find<Button>(cloud,b=>b.Text=="重新申请接入")!=null,"重新申请接入按钮存在");
+                    Button diagnose=Find<Button>(cloud,b=>b.Text.StartsWith("连接诊断"));check(diagnose!=null,"连接诊断按钮存在");
+                    // 未配置令牌时诊断只做本地判定，不会发出外部请求。
+                    diagnose.PerformClick();DateTime end=DateTime.UtcNow.AddSeconds(3);while(!diagnose.Enabled&&DateTime.UtcNow<end)await Task.Delay(20);
+                    string diagnosticText=Field<Label>(cloud,"diagnostic").Text;
+                    check(diagnosticText.Contains("认证")||diagnosticText.Contains("未接入")||diagnosticText.Contains("等待"),"页面诊断对未接入设备给出真实结果，不发送外部请求");
+                    check(Field<Label>(cloud,"status").Text.Length>0,"连接状态标签有内容");
                 }catch(Exception ex){failure=ex;}finally{form.Close();}};
                 Application.Run(form);
             }

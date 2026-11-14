@@ -1,5 +1,5 @@
 // @generated 来自 _base/src/AcmeCloud.cs —— 请勿手改。
-// @source-sha256 8df5b53d56abe97217faace994f3d5a75913a5f376ac8695812e84f22707d163
+// @source-sha256 865d6f0ad3b5ea08570a445efc275f495597145cfd0c576a0cd0f9c71e2f5d3a
 // @sync node _base/sync-base.mjs --write
 // @end-header
 // ============================================================
@@ -152,6 +152,45 @@ namespace Acme.Cloud
         {
             if(String.IsNullOrWhiteSpace(settingsDirectory)||String.IsNullOrWhiteSpace(deviceId))return false;
             return TryWrite(Path.Combine(settingsDirectory,"device-id.txt"),deviceId);
+        }
+
+        /// <summary>
+        /// 机器钥匙：本地自生成、人不看不管的稳定标识，用于向云端认领。
+        /// 它不是秘密（服务端存明文，管理页要展示），所以刻意不用硬件指纹——
+        /// 指纹换硬件就变、克隆会撞、还不可轮换，而随机值可以一键重置。
+        /// </summary>
+        public static string LoadOrCreateMachineKey(string product,string installDirectory)
+        {
+            string primary=Path.Combine(MachineSettings(product),"machine-key.txt");
+            string existing;
+            if(TryRead(primary,IsMachineKey,out existing))return existing;
+            string[] legacy={
+                Path.Combine(UserSettings(product),"machine-key.txt"),
+                Path.Combine(InstallSettings(installDirectory),"machine-key.txt")
+            };
+            for(int i=0;i<legacy.Length;i++)
+                if(TryRead(legacy[i],IsMachineKey,out existing)){TryWrite(primary,existing);return existing;}
+            string created=NewMachineKey();
+            if(!TryWrite(primary,created))TryWrite(Path.Combine(UserSettings(product),"machine-key.txt"),created);
+            return created;
+        }
+
+        public static bool IsMachineKey(string value)
+        {
+            if(String.IsNullOrEmpty(value)||value.Length!=35)return false;
+            if(!value.StartsWith("mk_",StringComparison.Ordinal))return false;
+            for(int i=3;i<value.Length;i++){char c=value[i];if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return false;}
+            return true;
+        }
+
+        /// <summary>16 字节 CSPRNG -> mk_ + 32 位小写 hex。用 RandomNumberGenerator，不用 Guid。</summary>
+        public static string NewMachineKey()
+        {
+            byte[] buffer=new byte[16];
+            using(RandomNumberGenerator rng=RandomNumberGenerator.Create())rng.GetBytes(buffer);
+            StringBuilder sb=new StringBuilder("mk_",35);
+            for(int i=0;i<buffer.Length;i++)sb.Append(buffer[i].ToString("x2"));
+            return sb.ToString();
         }
 
         /// <summary>导入凭据后把设备编号写回稳定位置，让下一次启动（含升级后）直接读到同一个身份。</summary>
@@ -449,6 +488,256 @@ namespace Acme.Cloud
             string value;
             if(!map.TryGetValue(name,out value)||String.IsNullOrEmpty(value))throw new InvalidOperationException("凭据文件缺少字段："+name);
             try{return Convert.FromBase64String(value);}catch{throw new InvalidOperationException("凭据文件字段不是合法 Base64："+name);}
+        }
+    }
+
+    /// <summary>
+    /// 设备接入路由。与业务前缀（/api/realtime 等）彻底分开：
+    /// 认领发生在「还没有设备令牌」的时刻，而业务前缀每个端点都要 Bearer 令牌。
+    /// 必须与 _base/contract/contract.mjs 的 DEVICE_ROUTES 保持一致。
+    /// </summary>
+    public static class CloudDeviceRoutes
+    {
+        public const string Prefix="/api/device";
+        public const string Claim="/api/device/claim";
+        public const string Ack="/api/device/ack";
+        public static string ClaimStatus(string claimId){return Prefix+"/claim/"+claimId;}
+    }
+
+    /// <summary>云端下发的设备配置。注意：这里绝不会有串口/波特率/采样周期——采集参数归本地。</summary>
+    [DataContract]
+    public sealed class CloudDeviceConfig
+    {
+        [DataMember(Name="deviceId",EmitDefaultValue=false)]public string DeviceId{get;set;}
+        [DataMember(Name="alias",EmitDefaultValue=false)]public string Alias{get;set;}
+        [DataMember(Name="module",EmitDefaultValue=false)]public string Module{get;set;}
+        [DataMember(Name="allowedAddresses",EmitDefaultValue=false)]public int[] AllowedAddresses{get;set;}
+        [DataMember(Name="allowedPacks",EmitDefaultValue=false)]public int[] AllowedPacks{get;set;}
+        [DataMember(Name="allowedEquipment",EmitDefaultValue=false)]public string[] AllowedEquipment{get;set;}
+        [DataMember(Name="allowSimulation",EmitDefaultValue=false)]public bool? AllowSimulation{get;set;}
+        [DataMember(Name="displayTimeZone",EmitDefaultValue=false)]public string DisplayTimeZone{get;set;}
+        [DataMember(Name="uploadEnabled",EmitDefaultValue=false)]public bool? UploadEnabled{get;set;}
+        [DataMember(Name="heartbeatIntervalSec",EmitDefaultValue=false)]public int? HeartbeatIntervalSec{get;set;}
+        [DataMember(Name="statusReason",EmitDefaultValue=false)]public string StatusReason{get;set;}
+        [DataMember(Name="changedBy",EmitDefaultValue=false)]public string ChangedBy{get;set;}
+        [DataMember(Name="changedAtUtc",EmitDefaultValue=false)]public string ChangedAtUtc{get;set;}
+        [DataMember(Name="note",EmitDefaultValue=false)]public string Note{get;set;}
+    }
+
+    [DataContract]
+    public sealed class CloudDeviceCommand
+    {
+        [DataMember(Name="commandId")]public string CommandId{get;set;}
+        [DataMember(Name="type")]public string Type{get;set;}
+        [DataMember(Name="reason",EmitDefaultValue=false)]public string Reason{get;set;}
+        [DataMember(Name="issuedAtUtc",EmitDefaultValue=false)]public string IssuedAtUtc{get;set;}
+        [DataMember(Name="expiresAtUtc",EmitDefaultValue=false)]public string ExpiresAtUtc{get;set;}
+    }
+
+    [DataContract]
+    public sealed class CloudClaimRequest
+    {
+        [DataMember(Name="machineKey")]public string MachineKey{get;set;}
+        [DataMember(Name="module")]public string Module{get;set;}
+        [DataMember(Name="protocolVersion",EmitDefaultValue=false)]public int? ProtocolVersion{get;set;}
+        [DataMember(Name="desiredAlias",EmitDefaultValue=false)]public string DesiredAlias{get;set;}
+        [DataMember(Name="client",EmitDefaultValue=false)]public CloudClientReport Client{get;set;}
+    }
+
+    [DataContract]
+    public sealed class CloudClaimReply
+    {
+        [DataMember(Name="claimId")]public string ClaimId{get;set;}
+        [DataMember(Name="state")]public string State{get;set;}
+        [DataMember(Name="pollIntervalSec",EmitDefaultValue=false)]public int? PollIntervalSec{get;set;}
+        [DataMember(Name="expiresAtUtc",EmitDefaultValue=false)]public string ExpiresAtUtc{get;set;}
+        [DataMember(Name="serverTimeUtc",EmitDefaultValue=false)]public string ServerTimeUtc{get;set;}
+        [DataMember(Name="message",EmitDefaultValue=false)]public string Message{get;set;}
+        // 以下仅在已批准时出现；令牌明文只出现一次。
+        [DataMember(Name="deviceId",EmitDefaultValue=false)]public string DeviceId{get;set;}
+        [DataMember(Name="deviceToken",EmitDefaultValue=false)]public string DeviceToken{get;set;}
+        [DataMember(Name="configVersion",EmitDefaultValue=false)]public long? ConfigVersion{get;set;}
+        [DataMember(Name="config",EmitDefaultValue=false)]public CloudDeviceConfig Config{get;set;}
+        [DataMember(Name="tokenDelivered",EmitDefaultValue=false)]public bool? TokenDelivered{get;set;}
+    }
+
+    [DataContract]
+    public sealed class CloudAckRequest
+    {
+        [DataMember(Name="claimId")]public string ClaimId{get;set;}
+        [DataMember(Name="ackType")]public string AckType{get;set;}
+        [DataMember(Name="deviceId",EmitDefaultValue=false)]public string DeviceId{get;set;}
+        [DataMember(Name="configVersion",EmitDefaultValue=false)]public long? ConfigVersion{get;set;}
+        [DataMember(Name="persisted")]public bool Persisted{get;set;}
+        [DataMember(Name="deliveryLost",EmitDefaultValue=false)]public bool DeliveryLost{get;set;}
+    }
+
+    [DataContract]
+    public sealed class CloudAckReply
+    {
+        [DataMember(Name="state")]public string State{get;set;}
+        [DataMember(Name="deviceId",EmitDefaultValue=false)]public string DeviceId{get;set;}
+        [DataMember(Name="configVersion",EmitDefaultValue=false)]public long? ConfigVersion{get;set;}
+        [DataMember(Name="retryAfterSec",EmitDefaultValue=false)]public int? RetryAfterSec{get;set;}
+        [DataMember(Name="serverTimeUtc",EmitDefaultValue=false)]public string ServerTimeUtc{get;set;}
+    }
+
+    /// <summary>
+    /// 本地设备接入状态。只在这里保存「我是谁、云端允许我做什么」，
+    /// 刻意不往 CloudConfiguration 加字段：那是 k=v 全量重写，漏一处就静默清空。
+    /// 云端才是真相源，这份只是本地缓存 + 认领期凭据。
+    /// </summary>
+    public sealed class CloudEnrollment
+    {
+        public string MachineKey{get;set;}
+        public string ClaimSecret{get;set;}          // 明文只存在内存；落盘用 DPAPI
+        public string ClaimId{get;set;}
+        public string DeviceId{get;set;}
+        public string State{get;set;}                // pending/approved/active/suspended/revoked/rejected/expired/conflict
+        public long ReportedConfigVersion{get;set;}
+        public string LastAppliedCommandId{get;set;}
+        public bool UploadAllowed{get;set;}
+        public bool AllowSimulation{get;set;}
+        public string Alias{get;set;}
+        public string Module{get;set;}
+        public int[] AllowedPacks{get;set;}
+        public int[] AllowedAddresses{get;set;}
+        public string[] AllowedEquipment{get;set;}
+        public int HeartbeatIntervalSec{get;set;}
+        /// <summary>下行协议版本：0 = 未接入（按老协议发心跳），2 = 已声明支持设备配置下发。</summary>
+        public int ProtocolVersion{get;set;}
+        public string StatusReason{get;set;}
+        public string ChangedBy{get;set;}
+        public string ChangedAtUtc{get;set;}
+        public string SavePath{get;set;}
+
+        public bool IsActive { get { return String.Equals(State,"active",StringComparison.Ordinal); } }
+        public bool IsPending { get { return String.Equals(State,"pending",StringComparison.Ordinal)||String.Equals(State,"approved",StringComparison.Ordinal); } }
+        public bool IsRevoked { get { return String.Equals(State,"revoked",StringComparison.Ordinal); } }
+
+        /// <summary>把云端下发的 config 合并进来。字段缺省表示「云端没改这一项」，保留原值。</summary>
+        public void ApplyConfig(CloudDeviceConfig config,long configVersion)
+        {
+            if(config==null)return;
+            if(!String.IsNullOrEmpty(config.Alias))Alias=config.Alias;
+            if(!String.IsNullOrEmpty(config.Module))Module=config.Module;
+            if(config.AllowedPacks!=null)AllowedPacks=config.AllowedPacks;
+            if(config.AllowedAddresses!=null)AllowedAddresses=config.AllowedAddresses;
+            if(config.AllowedEquipment!=null)AllowedEquipment=config.AllowedEquipment;
+            if(config.AllowSimulation.HasValue)AllowSimulation=config.AllowSimulation.Value;
+            if(config.UploadEnabled.HasValue)UploadAllowed=config.UploadEnabled.Value;
+            if(config.HeartbeatIntervalSec.HasValue&&config.HeartbeatIntervalSec.Value>0)HeartbeatIntervalSec=config.HeartbeatIntervalSec.Value;
+            if(config.StatusReason!=null)StatusReason=config.StatusReason;
+            if(config.ChangedBy!=null)ChangedBy=config.ChangedBy;
+            if(config.ChangedAtUtc!=null)ChangedAtUtc=config.ChangedAtUtc;
+            if(configVersion>0)ReportedConfigVersion=configVersion;
+        }
+    }
+
+    /// <summary>
+    /// device-enrollment.json 的读写。格式与 CloudConfiguration 一致的 k=v 文本，
+    /// claimSecret 用 DPAPI(CurrentUser) 加密。读取失败一律回退默认值，绝不阻断启动。
+    /// </summary>
+    public static class CloudEnrollmentStore
+    {
+        public static Action<string,Exception> LoadFailureLog;
+        public const string FileName="device-enrollment.json";
+
+        public static CloudEnrollment Load(string path,string machineKey)
+        {
+            CloudEnrollment e=new CloudEnrollment{MachineKey=machineKey,State="unclaimed",HeartbeatIntervalSec=15,SavePath=path};
+            if(String.IsNullOrWhiteSpace(path)||!File.Exists(path))return e;
+            Dictionary<string,string> map;
+            try
+            {
+                map=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+                foreach(String line in File.ReadAllLines(path,Encoding.UTF8)){int i=line.IndexOf('=');if(i>0)map[line.Substring(0,i)]=line.Substring(i+1);}
+            }
+            catch(Exception ex){if(LoadFailureLog!=null)LoadFailureLog("设备接入状态读取失败，按未认领处理："+path,ex);return e;}
+            String value;
+            if(map.TryGetValue("machineKey",out value)&&!String.IsNullOrWhiteSpace(value))e.MachineKey=value;
+            if(map.TryGetValue("claimId",out value))e.ClaimId=value;
+            if(map.TryGetValue("deviceId",out value))e.DeviceId=value;
+            if(map.TryGetValue("state",out value)&&!String.IsNullOrWhiteSpace(value))e.State=value;
+            if(map.TryGetValue("alias",out value))try{e.Alias=Encoding.UTF8.GetString(Convert.FromBase64String(value));}catch{}
+            if(map.TryGetValue("module",out value))e.Module=value;
+            if(map.TryGetValue("lastAppliedCommandId",out value))e.LastAppliedCommandId=value;
+            if(map.TryGetValue("statusReason",out value))try{e.StatusReason=Encoding.UTF8.GetString(Convert.FromBase64String(value));}catch{}
+            long parsed;
+            if(map.TryGetValue("reportedConfigVersion",out value)&&Int64.TryParse(value,out parsed))e.ReportedConfigVersion=parsed;
+            int parsedInterval;
+            if(map.TryGetValue("heartbeatIntervalSec",out value)&&Int32.TryParse(value,out parsedInterval))e.HeartbeatIntervalSec=parsedInterval;
+            if(map.TryGetValue("protocolVersion",out value)&&Int32.TryParse(value,out parsedInterval))e.ProtocolVersion=parsedInterval;
+            if(map.TryGetValue("uploadAllowed",out value))e.UploadAllowed=value=="1";
+            if(map.TryGetValue("allowSimulation",out value))e.AllowSimulation=value=="1";
+            if(map.TryGetValue("allowedPacks",out value))e.AllowedPacks=ParseInts(value);
+            if(map.TryGetValue("allowedAddresses",out value))e.AllowedAddresses=ParseInts(value);
+            if(map.TryGetValue("allowedEquipment",out value))e.AllowedEquipment=ParseStrings(value);
+            if(map.TryGetValue("claimSecret",out value)&&value.Length>0)
+                try{e.ClaimSecret=Decrypt(value);}catch{e.ClaimSecret=null;}
+            return e;
+        }
+
+        public static void Save(CloudEnrollment e)
+        {
+            if(e==null)throw new ArgumentNullException("enrollment");
+            if(String.IsNullOrWhiteSpace(e.SavePath))throw new InvalidOperationException("设备接入状态路径无效");
+            String directory=Path.GetDirectoryName(e.SavePath);
+            if(String.IsNullOrEmpty(directory))throw new InvalidOperationException("设备接入状态路径必须包含目录部分");
+            Directory.CreateDirectory(directory);
+            String secret="";
+            if(!String.IsNullOrEmpty(e.ClaimSecret))secret=Encrypt(e.ClaimSecret);
+            StringBuilder text=new StringBuilder();
+            text.Append("machineKey=").Append(e.MachineKey).Append('\n');
+            text.Append("claimId=").Append(e.ClaimId??"").Append('\n');
+            text.Append("deviceId=").Append(e.DeviceId??"").Append('\n');
+            text.Append("state=").Append(e.State??"unclaimed").Append('\n');
+            text.Append("module=").Append(e.Module??"").Append('\n');
+            text.Append("alias=").Append(B64(e.Alias)).Append('\n');
+            text.Append("statusReason=").Append(B64(e.StatusReason)).Append('\n');
+            text.Append("reportedConfigVersion=").Append(e.ReportedConfigVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("heartbeatIntervalSec=").Append(e.HeartbeatIntervalSec.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("protocolVersion=").Append(e.ProtocolVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("lastAppliedCommandId=").Append(e.LastAppliedCommandId??"").Append('\n');
+            text.Append("uploadAllowed=").Append(e.UploadAllowed?"1":"0").Append('\n');
+            text.Append("allowSimulation=").Append(e.AllowSimulation?"1":"0").Append('\n');
+            text.Append("allowedPacks=").Append(JoinInts(e.AllowedPacks)).Append('\n');
+            text.Append("allowedAddresses=").Append(JoinInts(e.AllowedAddresses)).Append('\n');
+            text.Append("allowedEquipment=").Append(JoinStrings(e.AllowedEquipment)).Append('\n');
+            text.Append("claimSecret=").Append(secret).Append('\n');
+            String temp=e.SavePath+".partial-"+Guid.NewGuid().ToString("N");
+            try{File.WriteAllText(temp,text.ToString(),new UTF8Encoding(false));AtomicFile.Replace(temp,e.SavePath);}
+            catch{try{if(File.Exists(temp))File.Delete(temp);}catch{}throw;}
+        }
+
+        static String B64(String value){return Convert.ToBase64String(Encoding.UTF8.GetBytes(value??""));}
+        static String Encrypt(String value){return Convert.ToBase64String(ProtectedData.Protect(Encoding.UTF8.GetBytes(value),null,DataProtectionScope.CurrentUser));}
+        static String Decrypt(String value){return Encoding.UTF8.GetString(ProtectedData.Unprotect(Convert.FromBase64String(value),null,DataProtectionScope.CurrentUser));}
+        static int[] ParseInts(String value)
+        {
+            if(String.IsNullOrWhiteSpace(value))return new int[0];
+            String[] parts=value.Split(',');List<int> list=new List<int>();
+            for(int i=0;i<parts.Length;i++){int parsed;if(Int32.TryParse(parts[i].Trim(),out parsed))list.Add(parsed);}
+            return list.ToArray();
+        }
+        static String[] ParseStrings(String value)
+        {
+            if(String.IsNullOrWhiteSpace(value))return new string[0];
+            String[] parts=value.Split(',');List<String> list=new List<String>();
+            for(int i=0;i<parts.Length;i++){String item=parts[i].Trim();if(item.Length>0)list.Add(item);}
+            return list.ToArray();
+        }
+        static String JoinInts(int[] values)
+        {
+            if(values==null||values.Length==0)return "";
+            StringBuilder sb=new StringBuilder();
+            for(int i=0;i<values.Length;i++){if(i>0)sb.Append(',');sb.Append(values[i].ToString(System.Globalization.CultureInfo.InvariantCulture));}
+            return sb.ToString();
+        }
+        static String JoinStrings(String[] values)
+        {
+            if(values==null||values.Length==0)return "";
+            return String.Join(",",values);
         }
     }
 
