@@ -32,6 +32,8 @@ namespace ExperimentMonitor
         [DataMember(Name="alias")]public string Alias{get;set;}
         [DataMember(Name="module")]public string Module{get;set;}
         [DataMember(Name="schemaVersion")]public int SchemaVersion{get;set;}
+        // 设备自述：把「只有现场能看到的体检结果」搭车送到云端。全部可选，坏数据由服务端降级。
+        [DataMember(Name="client",EmitDefaultValue=false)]public CloudClientReport Client{get;set;}
     }
     [DataContract]
     public sealed class CloudSnapshotPost
@@ -68,17 +70,28 @@ namespace ExperimentMonitor
         Task SendSnapshotAsync(CloudConfiguration configuration,CloudSnapshotPost post,CancellationToken token);
         Task SendBackfillAsync(CloudConfiguration configuration,ExperimentBackfillPost post,CancellationToken token);
     }
-    public sealed class HttpsCloudTransport:ICloudTransport
+    public sealed class HttpsCloudTransport:ICloudTransport,ICloudTokenRefresher
     {
         // 传输引擎在 Acme.Cloud：请求拼装、5s 整体时限、64KiB 响应上限、禁重定向、
         // 超时/取消/HTTP 状态码分类，三端共用同一份实现。
         static readonly DataContractJsonSerializer replySerializer=new DataContractJsonSerializer(typeof(CloudHeartbeatReply));
         static readonly DataContractJsonSerializer acknowledgementSerializer=new DataContractJsonSerializer(typeof(CloudAcknowledgement));
+        static readonly DataContractJsonSerializer refreshSerializer=new DataContractJsonSerializer(typeof(CloudTokenRefreshReply));
         readonly CloudHttpTransport engine;
         public HttpsCloudTransport(){ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;engine=new CloudHttpTransport();}
         internal HttpsCloudTransport(Func<Uri,HttpWebRequest> factory,int timeoutMilliseconds,bool testLoopback){engine=new CloudHttpTransport(factory,timeoutMilliseconds,testLoopback);}
+        // 服务层把自述块的生产者挂在这里；传输层只负责搭车，不关心内容。
+        public Func<CloudClientReport> ClientReportProvider;
         public Task<CloudHeartbeatReply> HeartbeatAsync(CloudConfiguration configuration,CancellationToken token)
-        {CloudHeartbeatRequest request=new CloudHeartbeatRequest{DeviceId=configuration.DeviceId,Alias=configuration.Alias,Module="experiment",SchemaVersion=1};return engine.SendAsync<CloudHeartbeatReply>(configuration,"/api/experiment/heartbeat",request,replySerializer,token);}
+        {
+            CloudHeartbeatRequest request=new CloudHeartbeatRequest{DeviceId=configuration.DeviceId,Alias=configuration.Alias,Module="experiment",SchemaVersion=1};
+            Func<CloudClientReport> provider=ClientReportProvider;
+            if(provider!=null)try{request.Client=provider();}catch{}
+            return engine.SendAsync<CloudHeartbeatReply>(configuration,"/api/experiment/heartbeat",request,replySerializer,token);
+        }
+        /// <summary>用当前令牌换新令牌：设备自助续期，管理员不参与。</summary>
+        public Task<CloudTokenRefreshReply> RefreshTokenAsync(CloudConfiguration configuration,CancellationToken token)
+        {return engine.SendAsync<CloudTokenRefreshReply>(configuration,"/api/experiment/device/refresh",new CloudRefreshRequest(),refreshSerializer,token);}
         public async Task SendSnapshotAsync(CloudConfiguration configuration,CloudSnapshotPost post,CancellationToken token)
         {CloudAcknowledgement a=await engine.SendAsync<CloudAcknowledgement>(configuration,"/api/experiment/snapshots",post,acknowledgementSerializer,token).ConfigureAwait(false);if(a==null||!a.Accepted)throw new InvalidDataException("云端未确认快照");}
         public async Task SendBackfillAsync(CloudConfiguration configuration,ExperimentBackfillPost post,CancellationToken token)

@@ -48,10 +48,12 @@ namespace ExperimentMonitor {
         readonly CancellationTokenSource stop=new CancellationTokenSource(); readonly Task worker;Task backfillTask=Task.FromResult(0);CancellationTokenSource backfillCancel;string backfillRunningSubscription;
         readonly Dictionary<string,Device> devices=new Dictionary<string,Device>(); readonly Dictionary<string,long> sent=new Dictionary<string,long>();
         string connectionSession=Guid.NewGuid().ToString("N"),acquisitionSession="",status="未启用",backfilledSubscription=null; long sequence,sentCount,failedCount; bool disposed;DateTime? lastContact,lastUpload,leaseUntilUtc;string diagnosticCategory="未测试",diagnosticMessage="尚未执行连接诊断";
+        // 离线诊断：把本机看到的失败阶段与次数攒起来，随下一次心跳送出去。
+        readonly DateTime startedUtc=DateTime.UtcNow;int consecutiveFailures;DateTime? lastSuccessUtc,lastRefreshUtc;string lastErrorStage,lastErrorCode,lastErrorAt;int lastErrorHttp,lastErrorCount;
         public string Status { get { lock(gate)return status+"；已确认 "+sentCount+"，失败 "+failedCount; } }
         public CloudPublisherStatus SnapshotStatus { get {lock(gate)return new CloudPublisherStatus{State=status,LastContactLocal=lastContact.HasValue?lastContact.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"):"—",LeaseUntilLocal=leaseUntilUtc.HasValue?leaseUntilUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"):"—",LastUploadLocal=lastUpload.HasValue?lastUpload.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"):"—",LeaseValid=leaseUntilUtc.HasValue&&leaseUntilUtc.Value>DateTime.UtcNow,Accepted=sentCount,Failed=failedCount,QueuedDevices=devices.Count,QueuedPoints=devices.Values.Sum(d=>d.Points.Count),DiagnosticCategory=diagnosticCategory,DiagnosticMessage=diagnosticMessage};} }
         public event EventHandler StatusChanged;
-        public CloudPublisher(Func<CloudConfiguration> configuration,ICloudTransport transport=null,string historyRoot=null) { if(configuration==null)throw new ArgumentNullException("configuration");this.configuration=configuration;this.transport=transport??new HttpsCloudTransport();this.historyRoot=String.IsNullOrWhiteSpace(historyRoot)?null:Path.GetFullPath(historyRoot);worker=Task.Run((Func<Task>)Run); }
+        public CloudPublisher(Func<CloudConfiguration> configuration,ICloudTransport transport=null,string historyRoot=null) { if(configuration==null)throw new ArgumentNullException("configuration");this.configuration=configuration;this.transport=transport??new HttpsCloudTransport();this.historyRoot=String.IsNullOrWhiteSpace(historyRoot)?null:Path.GetFullPath(historyRoot);HttpsCloudTransport https=this.transport as HttpsCloudTransport;if(https!=null)https.ClientReportProvider=BuildClientReport;worker=Task.Run((Func<Task>)Run); }
         static void ValidateHeartbeatReply(CloudHeartbeatReply reply) {
             if(reply==null||reply.RequestedDevices==null||reply.RequestedDevices.Length>16||reply.LeaseSeconds<0||reply.LeaseSeconds>3600||reply.BackfillSeconds<0||reply.BackfillSeconds>300||(reply.LeaseSeconds>0&&String.IsNullOrWhiteSpace(reply.SubscriptionId))||reply.RequestedDevices.Any(x=>String.IsNullOrWhiteSpace(x)||x.Length>80)||reply.RequestedDevices.Distinct().Count()!=reply.RequestedDevices.Length)throw new InvalidDataException("租约或请求设备列表无效");
             if(reply.RequestedHistoryPoints!=null){if(reply.RequestedHistoryPoints.Length>64||reply.RequestedHistoryPoints.Distinct(StringComparer.Ordinal).Count()!=reply.RequestedHistoryPoints.Length)throw new InvalidDataException("历史趋势选择列表无效");foreach(string selection in reply.RequestedHistoryPoints){if(String.IsNullOrWhiteSpace(selection)||selection.Length>170)throw new InvalidDataException("历史趋势选择无效");int slash=selection.IndexOf('/');if(slash<=0||slash!=selection.LastIndexOf('/')||slash==selection.Length-1||!reply.RequestedDevices.Contains(selection.Substring(0,slash)))throw new InvalidDataException("历史趋势选择不属于当前请求设备");}}
@@ -117,8 +119,27 @@ namespace ExperimentMonitor {
             catch(Exception e){CloudNetworkErrors.Write(e);Update("在线；5分钟历史预热失败，实时采集继续");}
         }
         void Update(string text) { bool changed;lock(gate){changed=status!=text;status=text;}if(changed){EventHandler h=StatusChanged;if(h!=null)try{h(this,EventArgs.Empty);}catch{}} }
+        void RecordSuccess(){lock(gate){consecutiveFailures=0;lastSuccessUtc=DateTime.UtcNow;lastErrorStage=null;lastErrorCode=null;lastErrorHttp=0;lastErrorAt=null;lastErrorCount=0;}}
+        void RecordFailure(Exception e)
+        {
+            string stage=null;try{stage=CloudNetworkErrors.StageOf(e);}catch{}
+            CloudHttpException http=e as CloudHttpException;
+            lock(gate){consecutiveFailures++;if(stage==null)return;if(!String.Equals(stage,lastErrorStage,StringComparison.Ordinal)){lastErrorStage=stage;lastErrorAt=DateTime.UtcNow.ToString("o");lastErrorCount=0;}lastErrorCode=e.GetType().Name;lastErrorHttp=http!=null?http.StatusCode:0;lastErrorCount++;}
+        }
+        CloudClientReport BuildClientReport()
+        {
+            CloudConfiguration c=null;try{c=configuration();}catch{}
+            CloudClientReport r;
+            lock(gate)
+            {
+                r=new CloudClientReport{Version=typeof(CloudPublisher).Assembly.GetName().Version.ToString(),StartedUtc=startedUtc.ToString("o"),UptimeSec=(long)Math.Max(0,(DateTime.UtcNow-startedUtc).TotalSeconds),LocalTimeUtc=DateTime.UtcNow.ToString("o"),TzOffsetMin=(int)TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).TotalMinutes,CloudEnabled=c!=null&&c.Enabled,TokenDecryptable=c!=null?!c.SavedTokenUnreadable:true,LastSuccessUtc=lastSuccessUtc.HasValue?lastSuccessUtc.Value.ToString("o"):null,ConsecutiveFailures=consecutiveFailures};
+                if(lastErrorStage!=null)r.LastError=new CloudClientError{Stage=lastErrorStage,Code=lastErrorCode,HttpStatus=lastErrorHttp,AtUtc=lastErrorAt,Count=lastErrorCount};
+            }
+            r.Source=new CloudClientSource{Session=connectionSession};
+            return r;
+        }
         async Task Run() {
-            Stopwatch clock=Stopwatch.StartNew();long heartbeatAt=0,uploadAt=0,leaseUntil=0;int backoff=1;string subscription="",activeSignature=null;HashSet<string> requested=new HashSet<string>();
+            Stopwatch clock=Stopwatch.StartNew();long heartbeatAt=0,uploadAt=0,leaseUntil=0;int backoff=1;string subscription="",activeSignature=null;bool pendingRefresh=false;HashSet<string> requested=new HashSet<string>();
             while(!stop.IsCancellationRequested) {
                 CloudConfiguration c=null;try{c=configuration();}catch{}
                 if(c==null||!c.Enabled){CancelBackfill();lock(backfillGate)backfilledSubscription=null;leaseUntil=0;subscription="";activeSignature=null;lock(gate){devices.Clear();sent.Clear();leaseUntilUtc=null;}Update("未启用");await Delay(250);continue;}
@@ -128,10 +149,10 @@ namespace ExperimentMonitor {
                 bool uploading=false;
                 try {
                     if(clock.ElapsedMilliseconds>=heartbeatAt) {
-                        CloudHeartbeatReply reply=await transport.HeartbeatAsync(c,stop.Token).ConfigureAwait(false);lock(gate)lastContact=DateTime.UtcNow;
+                        CloudHeartbeatReply reply=await transport.HeartbeatAsync(c,stop.Token).ConfigureAwait(false);lock(gate)lastContact=DateTime.UtcNow;RecordSuccess();
                         ValidateHeartbeatReply(reply);
                         if(subscription!=reply.SubscriptionId)lock(gate)sent.Clear();subscription=reply.SubscriptionId;requested=new HashSet<string>(reply.RequestedDevices,StringComparer.Ordinal);
-                        leaseUntil=clock.ElapsedMilliseconds+reply.LeaseSeconds*1000L;lock(gate)leaseUntilUtc=reply.LeaseSeconds>0?DateTime.UtcNow.AddSeconds(reply.LeaseSeconds):(DateTime?)null;heartbeatAt=clock.ElapsedMilliseconds+(reply.LeaseSeconds>0?Math.Min(15000,Math.Max(250,reply.LeaseSeconds*500)):15000);if(reply.LeaseSeconds>0&&!String.IsNullOrWhiteSpace(subscription))ScheduleWarmBackfill(c,reply,requested,subscription);else CancelBackfill();
+                        leaseUntil=clock.ElapsedMilliseconds+reply.LeaseSeconds*1000L;lock(gate)leaseUntilUtc=reply.LeaseSeconds>0?DateTime.UtcNow.AddSeconds(reply.LeaseSeconds):(DateTime?)null;heartbeatAt=clock.ElapsedMilliseconds+(reply.LeaseSeconds>0?Math.Min(15000,Math.Max(3000,reply.LeaseSeconds*500)):15000);if(reply.LeaseSeconds>0&&!String.IsNullOrWhiteSpace(subscription))ScheduleWarmBackfill(c,reply,requested,subscription);else CancelBackfill();
                     }
                     if(clock.ElapsedMilliseconds<leaseUntil&&!String.IsNullOrWhiteSpace(subscription)&&clock.ElapsedMilliseconds>=uploadAt) {
                         ExperimentCloudSnapshot snapshot=null;string selectedKey=null,selectedSession=null;long version=0;
@@ -150,7 +171,30 @@ namespace ExperimentMonitor {
                         }else Update("在线；租约有效，等待新鲜数据");
                     }else Update(clock.ElapsedMilliseconds>=leaseUntil?"在线；无人观看或租约过期":"在线；观看租约有效");
                 }catch(OperationCanceledException){if(stop.IsCancellationRequested)break;failedCount++;uploadAt=clock.ElapsedMilliseconds+backoff*1000L;heartbeatAt=uploadAt;backoff=Math.Min(60,backoff*2);Update("请求取消；本地采集继续");}
-                catch(Exception e){lock(gate)failedCount++;CloudNetworkErrors.Write(e);CloudHttpException http=e as CloudHttpException;bool auth=http!=null&&(http.StatusCode==401||http.StatusCode==403);if(http!=null&&http.StatusCode==409){CancelBackfill();leaseUntil=0;subscription="";lock(gate)leaseUntilUtc=null;heartbeatAt=clock.ElapsedMilliseconds+500;uploadAt=heartbeatAt;Update("观看租约失效，重新请求心跳");continue;}long next=clock.ElapsedMilliseconds+(auth?60000:backoff*1000L);if(uploading)uploadAt=next;else heartbeatAt=next;if(auth){CancelBackfill();leaseUntil=0;heartbeatAt=next;lock(gate)leaseUntilUtc=null;}backoff=Math.Min(60,backoff*2);Update(CloudNetworkErrors.Describe(e)+"；本地采集继续");}
+                catch(Exception e){lock(gate)failedCount++;CloudNetworkErrors.Write(e);RecordFailure(e);CloudHttpException http=e as CloudHttpException;bool auth=http!=null&&(http.StatusCode==401||http.StatusCode==403);if(http!=null&&http.StatusCode==409){CancelBackfill();leaseUntil=0;subscription="";lock(gate)leaseUntilUtc=null;heartbeatAt=clock.ElapsedMilliseconds+500;uploadAt=heartbeatAt;Update("观看租约失效，重新请求心跳");continue;}if(http!=null&&http.StatusCode==429){CancelBackfill();leaseUntil=0;heartbeatAt=clock.ElapsedMilliseconds+30000;lock(gate)leaseUntilUtc=null;backoff=Math.Min(60,backoff*2);Update("限流等待；稍后重试");continue;}long next=clock.ElapsedMilliseconds+(auth?60000:backoff*1000L);if(uploading)uploadAt=next;else heartbeatAt=next;if(auth){CancelBackfill();leaseUntil=0;heartbeatAt=next;lock(gate)leaseUntilUtc=null;pendingRefresh=true;}backoff=Math.Min(60,backoff*2);Update(CloudNetworkErrors.Describe(e)+"；本地采集继续");}
+                if(pendingRefresh)
+                {
+                    pendingRefresh=false;
+                    ICloudTokenRefresher refresher=transport as ICloudTokenRefresher;
+                    bool tooSoon=lastRefreshUtc.HasValue&&(DateTime.UtcNow-lastRefreshUtc.Value).TotalMinutes<5;
+                    if(refresher!=null&&!tooSoon)
+                    {
+                        try
+                        {
+                            CloudTokenRefreshReply renewed=await refresher.RefreshTokenAsync(c,stop.Token).ConfigureAwait(false);
+                            if(renewed!=null&&!String.IsNullOrWhiteSpace(renewed.DeviceToken))
+                            {
+                                // 先落盘成功再切换运行态：换证途中掉电不会留下「有令牌但云端不认」的状态。
+                                string previous=c.Token;c.Token=renewed.DeviceToken;
+                                try{c.Save();}catch{c.Token=previous;throw;}
+                                lastRefreshUtc=DateTime.UtcNow;
+                                heartbeatAt=clock.ElapsedMilliseconds;uploadAt=0;backoff=1;
+                                Update("在线；设备令牌已自动续期");
+                            }
+                        }
+                        catch(Exception refreshError){CloudNetworkErrors.Write(refreshError);Update("认证失败；自动续期失败："+CloudNetworkErrors.Describe(refreshError));}
+                    }
+                }
                 await Delay(250);
             }
         }

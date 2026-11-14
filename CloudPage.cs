@@ -12,13 +12,22 @@ namespace ExperimentMonitor {
         readonly Label status=new Label{AutoSize=true,MaximumSize=new Size(1000,0)};
         readonly Label contact=new Label{AutoSize=true},lease=new Label{AutoSize=true},uploads=new Label{AutoSize=true},diagnostic=new Label{AutoSize=true,MaximumSize=new Size(1000,0)};
         readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer{Interval=1000};
+        static readonly System.Text.RegularExpressions.Regex DeviceIdPattern=new System.Text.RegularExpressions.Regex("^[A-Za-z0-9_-]{16,64}$",System.Text.RegularExpressions.RegexOptions.CultureInvariant);
         readonly MonitorEngine engine;
         public event EventHandler StatusChanged;
         public event Action<string> CloudStatusChanged;
         public CloudPublisherStatus CurrentStatus { get { return publisher.SnapshotStatus; } }
         public string CurrentStatusLabel { get {CloudPublisherStatus s=publisher.SnapshotStatus;return s.State+"；租约"+(s.LeaseValid?"有效":"无效")+"；已确认 "+s.Accepted+"，失败 "+s.Failed;} }
         public CloudPage(string root,MonitorEngine engine) {
-            this.engine=engine;Dock=DockStyle.Fill;config=CloudConfiguration.Load(Path.Combine(root,"cloud-settings.json"));
+            this.engine=engine;Dock=DockStyle.Fill;
+            // 身份与凭据放稳定位置（ProgramData）：安装目录会被整包替换，放那里等于每次升级都要重新注册。
+            // 但 --root= 指定的测试根必须保持隔离，不能写进真实 ProgramData。
+            bool productionRoot=String.Equals(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar),Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar),StringComparison.OrdinalIgnoreCase);
+            string settingsDirectory=productionRoot?CloudIdentity.ResolveSettingsDirectory("ExperimentMonitorDemo",root):root;
+            string deviceId=productionRoot
+                ?CloudIdentity.LoadOrCreateDeviceId("ExperimentMonitorDemo",root,delegate(string v){return DeviceIdPattern.IsMatch(v);},null,null)
+                :null;
+            config=CloudConfiguration.Load(Path.Combine(settingsDirectory,"cloud-settings.json"),deviceId);
             publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"));engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
             // 双栏分组布局(对齐 BMS 云端连接页):左 设备身份+连接设置,右 连接状态。
             // 左右两栏顶边平齐:不再单独放大标题(选项卡已标明页面);
@@ -53,6 +62,14 @@ namespace ExperimentMonitor {
             var actions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,Margin=Padding.Empty,Padding=new Padding(0,4,0,0)};
             actions.Controls.Add(save);actions.Controls.Add(clear);actions.Controls.Add(diagnose);settings.Controls.Add(actions);
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(settings,0,leftCol.RowCount-1);
+            var credentials=Section("凭据备份");
+            credentials.Controls.Add(new Label{Text="换机器或重装系统时用：导出后凭同一口令在另一台机器导入，独立数据源编号不变、无需重新注册。",AutoSize=true,MaximumSize=new Size(660,0),ForeColor=UiTheme.Muted,Margin=new Padding(2,0,2,6)});
+            var exportCredential=new StyledActionButton{Text="导出凭据",Width=150};
+            var importCredential=new StyledActionButton{Text="导入凭据",Width=150};
+            var credentialActions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,Margin=Padding.Empty,Padding=new Padding(0,4,0,0)};
+            credentialActions.Controls.Add(exportCredential);credentialActions.Controls.Add(importCredential);credentials.Controls.Add(credentialActions);
+            exportCredential.Click+=delegate{ExportCredentials();};importCredential.Click+=delegate{ImportCredentials();};
+            leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(credentials,0,leftCol.RowCount-1);
             var notes=new Label{Text="本地持续采集和 SQLite 记录独立于网络；远端仅在有效观看租约内接收最新快照。\n填写云服务地址和实验设备令牌并保存后，可运行连接诊断检查心跳与观看租约；网络或认证异常请查看诊断结果。\n心跳在线只说明云连接状态，不代表本地串口已连接或正在采集。模拟/实机来源分别标记，失败或未响应测点不会作为零值发送。",AutoSize=true,MaximumSize=new Size(700,0),ForeColor=UiTheme.Muted,Margin=new Padding(2,12,2,2)};
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(notes,0,leftCol.RowCount-1);
             // 说明与诊断文本的换行宽度跟随各自容器。
@@ -78,6 +95,53 @@ namespace ExperimentMonitor {
         }
         // 分组容器:圆角白底 + 小标题(与总览页分区同风格),宽度跟随父容器拉伸。
         // 直接 Add 到分组的子控件会被移入内部单列网格(AutoSize 行)并撑满整行。
+        void ExportCredentials()
+        {
+            CloudConfiguration current=Volatile.Read(ref config);
+            using(SaveFileDialog dialog=new SaveFileDialog{Filter="设备凭据 (*.acmedevice)|*.acmedevice",FileName="PV-AC-Monitor-"+current.DeviceId+".acmedevice",OverwritePrompt=true})
+            {
+                if(dialog.ShowDialog(this)!=DialogResult.OK)return;
+                string password=PromptPassword("导出设备凭据","设置一个至少 8 位的口令。文件里只有口令才能解开，请单独保管——忘记口令只能重新签发令牌。");
+                if(password==null)return;
+                try{CloudCredentialBundle.ExportToFile(current,password,dialog.FileName);MessageBox.Show(this,"凭据已导出：\r\n"+dialog.FileName+"\r\n\r\n口令不会写进文件，请自行保管。","导出凭据",MessageBoxButtons.OK,MessageBoxIcon.Information);}
+                catch(Exception e){MessageBox.Show(this,"导出失败："+e.Message,"导出凭据",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
+            }
+        }
+        void ImportCredentials()
+        {
+            using(OpenFileDialog dialog=new OpenFileDialog{Filter="设备凭据 (*.acmedevice)|*.acmedevice|所有文件 (*.*)|*.*"})
+            {
+                if(dialog.ShowDialog(this)!=DialogResult.OK)return;
+                string password=PromptPassword("导入设备凭据","输入导出时设置的口令。");
+                if(password==null)return;
+                try
+                {
+                    CloudConfiguration imported=CloudCredentialBundle.ImportFromFile(dialog.FileName,password,Volatile.Read(ref config).SavePath);
+                    // 身份写回稳定位置、凭据落盘，再切换运行态：任一步失败都不会留下半截状态。
+                    CloudIdentity.WriteMachineDeviceId("ExperimentMonitorDemo",imported.DeviceId);
+                    imported.Save();
+                    Volatile.Write(ref config,imported);
+                    token.Clear();status.Text="凭据已导入；独立数据源编号 "+imported.DeviceId+"，重启本程序后生效";
+                    MessageBox.Show(this,"凭据已导入。独立数据源编号："+imported.DeviceId+"\r\n\r\n本地数据按编号区分，重启本程序后生效。","导入凭据",MessageBoxButtons.OK,MessageBoxIcon.Information);
+                }
+                catch(Exception e){MessageBox.Show(this,"导入失败："+e.Message,"导入凭据",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
+            }
+        }
+        /// <summary>口令输入框。凭据唯一的保护就是它，所以用密码字符并禁止空提交。</summary>
+        string PromptPassword(string title,string hint)
+        {
+            using(Form form=new Form{Text=title,Width=460,Height=200,FormBorderStyle=FormBorderStyle.FixedDialog,StartPosition=FormStartPosition.CenterParent,MaximizeBox=false,MinimizeBox=false,ShowInTaskbar=false,BackColor=Color.White})
+            {
+                Label label=new Label{Text=hint,Left=14,Top=12,Width=420,Height=52,ForeColor=UiTheme.Muted};
+                TextBox box=new TextBox{Left=14,Top=70,Width=420,UseSystemPasswordChar=true};
+                Button ok=new Button{Text="确定",Left=272,Top=112,Width=76,Height=30,DialogResult=DialogResult.OK};
+                Button cancel=new Button{Text="取消",Left=358,Top=112,Width=76,Height=30,DialogResult=DialogResult.Cancel};
+                form.Controls.Add(label);form.Controls.Add(box);form.Controls.Add(ok);form.Controls.Add(cancel);
+                form.AcceptButton=ok;form.CancelButton=cancel;
+                if(form.ShowDialog(this)!=DialogResult.OK)return null;
+                return box.Text;
+            }
+        }
         static RoundedPanel Section(string title) {
             var section=new RoundedPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(14,8,14,12),Margin=new Padding(2,4,2,10) };
             var grid=new TableLayoutPanel { Dock=DockStyle.Top,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,BackColor=UiTheme.Surface,Margin=Padding.Empty,Padding=Padding.Empty };
