@@ -119,7 +119,9 @@ namespace ExperimentMonitor
             if(enrollment!=null)
             {
                 // protocolVersion 只在真接入时才声明：没认领过的设备仍旧发老格式。
-                if(enrollment.ProtocolVersion>0)request.ProtocolVersion=enrollment.ProtocolVersion;
+                // 协议能力是「这份代码支持什么」，不是「本地状态文件记了什么」。
+                // 依赖状态文件会导致：状态文件丢了 → 退化发旧协议 → 云端停用/删除都下发不到。
+                request.ProtocolVersion=2;
                 if(!String.IsNullOrEmpty(enrollment.MachineKey))request.MachineKey=enrollment.MachineKey;
                 if(enrollment.ReportedConfigVersion>0)request.ReportedConfigVersion=enrollment.ReportedConfigVersion;
                 if(!String.IsNullOrEmpty(enrollment.LastAppliedCommandId))request.ReportedCommandId=enrollment.LastAppliedCommandId;

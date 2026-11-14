@@ -111,7 +111,7 @@ namespace ExperimentMonitor {
             return new CloudConfiguration{DeviceId=c.DeviceId,Alias=c.Alias,Endpoint=c.Endpoint,Enabled=true,IncludeSimulation=c.IncludeSimulation,Token=secret,SavePath=c.SavePath};
         }
         /// <summary>把云端下发的配置与状态应用到运行时。protocolVersion 缺失 = 旧云端，一律不动。</summary>
-        void ApplyDeviceReply(CloudHeartbeatReply reply)
+        void ApplyDeviceReply(CloudHeartbeatReply reply,CloudConfiguration c)
         {
             if(reply==null||!reply.ProtocolVersion.HasValue)return;
             bool changed=false;
@@ -126,12 +126,12 @@ namespace ExperimentMonitor {
                     allowSimulation=state.AllowSimulation;uploadAllowed=state.UploadAllowed;changed=true;
                 }
                 if(!String.IsNullOrEmpty(reply.State)&&!String.Equals(state.State,reply.State,StringComparison.Ordinal)){state.State=reply.State;changed=true;}
-                ApplyCommands(reply.Commands,state);
+                ApplyCommands(reply.Commands,state,c);
                 if(changed)try{lock(enrollmentGate)CloudEnrollmentStore.Save(state);}catch(Exception e){CloudNetworkErrors.Write(e);}
             }
         }
         /// <summary>命令按 commandId 去重，只认比上次更新的那条。</summary>
-        void ApplyCommands(CloudDeviceCommand[] commands,CloudEnrollment state)
+        void ApplyCommands(CloudDeviceCommand[] commands,CloudEnrollment state,CloudConfiguration c)
         {
             if(commands==null||commands.Length==0)return;
             foreach(CloudDeviceCommand command in commands)
@@ -144,6 +144,9 @@ namespace ExperimentMonitor {
                     state.ClaimSecret=null;state.ClaimId=null;state.State="revoked";state.ProtocolVersion=0;
                     state.LastAppliedCommandId=command.CommandId;
                     uploadAllowed=false;deviceState="revoked";
+                    // 同时清掉设备令牌：否则客户端会一直拿着旧令牌心跳，
+                    // 永远停在「已注销」而不会重新发起认领。
+                    if(c!=null&&!String.IsNullOrEmpty(c.Token)){try{c.Token="";c.Save();}catch{}}
                 }
                 else if(type=="stop-upload"){uploadAllowed=false;state.LastAppliedCommandId=command.CommandId;}
                 else if(type=="resume-upload"){uploadAllowed=true;state.LastAppliedCommandId=command.CommandId;}
@@ -156,7 +159,7 @@ namespace ExperimentMonitor {
             ICloudEnrollmentTransport enrollmentTransport=transport as ICloudEnrollmentTransport;
             CloudEnrollment state;lock(enrollmentGate){state=enrollment;}
             if(enrollmentTransport==null||state==null)return false;
-            if(state.IsRevoked){Update("已注销：云端已删除该设备，请在网页重新批准接入");await Delay(5000);return false;}
+            // 已注销也允许重新发起认领：令牌已被清空，说明确实是人工重新接入。
             long now=Stopwatch.GetTimestamp();
             if(lastEnrollTick!=0&&(now-lastEnrollTick)*1000.0/Stopwatch.Frequency<enrollIntervalMs)return false;
             lastEnrollTick=now;
@@ -221,7 +224,7 @@ namespace ExperimentMonitor {
             if(reply==null||reply.RequestedDevices==null||reply.RequestedDevices.Length>16||reply.LeaseSeconds<0||reply.LeaseSeconds>3600||reply.BackfillSeconds<0||reply.BackfillSeconds>300||(reply.LeaseSeconds>0&&String.IsNullOrWhiteSpace(reply.SubscriptionId))||reply.RequestedDevices.Any(x=>String.IsNullOrWhiteSpace(x)||x.Length>80)||reply.RequestedDevices.Distinct().Count()!=reply.RequestedDevices.Length)throw new InvalidDataException("租约或请求设备列表无效");
             if(reply.RequestedHistoryPoints!=null){if(reply.RequestedHistoryPoints.Length>64||reply.RequestedHistoryPoints.Distinct(StringComparer.Ordinal).Count()!=reply.RequestedHistoryPoints.Length)throw new InvalidDataException("历史趋势选择列表无效");foreach(string selection in reply.RequestedHistoryPoints){if(String.IsNullOrWhiteSpace(selection)||selection.Length>170)throw new InvalidDataException("历史趋势选择无效");int slash=selection.IndexOf('/');if(slash<=0||slash!=selection.LastIndexOf('/')||slash==selection.Length-1||!reply.RequestedDevices.Contains(selection.Substring(0,slash)))throw new InvalidDataException("历史趋势选择不属于当前请求设备");}}
         }
-        public async Task<CloudDiagnosticResult> DiagnoseAsync(CancellationToken token) { CloudConfiguration c=configuration();var result=new CloudDiagnosticResult{CompletedLocal=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")};try{if(c==null||!c.HasValidEndpoint){result.Category="地址";result.Message="地址无效：请输入 HTTPS 服务根地址，不要填写 URL 凭据、查询参数或片段。";}else if(String.IsNullOrWhiteSpace(c.Token)){result.Category="认证";result.Message="认证未配置：请保存实验设备令牌。";}else{CloudHeartbeatReply reply=await transport.HeartbeatAsync(c,token).ConfigureAwait(false);ValidateHeartbeatReply(reply);ApplyDeviceReply(reply);result.Heartbeat=reply;result.Category="接口响应";result.Message="HTTPS 心跳成功；租约 "+(reply.LeaseSeconds>0?reply.LeaseSeconds+" 秒":"未授予")+"，请求设备 "+reply.RequestedDevices.Length+" 台。此诊断不会上传测点快照。";lock(gate){lastContact=DateTime.UtcNow;diagnosticCategory=result.Category;diagnosticMessage=result.Message;}result.Success=true;}}catch(OperationCanceledException){result.Success=false;result.Category="已取消";result.Message="连接诊断已取消。";}catch(Exception e){result.Success=false;result.Category=DiagnosticCategory(e);result.Message=CloudNetworkErrors.Describe(e);CloudNetworkErrors.Write(e);}result.CompletedLocal=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");lock(gate){diagnosticCategory=result.Category;diagnosticMessage=result.Message;}return result; }
+        public async Task<CloudDiagnosticResult> DiagnoseAsync(CancellationToken token) { CloudConfiguration c=configuration();var result=new CloudDiagnosticResult{CompletedLocal=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")};try{if(c==null||!c.HasValidEndpoint){result.Category="地址";result.Message="地址无效：请输入 HTTPS 服务根地址，不要填写 URL 凭据、查询参数或片段。";}else if(String.IsNullOrWhiteSpace(c.Token)){result.Category="认证";result.Message="认证未配置：请保存实验设备令牌。";}else{CloudHeartbeatReply reply=await transport.HeartbeatAsync(c,token).ConfigureAwait(false);ValidateHeartbeatReply(reply);ApplyDeviceReply(reply,c);result.Heartbeat=reply;result.Category="接口响应";result.Message="HTTPS 心跳成功；租约 "+(reply.LeaseSeconds>0?reply.LeaseSeconds+" 秒":"未授予")+"，请求设备 "+reply.RequestedDevices.Length+" 台。此诊断不会上传测点快照。";lock(gate){lastContact=DateTime.UtcNow;diagnosticCategory=result.Category;diagnosticMessage=result.Message;}result.Success=true;}}catch(OperationCanceledException){result.Success=false;result.Category="已取消";result.Message="连接诊断已取消。";}catch(Exception e){result.Success=false;result.Category=DiagnosticCategory(e);result.Message=CloudNetworkErrors.Describe(e);CloudNetworkErrors.Write(e);}result.CompletedLocal=DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");lock(gate){diagnosticCategory=result.Category;diagnosticMessage=result.Message;}return result; }
         static string DiagnosticCategory(Exception e){if(e is CloudHttpException){int s=((CloudHttpException)e).StatusCode;return s==401||s==403?"认证":"接口响应";}if(e is System.Security.Authentication.AuthenticationException)return "TLS证书";if(e is System.Net.WebException){var w=(System.Net.WebException)e;if(w.Status==System.Net.WebExceptionStatus.TrustFailure||w.Status==System.Net.WebExceptionStatus.SecureChannelFailure)return "TLS证书";if(w.Status==System.Net.WebExceptionStatus.NameResolutionFailure||w.Status==System.Net.WebExceptionStatus.ConnectFailure||w.Status==System.Net.WebExceptionStatus.Timeout)return "网络";}if(e is InvalidDataException||e is System.Runtime.Serialization.SerializationException)return "接口响应";if(e is ArgumentException||e is UriFormatException)return "地址";return "网络";}
         public void Publish(Observation o) {
             if(o==null||String.IsNullOrEmpty(o.Point)||String.IsNullOrEmpty(o.Device))return;
@@ -320,7 +323,7 @@ namespace ExperimentMonitor {
                 try {
                     if(clock.ElapsedMilliseconds>=heartbeatAt) {
                         CloudHeartbeatReply reply=await transport.HeartbeatAsync(c,stop.Token).ConfigureAwait(false);lock(gate)lastContact=DateTime.UtcNow;RecordSuccess();
-                        ValidateHeartbeatReply(reply);ApplyDeviceReply(reply);
+                        ValidateHeartbeatReply(reply);ApplyDeviceReply(reply,c);
                         if(subscription!=reply.SubscriptionId)lock(gate)sent.Clear();subscription=reply.SubscriptionId;requested=new HashSet<string>(reply.RequestedDevices,StringComparer.Ordinal);
                         leaseUntil=clock.ElapsedMilliseconds+reply.LeaseSeconds*1000L;lock(gate)leaseUntilUtc=reply.LeaseSeconds>0?DateTime.UtcNow.AddSeconds(reply.LeaseSeconds):(DateTime?)null;heartbeatAt=clock.ElapsedMilliseconds+(reply.LeaseSeconds>0?Math.Min(15000,Math.Max(3000,reply.LeaseSeconds*500)):15000);if(reply.LeaseSeconds>0&&!String.IsNullOrWhiteSpace(subscription))ScheduleWarmBackfill(c,reply,requested,subscription);else CancelBackfill();
                     }
