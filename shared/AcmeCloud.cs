@@ -1,5 +1,5 @@
 // @generated 来自 _base/src/AcmeCloud.cs —— 请勿手改。
-// @source-sha256 814af266f639e81750f08485e68519cd91f8fd07ad7b1fc54372479b82a3141b
+// @source-sha256 e48a5e2d824db498b79e0e4b1ad4a11acf3090acf45c93808cd2846376f9580c
 // @sync node _base/sync-base.mjs --write
 // @end-header
 // ============================================================
@@ -98,15 +98,19 @@ namespace Acme.Cloud
                 File.Delete(probe);
                 return true;
             }
-            catch{return false;}
+            catch(Exception ex)
+            {
+                return false;
+            }
         }
 
         /// <summary>返回第一个可写的设置目录；全都不可写时退回安装目录（只读，行为与旧版本一致）。</summary>
         public static string ResolveSettingsDirectory(string product,string installDirectory)
         {
-            string machine=MachineSettings(product);if(IsUsable(machine))return machine;
-            string user=UserSettings(product);if(IsUsable(user))return user;
-            return InstallSettings(installDirectory);
+            string machine=MachineSettings(product);bool mu=IsUsable(machine);
+            string user=UserSettings(product);bool uu=mu?false:IsUsable(user);
+            string result=mu?machine:(uu?user:InstallSettings(installDirectory));
+            return result;
         }
 
         /// <summary>可能存有设备编号的路径，按可信度从高到低。只用于读取与一次性迁移。</summary>
