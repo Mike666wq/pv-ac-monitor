@@ -1,5 +1,5 @@
 // @generated 来自 _base/src/AcmeCloud.cs —— 请勿手改。
-// @source-sha256 7de934216822362104eea78e5468d5aa7172a7c5adc98361fc53984387ffa631
+// @source-sha256 ec0d72169e7ff780a3d98d96a89b3c267f00e68090452a800ae65663e5905e01
 // @sync node _base/sync-base.mjs --write
 // @end-header
 // ============================================================
@@ -884,7 +884,7 @@ namespace Acme.Cloud
         public int TimeoutMilliseconds{get{return timeoutMilliseconds;}}
         public CloudHttpTransport()
         {
-            timeoutMilliseconds=5000;
+            timeoutMilliseconds=30000;
             // 注意：这里**刻意不设置** ServicePointManager.SecurityProtocol。
             // BMS 端有断言守着"未设置全局TLS版本，保留系统默认协议"，基座不得偷偷改全局状态。
             // 需要显式 TLS1.2 的端（实验端）在自己的 HttpsCloudTransport 构造函数里设置。
@@ -892,7 +892,7 @@ namespace Acme.Cloud
         internal CloudHttpTransport(Func<Uri,HttpWebRequest> factory,int timeoutMilliseconds,bool testLoopback)
         {
             if(factory==null)throw new ArgumentNullException("factory");
-            if(timeoutMilliseconds<1||timeoutMilliseconds>5000)throw new ArgumentOutOfRangeException("timeoutMilliseconds");
+            if(timeoutMilliseconds<1||timeoutMilliseconds>60000)throw new ArgumentOutOfRangeException("timeoutMilliseconds");
             requestFactory=factory;this.timeoutMilliseconds=timeoutMilliseconds;this.testLoopback=testLoopback;
         }
         public async Task<T> SendAsync<T>(CloudConfiguration c,string route,object payload,DataContractJsonSerializer responseSerializer,CancellationToken token)
