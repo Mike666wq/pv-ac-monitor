@@ -1,5 +1,5 @@
 // @generated 来自 _base/src/AcmeCloud.cs —— 请勿手改。
-// @source-sha256 e48a5e2d824db498b79e0e4b1ad4a11acf3090acf45c93808cd2846376f9580c
+// @source-sha256 5df2dafad13149abf48ab35ccbeefd1fc905305f303ec826a40802bd9bec9d85
 // @sync node _base/sync-base.mjs --write
 // @end-header
 // ============================================================
@@ -100,6 +100,17 @@ namespace Acme.Cloud
             }
             catch(Exception ex)
             {
+                // 现场诊断：身份落到安装目录时，这里能看出是哪个候选目录不可写、为什么。
+                // 日志写到 %TEMP%，那个位置一定可写，不会因为本函数失败而丢证据。
+                try
+                {
+                    string logPath=Path.Combine(Path.GetTempPath(),"acme-identity-diagnostic.txt");
+                    File.AppendAllText(logPath,
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss",System.Globalization.CultureInfo.InvariantCulture)+" | "+directory+" | "+
+                        ex.GetType().Name+" hr=0x"+ex.HResult.ToString("X8")+" | "+ex.Message+
+                        " | user="+Environment.UserName+" | x64="+Environment.Is64BitProcess+Environment.NewLine);
+                }
+                catch{}
                 return false;
             }
         }
