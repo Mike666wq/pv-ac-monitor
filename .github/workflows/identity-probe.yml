@@ -1,0 +1,84 @@
+name: identity-probe
+
+# 实验端的身份落点与升级稳定性实测。
+# 和 BMS 端同一套思路：跑发布包本体，不跑手写探针。
+#   1. 落点必须是 ProgramData/LocalAppData，不能是安装目录（否则升级就换编号）
+#   2. 整包替换前后 machineKey 必须相同（现场原问题是"更新一次就要重新注册一次"）
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取发布包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://github.com/Mike666wq/pv-ac-monitor/releases/download/v0.9.6/PV-AC-Monitor-Windows-0.9.6.zip'
+          Invoke-WebRequest -Uri $url -OutFile exp.zip
+          Expand-Archive exp.zip -DestinationPath app -Force
+          Get-ChildItem app -Recurse -Filter '*.exe' | Select-Object FullName
+
+      - name: 首次运行（生成身份）
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem app -Recurse -Filter 'ExperimentMonitorDemo.exe' | Select-Object -First 1).FullName
+          $dir = Split-Path $exe -Parent
+          $p = Start-Process -FilePath $exe -ArgumentList '--dump-paths' -WorkingDirectory $dir -PassThru -Wait
+          Write-Host "exit=$($p.ExitCode)"
+          $f = Join-Path $dir 'exp-paths.txt'
+          if (-not (Test-Path $f)) { Write-Host '::error title=NoDump::没生成 exp-paths.txt'; exit 1 }
+          Get-Content $f | ForEach-Object { Write-Host $_ }
+          $raw = Get-Content $f -Raw
+          $m = [regex]::Match($raw, 'resolved=(.+)')
+          if (-not $m.Success) { Write-Host '::error title=NoResolved::没拿到 resolved'; exit 1 }
+          $resolved = $m.Groups[1].Value.Trim()
+          Write-Host "::notice title=IdentityResolved::$resolved"
+          $mk = [regex]::Match($raw, 'machineKey=(.+)')
+          if (-not $mk.Success) { Write-Host '::error title=NoMachineKey::没拿到 machineKey'; exit 1 }
+          $first = $mk.Groups[1].Value.Trim()
+          Write-Host "::notice title=FirstInstall::machineKey=$first"
+          Set-Content -Path first-key.txt -Value $first
+          if ($resolved.ToLower().Contains('\\app\\') -or $resolved.ToLower().Contains('\app\')) {
+            Write-Host "::error title=FallbackToInstall::落点在安装目录 $resolved"
+            exit 1
+          }
+
+      - name: 模拟升级（整包替换）
+        shell: pwsh
+        run: |
+          Remove-Item app -Recurse -Force
+          Expand-Archive exp.zip -DestinationPath app -Force
+          Write-Host '安装目录已整体替换'
+
+      - name: 升级后运行
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem app -Recurse -Filter 'ExperimentMonitorDemo.exe' | Select-Object -First 1).FullName
+          $dir = Split-Path $exe -Parent
+          Start-Process -FilePath $exe -ArgumentList '--dump-paths' -WorkingDirectory $dir -PassThru -Wait | Out-Null
+          $raw = Get-Content (Join-Path $dir 'exp-paths.txt') -Raw
+          Get-Content (Join-Path $dir 'exp-paths.txt') | ForEach-Object { Write-Host $_ }
+          $second = [regex]::Match($raw, 'machineKey=(.+)').Groups[1].Value.Trim()
+          Write-Host "::notice title=AfterUpgrade::machineKey=$second"
+
+      - name: 断言编号未变
+        shell: pwsh
+        run: |
+          $first = (Get-Content first-key.txt -Raw).Trim()
+          $exe = (Get-ChildItem app -Recurse -Filter 'ExperimentMonitorDemo.exe' | Select-Object -First 1).FullName
+          $raw = Get-Content (Join-Path (Split-Path $exe -Parent) 'exp-paths.txt') -Raw
+          $second = [regex]::Match($raw, 'machineKey=(.+)').Groups[1].Value.Trim()
+          Write-Host "first =$first"
+          Write-Host "second=$second"
+          if ($first -eq $second -and $first.StartsWith('mk_')) {
+            Write-Host "::notice title=UpgradeStable::PASS machineKey 未变 $first"
+          } else {
+            Write-Host "::error title=UpgradeBroke::FAIL 升级后编号变了 first=$first second=$second"
+            exit 1
+          }

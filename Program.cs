@@ -53,6 +53,25 @@ namespace ExperimentMonitor {
                 // 尾随逗号，而 JavaScriptSerializer 不会 —— 0.8.5 就因为一个尾随逗号把
                 // control-config.json 打进了发布包，直到包内自检才发现。构建时先验一遍。
                 if(args.Contains("--check-config")) return ShippedConfigCheck.Run(points,root);
+                // 排障开关：只打印身份解析结果就退出，用来确认现场落在哪个目录、编号是否稳定。
+                if(args.Contains("--dump-paths")) {
+                    try {
+                        string dir=Acme.Cloud.CloudIdentity.ResolveSettingsDirectory("ExperimentMonitorDemo",root);
+                        string mk=Acme.Cloud.CloudIdentity.LoadOrCreateMachineKey("ExperimentMonitorDemo",root);
+                        File.WriteAllText(Path.Combine(root,"exp-paths.txt"),
+                            "BaseDirectory="+root+Environment.NewLine+
+                            "resolved="+dir+Environment.NewLine+
+                            "resolvedExists="+Directory.Exists(dir)+Environment.NewLine+
+                            "user="+Environment.UserName+Environment.NewLine+
+                            "x64="+Environment.Is64BitProcess+Environment.NewLine+
+                            "machineSettings="+Acme.Cloud.CloudIdentity.MachineSettings("ExperimentMonitorDemo")+Environment.NewLine+
+                            "machineUsable="+Acme.Cloud.CloudIdentity.IsUsable(Acme.Cloud.CloudIdentity.MachineSettings("ExperimentMonitorDemo"))+Environment.NewLine+
+                            "userSettings="+Acme.Cloud.CloudIdentity.UserSettings("ExperimentMonitorDemo")+Environment.NewLine+
+                            "userUsable="+Acme.Cloud.CloudIdentity.IsUsable(Acme.Cloud.CloudIdentity.UserSettings("ExperimentMonitorDemo"))+Environment.NewLine+
+                            "machineKey="+mk);
+                    } catch(Exception ex) { try{File.WriteAllText(Path.Combine(root,"exp-paths.txt"),"EX "+ex);}catch{} }
+                    return 0;
+                }
                 if(args.Contains("--export-config")) {File.WriteAllText(Path.Combine(root,"point-contract.json"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{module="experiment",schemaVersion=1,catalogVersion=PointCatalog.Version,points=points.Select(p=>new {id=p.name,equipmentId=p.binding.device,slave=p.binding.slave,addressZeroBased=p.binding.address_zero_based,registerCount=p.binding.register_count,metadata=PointCatalog.Get(p)}).ToArray()}));return 0;}
                 if(args.Contains("--self-test")) { SelfTests.Run(points,root); ExtendedTests.Run(points,root); return 0; }
                 // 逐套件隔离执行：一个套件失败不会掩埋其它套件的结果，且显式申报没有用例的缺口。
