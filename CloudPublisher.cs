@@ -203,6 +203,13 @@ namespace ExperimentMonitor {
             catch(CloudHttpException e)
             {
                 CloudNetworkErrors.Write(e);
+                if(e.StatusCode==429)
+                {
+                    // 限流不是错误，是「来太勤了」：把认领间隔翻倍，别继续撞墙。
+                    enrollIntervalMs=Math.Min(60000,Math.Max(5000,enrollIntervalMs*2));
+                    Update("等待批准：云端限流，已自动放慢申请节奏");
+                    return false;
+                }
                 if(e.StatusCode==401||e.StatusCode==403){state.ClaimSecret=null;state.ClaimId=null;lastEnrollTick=0;Update("重新申请接入：认领凭据已失效");}
                 else Update("等待批准："+CloudNetworkErrors.Describe(e));
                 return false;

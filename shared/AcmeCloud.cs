@@ -1,5 +1,5 @@
 // @generated 来自 _base/src/AcmeCloud.cs —— 请勿手改。
-// @source-sha256 865d6f0ad3b5ea08570a445efc275f495597145cfd0c576a0cd0f9c71e2f5d3a
+// @source-sha256 814af266f639e81750f08485e68519cd91f8fd07ad7b1fc54372479b82a3141b
 // @sync node _base/sync-base.mjs --write
 // @end-header
 // ============================================================
@@ -171,7 +171,14 @@ namespace Acme.Cloud
             for(int i=0;i<legacy.Length;i++)
                 if(TryRead(legacy[i],IsMachineKey,out existing)){TryWrite(primary,existing);return existing;}
             string created=NewMachineKey();
-            if(!TryWrite(primary,created))TryWrite(Path.Combine(UserSettings(product),"machine-key.txt"),created);
+            // 三个位置逐级尝试，最后一个兜底是安装目录：
+            // 只要有一处写成功，下次启动就能读到同一把钥匙；全都失败的话，
+            // 每次启动都会生成新钥匙，云端就会看到一台又一台「新设备」。
+            // 三处都写不了时本次仍返回这把钥匙，但下次启动会生成新的（云端会看到多台新设备）。
+            // 这里不抛异常：连不上云端也不该阻断本地采集与记录。
+            bool saved=TryWrite(primary,created);
+            if(!saved)saved=TryWrite(Path.Combine(UserSettings(product),"machine-key.txt"),created);
+            if(!saved)TryWrite(Path.Combine(InstallSettings(installDirectory),"machine-key.txt"),created);
             return created;
         }
 
