@@ -331,7 +331,7 @@ namespace ExperimentMonitor {
                         ExperimentCloudSnapshot snapshot=null;string selectedKey=null,selectedSession=null;long version=0;
                         lock(gate) {
                             foreach(var entry in devices.OrderBy(x=>x.Value.Version)) {
-                                Device d=entry.Value;long done;if(!requested.Contains(d.Id)||(d.Source=="simulation"&&!c.IncludeSimulation)||(sent.TryGetValue(entry.Key,out done)&&done==d.Version))continue;
+                                Device d=entry.Value;long done;if(!requested.Contains(d.Id)||(d.Source=="simulation"&&!(allowSimulation??c.IncludeSimulation))||(sent.TryGetValue(entry.Key,out done)&&done==d.Version))continue;
                                 long now=Stopwatch.GetTimestamp();if(!d.Points.Values.Any(x=>x.InitialAge+(now-x.Tick)/(double)Stopwatch.Frequency<=30))continue;
                                 selectedKey=entry.Key;version=d.Version;selectedSession=connectionSession;if(d.Frozen!=null&&d.FrozenVersion==version&&d.FrozenSession==connectionSession){snapshot=d.Frozen;break;}
                                 var points=d.Points.Values.Select(x=> { var p=x.Point;bool stale=x.InitialAge+(now-x.Tick)/(double)Stopwatch.Frequency>30;return new ExperimentCloudPoint{Id=p.Id,Description=p.Description,Unit=p.Unit,Value=stale?null:p.Value,RawValue=stale?null:p.RawValue,DisplayValue=stale?null:p.DisplayValue,Quality=stale?Quality.Stale:p.Quality,ObservedUtc=p.ObservedUtc,RoundStartedUtc=p.RoundStartedUtc,Round=p.Round,ConfigVersion=p.ConfigVersion,Address=p.Address,Count=p.Count,Mode=p.Mode}; }).OrderBy(x=>x.Id).ToArray();
