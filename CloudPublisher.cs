@@ -184,6 +184,8 @@ namespace ExperimentMonitor {
                     c.Token=reply.DeviceToken;c.DeviceId=reply.DeviceId;
                     try{c.Save();}catch{c.Token=previousToken;c.DeviceId=previousId;throw;}
                     state.DeviceId=reply.DeviceId;state.State="active";state.ProtocolVersion=2;
+                    // 云端分配的编号写回 device-id.txt，否则下次启动 c.DeviceId 又被旧值覆盖。
+                    try{CloudIdentity.WriteDeviceIdTo(Path.GetDirectoryName(enrollmentPath),reply.DeviceId);}catch(Exception idError){CloudNetworkErrors.Write(idError);}
                     if(reply.Config!=null)state.ApplyConfig(reply.Config,reply.ConfigVersion.HasValue?reply.ConfigVersion.Value:0);
                     state.ClaimSecret=null;
                     try{lock(enrollmentGate)CloudEnrollmentStore.Save(state);}catch(Exception e){CloudNetworkErrors.Write(e);}
