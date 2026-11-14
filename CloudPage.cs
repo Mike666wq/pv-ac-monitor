@@ -24,10 +24,36 @@ namespace ExperimentMonitor {
             // 但 --root= 指定的测试根必须保持隔离，不能写进真实 ProgramData。
             bool productionRoot=String.Equals(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar),Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar),StringComparison.OrdinalIgnoreCase);
             string settingsDirectory=productionRoot?CloudIdentity.ResolveSettingsDirectory("ExperimentMonitorDemo",root):root;
-            string deviceId=productionRoot
-                ?CloudIdentity.LoadOrCreateDeviceId("ExperimentMonitorDemo",root,delegate(string v){return DeviceIdPattern.IsMatch(v);},null,null)
-                :null;
-            config=CloudConfiguration.Load(Path.Combine(settingsDirectory,"cloud-settings.json"),deviceId);
+            string configPath=Path.Combine(settingsDirectory,"cloud-settings.json");
+            string legacyConfigPath=Path.Combine(root,"cloud-settings.json");
+            string deviceId=null;
+            if(productionRoot)
+            {
+                // 历史版本把设备编号存在 cloud-settings.json 内部（实验端没有独立的 device-id 文件），
+                // 只换路径不搬内容，云端就会看到「多了一台新设备」。两步走：先搬文件，再对齐编号。
+                if(!File.Exists(configPath)&&!String.Equals(configPath,legacyConfigPath,StringComparison.OrdinalIgnoreCase))
+                    CloudSettingsMigration.AdoptConfig(configPath,legacyConfigPath);
+                // 编号以「实际生效的配置文件」为准：它既可能是刚搬过来的旧配置，也可能早就是新配置。
+                string existingId=File.Exists(configPath)?CloudConfiguration.Load(configPath,null).DeviceId:null;
+                if(existingId!=null&&DeviceIdPattern.IsMatch(existingId))
+                {
+                    deviceId=existingId;
+                    CloudIdentity.WriteDeviceIdTo(settingsDirectory,existingId);
+                    CloudIdentity.WriteMachineDeviceId("ExperimentMonitorDemo",existingId);
+                }
+                else
+                {
+                    string legacyId;
+                    if(CloudSettingsMigration.TryReadLegacyIdentity(legacyConfigPath,delegate(string v){return DeviceIdPattern.IsMatch(v);},out legacyId))
+                    {
+                        deviceId=legacyId;
+                        CloudIdentity.WriteDeviceIdTo(settingsDirectory,legacyId);
+                        CloudIdentity.WriteMachineDeviceId("ExperimentMonitorDemo",legacyId);
+                    }
+                    else deviceId=CloudIdentity.LoadOrCreateDeviceId("ExperimentMonitorDemo",root,delegate(string v){return DeviceIdPattern.IsMatch(v);},null,null);
+                }
+            }
+            config=CloudConfiguration.Load(configPath,deviceId);
             publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"));engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
             // 双栏分组布局(对齐 BMS 云端连接页):左 设备身份+连接设置,右 连接状态。
             // 左右两栏顶边平齐:不再单独放大标题(选项卡已标明页面);

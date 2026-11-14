@@ -1,5 +1,5 @@
 // @generated 来自 _base/src/AcmeCloud.cs —— 请勿手改。
-// @source-sha256 cceea564539742d3e160faeaecb8e258deca33ca80086ef6010615a1b3b9a80a
+// @source-sha256 8df5b53d56abe97217faace994f3d5a75913a5f376ac8695812e84f22707d163
 // @sync node _base/sync-base.mjs --write
 // @end-header
 // ============================================================
@@ -147,6 +147,13 @@ namespace Acme.Cloud
             return found;
         }
 
+        /// <summary>把设备编号写到指定目录的 device-id.txt（用于「实际生效的设置目录」可能与 ProgramData 不同的情况）。</summary>
+        public static bool WriteDeviceIdTo(string settingsDirectory,string deviceId)
+        {
+            if(String.IsNullOrWhiteSpace(settingsDirectory)||String.IsNullOrWhiteSpace(deviceId))return false;
+            return TryWrite(Path.Combine(settingsDirectory,"device-id.txt"),deviceId);
+        }
+
         /// <summary>导入凭据后把设备编号写回稳定位置，让下一次启动（含升级后）直接读到同一个身份。</summary>
         public static bool WriteMachineDeviceId(string product,string deviceId)
         {
@@ -235,6 +242,69 @@ namespace Acme.Cloud
         [DataMember(Name="nextRetryInSec",EmitDefaultValue=false)]public int NextRetryInSec{get;set;}
         [DataMember(Name="lastError",EmitDefaultValue=false)]public CloudClientError LastError{get;set;}
         [DataMember(Name="source",EmitDefaultValue=false)]public CloudClientSource Source{get;set;}
+    }
+
+    /// <summary>
+    /// 旧配置搬迁。
+    ///
+    /// 背景：身份与凭据从「安装目录」搬到 ProgramData 之后，旧版本留下的配置文件还在安装目录里。
+    /// 如果只改新路径而不搬内容，现场表现为「服务地址空了、令牌没了、设备编号变成另一台」——
+    /// 这比不改还糟，所以搬迁必须和换路径同一版发布。
+    ///
+    /// 规则（三条都是「只在不丢东西的前提下才动」）：
+    ///   · 目标不存在 → 直接复制一份过去，旧文件保留。
+    ///   · 目标存在但没有令牌 → 说明它没有被真正配置过，允许被旧配置覆盖。
+    ///   · 目标已有令牌 → 一行都不动。
+    /// </summary>
+    public static class CloudSettingsMigration
+    {
+        /// <summary>目标不存在时从旧位置搬一份过去，返回最终应当使用的路径。永不抛错，永不删除旧文件。</summary>
+        public static string AdoptConfig(string targetPath, string legacyPath)
+        {
+            try
+            {
+                if (File.Exists(targetPath)) return targetPath;
+                if (String.IsNullOrWhiteSpace(legacyPath) || !File.Exists(legacyPath)) return targetPath;
+                if (String.Equals(legacyPath, targetPath, StringComparison.OrdinalIgnoreCase)) return targetPath;
+                string directory = Path.GetDirectoryName(targetPath);
+                if (!String.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+                string temp = targetPath + ".partial-" + Guid.NewGuid().ToString("N");
+                try { File.Copy(legacyPath, temp, true); AtomicFile.Replace(temp, targetPath); }
+                catch { try { if (File.Exists(temp)) File.Delete(temp); } catch { } }
+            }
+            catch { }
+            return targetPath;
+        }
+
+        /// <summary>目标配置里是否已经有令牌。没有就说明它可以被旧配置接管。</summary>
+        public static bool HasToken(string path)
+        {
+            try { return File.Exists(path) && !String.IsNullOrWhiteSpace(CloudConfiguration.Load(path, null).Token); }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 从旧配置里取设备身份。
+        /// 历史版本（实验端）把 deviceId 存在云连接配置文件内部，没有独立的 device-id 文件；
+        /// 不把它读出来就会新生成一个编号，云端看到的是「多了一台新设备」。
+        /// 只要旧配置文件存在且里面的编号合法就采纳——它本来就是用户升级前看到的那个编号，
+        /// 与有没有令牌无关（没配过云连接的机器同样有编号，同样不该变）。
+        /// 调用方还要用 HasToken 判断目标位置能否被接管：目标已经配好令牌时不许覆盖，只保留它自己的身份。
+        /// </summary>
+        public static bool TryReadLegacyIdentity(string legacyPath, Func<string, bool> isValid, out string deviceId)
+        {
+            deviceId = null;
+            try
+            {
+                if (String.IsNullOrWhiteSpace(legacyPath) || !File.Exists(legacyPath)) return false;
+                CloudConfiguration legacy = CloudConfiguration.Load(legacyPath, null);
+                if (legacy == null || String.IsNullOrWhiteSpace(legacy.DeviceId)) return false;
+                if (isValid != null && !isValid(legacy.DeviceId)) return false;
+                deviceId = legacy.DeviceId;
+                return true;
+            }
+            catch { return false; }
+        }
     }
 
     /// <summary>续期请求体为空；定义一个 DataContract 只是为了让序列化器有确定的类型。</summary>
