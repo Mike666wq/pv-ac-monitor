@@ -320,12 +320,12 @@ namespace ExperimentMonitor {
             return r;
         }
         async Task Run() {
-            Stopwatch clock=Stopwatch.StartNew();long heartbeatAt=0,uploadAt=0,leaseUntil=0;int backoff=1;string subscription="",activeSignature=null;bool pendingRefresh=false;HashSet<string> requested=new HashSet<string>();
+            Stopwatch clock=Stopwatch.StartNew();long heartbeatAt=0,uploadAt=0,leaseUntil=0;int backoff=1;string subscription="",activeSignature=null;bool pendingRefresh=false;HashSet<string> requested=new HashSet<string>();Dictionary<string,long> keyUploadAt=new Dictionary<string,long>();
             while(!stop.IsCancellationRequested) {
                 CloudConfiguration c=null;try{c=configuration();}catch{}
                 if(c==null||!c.Enabled){CancelBackfill();lock(backfillGate)backfilledSubscription=null;leaseUntil=0;subscription="";activeSignature=null;lock(gate){devices.Clear();sent.Clear();leaseUntilUtc=null;}Update("未启用");await Delay(250);continue;}
                 string signature=c.DeviceId+"|"+c.Endpoint+"|"+c.Token+"|"+c.IncludeSimulation;
-                if(activeSignature!=signature){CancelBackfill();lock(backfillGate)backfilledSubscription=null;heartbeatAt=0;uploadAt=0;leaseUntil=0;subscription="";requested.Clear();lock(gate){sent.Clear();leaseUntilUtc=null;if(activeSignature!=null){devices.Clear();connectionSession=Guid.NewGuid().ToString("N");}}activeSignature=signature;}
+                if(activeSignature!=signature){CancelBackfill();lock(backfillGate)backfilledSubscription=null;heartbeatAt=0;uploadAt=0;leaseUntil=0;subscription="";requested.Clear();lock(gate){sent.Clear();keyUploadAt.Clear();leaseUntilUtc=null;if(activeSignature!=null){devices.Clear();connectionSession=Guid.NewGuid().ToString("N");}}activeSignature=signature;}
                 if(!c.HasValidEndpoint){Update("云端地址无效");await Delay(250);continue;}
                 if(String.IsNullOrWhiteSpace(c.Token))
                 {
@@ -345,7 +345,7 @@ namespace ExperimentMonitor {
                         ExperimentCloudSnapshot snapshot=null;string selectedKey=null,selectedSession=null;long version=0;
                         lock(gate) {
                             foreach(var entry in devices.OrderByDescending(x=>x.Value.Version)) {
-                                Device d=entry.Value;long done;if(!requested.Contains(d.Id)||(d.Source=="simulation"&&!(allowSimulation??c.IncludeSimulation))||(sent.TryGetValue(entry.Key,out done)&&done==d.Version))continue;
+                                Device d=entry.Value;long done;long lastTick;if(keyUploadAt.TryGetValue(entry.Key,out lastTick)&&clock.ElapsedMilliseconds-lastTick<UploadCadenceMs)continue;if(!requested.Contains(d.Id)||(d.Source=="simulation"&&!(allowSimulation??c.IncludeSimulation))||(sent.TryGetValue(entry.Key,out done)&&done==d.Version))continue;
                                 long now=Stopwatch.GetTimestamp();if(!d.Points.Values.Any(x=>x.InitialAge+(now-x.Tick)/(double)Stopwatch.Frequency<=30))continue;
                                 selectedKey=entry.Key;version=d.Version;selectedSession=connectionSession;if(d.Frozen!=null&&d.FrozenVersion==version&&d.FrozenSession==connectionSession){snapshot=d.Frozen;break;}
                                 var points=d.Points.Values.Select(x=> { var p=x.Point;bool stale=x.InitialAge+(now-x.Tick)/(double)Stopwatch.Frequency>30;return new ExperimentCloudPoint{Id=p.Id,Description=p.Description,Unit=p.Unit,Value=stale?null:p.Value,RawValue=stale?null:p.RawValue,DisplayValue=stale?null:p.DisplayValue,Quality=stale?Quality.Stale:p.Quality,ObservedUtc=p.ObservedUtc,RoundStartedUtc=p.RoundStartedUtc,Round=p.Round,ConfigVersion=p.ConfigVersion,Address=p.Address,Count=p.Count,Mode=p.Mode}; }).OrderBy(x=>x.Id).ToArray();
@@ -354,7 +354,7 @@ namespace ExperimentMonitor {
                         }
                         if(snapshot!=null) {
                             uploading=true;await transport.SendSnapshotAsync(c,new CloudSnapshotPost{SubscriptionId=subscription,Snapshot=snapshot},stop.Token).ConfigureAwait(false);
-                            lock(gate){if(connectionSession==selectedSession){sent[selectedKey]=version;sentCount++;lastUpload=DateTime.UtcNow;}}backoff=1;uploadAt=clock.ElapsedMilliseconds+10000;Update("在线；已上传实验快照");
+                            lock(gate){if(connectionSession==selectedSession){sent[selectedKey]=version;sentCount++;lastUpload=DateTime.UtcNow;}}backoff=1;keyUploadAt[selectedKey]=clock.ElapsedMilliseconds;uploadAt=clock.ElapsedMilliseconds+200;Update("在线；已上传实验快照");
                         }else Update("在线；租约有效，等待新鲜数据");
                     }else Update(clock.ElapsedMilliseconds>=leaseUntil?"在线；无人观看或租约过期":"在线；观看租约有效");
                 }catch(OperationCanceledException){if(stop.IsCancellationRequested)break;failedCount++;uploadAt=clock.ElapsedMilliseconds+backoff*1000L;heartbeatAt=uploadAt;backoff=Math.Min(60,backoff*2);Update("请求取消；本地采集继续");}
