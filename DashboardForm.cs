@@ -114,6 +114,14 @@ namespace ExperimentMonitor {
             toolbar.Controls.Add(start);toolbar.Controls.Add(once);toolbar.Controls.Add(stop);
             shell.Controls.Add(toolbar,0,1);
             MainNavigation=new TabControl { Dock=DockStyle.Fill,DrawMode=TabDrawMode.OwnerDrawFixed,ItemSize=new Size(120,34),SizeMode=TabSizeMode.Fixed,Padding=new DrawingPoint(12,4) };
+
+        // 测试入口：--open-page=云端连接 直达页签（自绘页签无法被 UIA/合成消息驱动）。
+        Load += delegate {
+            string want = null;
+            foreach (string a in Environment.GetCommandLineArgs()) if (a.StartsWith("--open-page=")) { want = a.Substring(12); break; }
+            if (String.IsNullOrEmpty(want)) return;
+            foreach (TabPage tp in MainNavigation.TabPages) if (tp.Text != null && tp.Text.IndexOf(want, StringComparison.Ordinal) >= 0) { MainNavigation.SelectedTab = tp; break; }
+        };
             MainNavigation.DrawItem+=(s,e)=>{bool selected=(e.State&DrawItemState.Selected)!=0;using(var b=new SolidBrush(selected?Color.White:Color.FromArgb(247,250,253)))e.Graphics.FillRectangle(b,e.Bounds);TextRenderer.DrawText(e.Graphics,MainNavigation.TabPages[e.Index].Text,MainNavigation.Font,e.Bounds,selected?UiTheme.Blue:UiTheme.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPrefix);if(selected)using(var p=new Pen(UiTheme.Blue,3))e.Graphics.DrawLine(p,e.Bounds.Left+17,e.Bounds.Bottom-2,e.Bounds.Right-17,e.Bounds.Bottom-2);};
             shell.Controls.Add(MainNavigation,0,2);
             // 底部状态栏:状态灯与点表/采集统计合并为一行。
