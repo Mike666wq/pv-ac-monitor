@@ -71,9 +71,15 @@ namespace ExperimentMonitor {
             // 启动一律不连云端：等用户在「云端连接」页填好设备名、点「保存并连接」再连。
             // 之前沿用配置里的值，程序一打开就用上一次的名字发认领，本地改名云端看不到。
             enabledOnStart=config.Enabled;
-            config.Enabled=false;   // 仅运行时；文件里的值由「保存并连接」写
+            // 只有已批准（active）的设备才在启动时自动连；没批准过的必须等用户点「保存并连接」，
+            // 否则一打开就拿旧名字/机器名去认领，云端那条待批准永远是旧名字。
+            // 这里在创建 publisher 之前就把结果算好，避免工作线程先跑一轮看到 Enabled=true。
+            bool enrollmentActive=false;
+            if(productionRoot){try{CloudEnrollment probe=CloudEnrollmentStore.Load(Path.Combine(settingsDirectory,CloudEnrollmentStore.FileName),CloudIdentity.LoadOrCreateMachineKey("ExperimentMonitorDemo",AppDomain.CurrentDomain.BaseDirectory));enrollmentActive=probe!=null&&probe.IsActive;}catch(Exception probeError){CloudNetworkErrors.Write(probeError);}}
+            config.Enabled=enabledOnStart&&enrollmentActive;
             // 接入状态写进实际生效的设置目录；--root= 测试根不写真实 ProgramData。
-            publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"),productionRoot?settingsDirectory:null);engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
+            publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"),productionRoot?settingsDirectory:null);
+engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
             // 双栏分组布局(对齐 BMS 云端连接页):左 设备身份+连接设置,右 连接状态。
             // 左右两栏顶边平齐:不再单独放大标题(选项卡已标明页面);
             // 外边距 14、栏间距 12,左右框的边线严格对齐。
@@ -108,7 +114,9 @@ namespace ExperimentMonitor {
             var diagnose=new StyledActionButton{Text="连接诊断（只发心跳，不上传测点）",Width=280};
             var actions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,Margin=Padding.Empty,Padding=new Padding(0,4,0,0)};
             actions.Controls.Add(saveCloud);actions.Controls.Add(reclaim);actions.Controls.Add(diagnose);
-            saveCloud.Click+=delegate{CloudConfiguration cur=Volatile.Read(ref config);string oldAlias=cur.Alias??"";string newAlias=(aliasValue.Text??"").Trim();cur.Alias=newAlias;cur.Enabled=cloudEnabled.Checked;cur.Save();// 只要不是「已接入」都重新提交，否则改名后云端那条 pending 永远是旧名字。
+            saveCloud.Click+=delegate{CloudConfiguration cur=Volatile.Read(ref config);string oldAlias=cur.Alias??"";string newAlias=(aliasValue.Text??"").Trim();
+                // 占位符不是名字：别名框空着时会显示它，别把它存进配置。
+                if(newAlias=="（等待云端分配）")newAlias="";cur.Alias=newAlias;cur.Enabled=cloudEnabled.Checked;cur.Save();// 只要不是「已接入」都重新提交，否则改名后云端那条 pending 永远是旧名字。
                 if(!String.Equals(oldAlias,newAlias,StringComparison.Ordinal)||publisher.EnrollmentState!="已接入")publisher.ResetEnrollment();RefreshStatus();};settings.Controls.Add(actions);
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(settings,0,leftCol.RowCount-1);
             var credentials=Section("凭据备份");
@@ -225,7 +233,7 @@ namespace ExperimentMonitor {
             catch(Exception ex){MessageBox.Show(this,"重新申请失败："+ex.Message,"重新申请接入",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
         }
         void RefreshStatus(){cloudEnabled.Checked=enabledOnStart;CloudPublisherStatus snapshot=publisher.SnapshotStatus;
-            if(!aliasValue.Focused&&String.IsNullOrWhiteSpace(aliasValue.Text))aliasValue.Text=publisher.EnrollmentAlias;machineValue.Text=publisher.MachineKeyMasked;accessValue.Text=publisher.EnrollmentAccess;enrollStateValue.Text=publisher.EnrollmentState;
+            if(!aliasValue.Focused&&String.IsNullOrWhiteSpace(aliasValue.Text)){string ea=publisher.EnrollmentAlias;if(ea!="（等待云端分配）")aliasValue.Text=ea;}machineValue.Text=publisher.MachineKeyMasked;accessValue.Text=publisher.EnrollmentAccess;enrollStateValue.Text=publisher.EnrollmentState;
             status.Text=snapshot.State;contact.Text=snapshot.LastContactLocal;lease.Text=snapshot.LeaseValid?"有效至 "+snapshot.LeaseUntilLocal:"无有效租约";uploads.Text=snapshot.LastUploadLocal+" · 确认 "+snapshot.Accepted+" · 失败 "+snapshot.Failed+" · 待发设备 "+snapshot.QueuedDevices+" · 测点 "+snapshot.QueuedPoints;EventHandler h=StatusChanged;if(h!=null)h(this,EventArgs.Empty);PublishStatusLabel();}
         void PublishStatusLabel(){Action<string> h=CloudStatusChanged;if(h==null)return;string label=CurrentStatusLabel;try{if(IsHandleCreated&&InvokeRequired)BeginInvoke((Action)(()=>h(label)));else h(label);}catch{}}
         void OnObservation(Observation observation){publisher.Publish(observation);}

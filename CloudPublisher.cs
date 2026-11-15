@@ -93,7 +93,9 @@ namespace ExperimentMonitor {
             lock(enrollmentGate)
             {
                 if(enrollment==null)return;
-                enrollment.ClaimSecret=null;enrollment.ClaimId=null;enrollment.State="unclaimed";enrollment.ProtocolVersion=0;
+                // 保留 ClaimSecret：改名后重新申请时，云端那条 pending 记录的哈希才认得我们，
+                // 否则 secret 一换就被判成「别人在抢」，401 挡回来，名字永远改不掉。
+                enrollment.ClaimId=null;enrollment.State="unclaimed";enrollment.ProtocolVersion=0;
                 try{CloudEnrollmentStore.Save(enrollment);}catch(Exception e){CloudNetworkErrors.Write(e);}
             }
             lock(gate){uploadAllowed=null;allowSimulation=null;deviceState="unclaimed";}
