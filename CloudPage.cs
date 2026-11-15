@@ -108,7 +108,8 @@ namespace ExperimentMonitor {
             var diagnose=new StyledActionButton{Text="连接诊断（只发心跳，不上传测点）",Width=280};
             var actions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,Margin=Padding.Empty,Padding=new Padding(0,4,0,0)};
             actions.Controls.Add(saveCloud);actions.Controls.Add(reclaim);actions.Controls.Add(diagnose);
-            saveCloud.Click+=delegate{CloudConfiguration cur=Volatile.Read(ref config);string oldAlias=cur.Alias??"";string newAlias=(aliasValue.Text??"").Trim();cur.Alias=newAlias;cur.Enabled=cloudEnabled.Checked;cur.Save();if(!String.Equals(oldAlias,newAlias,StringComparison.Ordinal))publisher.ResetEnrollment();RefreshStatus();};settings.Controls.Add(actions);
+            saveCloud.Click+=delegate{CloudConfiguration cur=Volatile.Read(ref config);string oldAlias=cur.Alias??"";string newAlias=(aliasValue.Text??"").Trim();cur.Alias=newAlias;cur.Enabled=cloudEnabled.Checked;cur.Save();// 只要不是「已接入」都重新提交，否则改名后云端那条 pending 永远是旧名字。
+                if(!String.Equals(oldAlias,newAlias,StringComparison.Ordinal)||publisher.EnrollmentState!="已接入")publisher.ResetEnrollment();RefreshStatus();};settings.Controls.Add(actions);
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(settings,0,leftCol.RowCount-1);
             var credentials=Section("凭据备份");
             credentials.Controls.Add(new Label{Text="换机器或重装系统时用：导出后凭同一口令在另一台机器导入，独立数据源编号不变、无需重新注册。",AutoSize=true,MaximumSize=new Size(660,0),ForeColor=UiTheme.Muted,Margin=new Padding(2,0,2,6)});

@@ -160,6 +160,7 @@ namespace ExperimentMonitor {
             CloudEnrollment state;lock(enrollmentGate){state=enrollment;}
             if(enrollmentTransport==null||state==null)return false;
             // 已注销也允许重新发起认领：令牌已被清空，说明确实是人工重新接入。
+            // DesiredAlias 用配置里填的名字（与 BMS 一致），留空才退回机器名。
             long now=Stopwatch.GetTimestamp();
             if(lastEnrollTick!=0&&(now-lastEnrollTick)*1000.0/Stopwatch.Frequency<enrollIntervalMs)return false;
             lastEnrollTick=now;
@@ -171,7 +172,7 @@ namespace ExperimentMonitor {
                     if(String.IsNullOrEmpty(state.MachineKey))state.MachineKey=CloudIdentity.LoadOrCreateMachineKey("ExperimentMonitorDemo",AppDomain.CurrentDomain.BaseDirectory);
                     state.ClaimSecret=NewClaimSecret();state.Module="experiment";
                     reply=await enrollmentTransport.ClaimAsync(ClaimCarrier(c,state.ClaimSecret),
-                        new CloudClaimRequest{MachineKey=state.MachineKey,Module="experiment",ProtocolVersion=2,DesiredAlias=Environment.MachineName,Client=BuildClientReport()},stop.Token).ConfigureAwait(false);
+                        new CloudClaimRequest{MachineKey=state.MachineKey,Module="experiment",ProtocolVersion=2,DesiredAlias=String.IsNullOrWhiteSpace(c.Alias)?Environment.MachineName:c.Alias,Client=BuildClientReport()},stop.Token).ConfigureAwait(false);
                 }
                 else reply=await enrollmentTransport.ClaimStatusAsync(ClaimCarrier(c,state.ClaimSecret),state.ClaimId,stop.Token).ConfigureAwait(false);
                 if(reply==null){Update("等待批准：云端未返回接入结果");return false;}
