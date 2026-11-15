@@ -65,7 +65,9 @@ namespace ExperimentMonitor {
             config.Endpoint=CloudEndpoint;
             // 开关归用户：首次运行默认关闭；用户在「云端连接」页勾选并保存后才连。
             // 原来这里每次启动都置 true，等于点开程序就自动认领。
-            config.Enabled=productionRoot&&config.Enabled;
+            // 启动一律不连云端：等用户在「云端连接」页填好设备名、点「保存并连接」再连。
+            // 之前沿用配置里的值，程序一打开就用上一次的名字发认领，本地改名云端看不到。
+            config.Enabled=false;   // 仅运行时；文件里的值由「保存并连接」写
             // 接入状态写进实际生效的设置目录；--root= 测试根不写真实 ProgramData。
             publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"),productionRoot?settingsDirectory:null);engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
             // 双栏分组布局(对齐 BMS 云端连接页):左 设备身份+连接设置,右 连接状态。
@@ -102,7 +104,7 @@ namespace ExperimentMonitor {
             var diagnose=new StyledActionButton{Text="连接诊断（只发心跳，不上传测点）",Width=280};
             var actions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,Margin=Padding.Empty,Padding=new Padding(0,4,0,0)};
             actions.Controls.Add(saveCloud);actions.Controls.Add(reclaim);actions.Controls.Add(diagnose);
-            saveCloud.Click+=delegate{CloudConfiguration cur=Volatile.Read(ref config);cur.Alias=(aliasValue.Text??"").Trim();cur.Enabled=cloudEnabled.Checked;cur.Save();RefreshStatus();};settings.Controls.Add(actions);
+            saveCloud.Click+=delegate{CloudConfiguration cur=Volatile.Read(ref config);string oldAlias=cur.Alias??"";string newAlias=(aliasValue.Text??"").Trim();cur.Alias=newAlias;cur.Enabled=cloudEnabled.Checked;cur.Save();if(!String.Equals(oldAlias,newAlias,StringComparison.Ordinal))publisher.ResetEnrollment();RefreshStatus();};settings.Controls.Add(actions);
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(settings,0,leftCol.RowCount-1);
             var credentials=Section("凭据备份");
             credentials.Controls.Add(new Label{Text="换机器或重装系统时用：导出后凭同一口令在另一台机器导入，独立数据源编号不变、无需重新注册。",AutoSize=true,MaximumSize=new Size(660,0),ForeColor=UiTheme.Muted,Margin=new Padding(2,0,2,6)});
