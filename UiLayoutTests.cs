@@ -79,6 +79,18 @@ namespace ExperimentMonitor {
                 form.MaximumSize=new Size(20000,20000);
                 if(scale!=1f)form.Scale(new SizeF(scale,scale));
                 Size requested=new Size((int)Math.Round(width*scale),(int)Math.Round(height*scale));
+                // 窗口不可能大于屏幕工作区。超屏组合是环境限制，不是布局缺陷——
+                // 以前这里直接断言 ClientSize==requested，在 1080p 机器上跑 2560x1600@150%
+                // 必然红，把「没条件验证」误报成「布局坏了」。改成显式跳过并记录。
+                Size work=SystemInformation.WorkingArea.Size;
+                if(requested.Width>work.Width||requested.Height>work.Height){
+                    Trace("SKIP "+title+" requested="+requested.Width+"x"+requested.Height+" screen="+work.Width+"x"+work.Height);
+                    cases.Add(new Dictionary<string,object>{
+                        {"case",title},{"result","skipped-screen-too-small"},
+                        {"requested",requested.Width+"x"+requested.Height},{"screen",work.Width+"x"+work.Height}
+                    });
+                    return;
+                }
                 form.Shown+=async(s,e)=>{
                     try{
                         form.ClientSize=requested;
