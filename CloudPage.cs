@@ -10,7 +10,8 @@ namespace ExperimentMonitor {
         internal const string CloudEndpoint="https://pv-ac.bbben.xyz";
         CloudConfiguration config;readonly CloudPublisher publisher;
         // 零配置：服务地址、令牌、启用开关、别名、模拟开关全部由云端下发，页面上不再有输入框。
-        readonly Label aliasValue=new Label{AutoSize=true,ForeColor=UiTheme.Ink,Margin=new Padding(2,0,2,6)};
+        readonly TextBox aliasValue=new TextBox{Width=300,Margin=new Padding(2,0,2,6)};
+        readonly CheckBox cloudEnabled=new CheckBox{Text="启用云端连接（不勾选只做本地采集）",AutoSize=true,Margin=new Padding(2,6,2,6)};
         readonly Label machineValue=new Label{AutoSize=true,ForeColor=UiTheme.Ink,Margin=new Padding(2,0,2,6)};
         readonly Label accessValue=new Label{AutoSize=true,MaximumSize=new Size(560,0),ForeColor=UiTheme.Ink};
         readonly Label enrollStateValue=new Label{AutoSize=true,ForeColor=UiTheme.Ink};
@@ -62,7 +63,9 @@ namespace ExperimentMonitor {
             // 地址与开关都由程序决定，不再读本地配置：云端才是唯一真相源。
             // --root= 测试隔离时保持关闭，避免把测试数据发到真实云端。
             config.Endpoint=CloudEndpoint;
-            config.Enabled=productionRoot;
+            // 开关归用户：首次运行默认关闭；用户在「云端连接」页勾选并保存后才连。
+            // 原来这里每次启动都置 true，等于点开程序就自动认领。
+            config.Enabled=productionRoot&&config.Enabled;
             // 接入状态写进实际生效的设置目录；--root= 测试根不写真实 ProgramData。
             publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"),productionRoot?settingsDirectory:null);engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
             // 双栏分组布局(对齐 BMS 云端连接页):左 设备身份+连接设置,右 连接状态。
@@ -82,20 +85,24 @@ namespace ExperimentMonitor {
             var identity=Section("设备身份");
             identity.Controls.Add(FieldLabel("独立数据源"));
             identity.Controls.Add(new Label{Text=config.DeviceId,AutoSize=true,ForeColor=UiTheme.Ink,Margin=new Padding(2,0,2,6)});
-            identity.Controls.Add(FieldLabel("设备别名（由云端分配）"));
+            identity.Controls.Add(FieldLabel("设备别名（本地可填，留空用机器名）"));
             identity.Controls.Add(aliasValue);
             identity.Controls.Add(FieldLabel("机器钥匙"));
             identity.Controls.Add(machineValue);
+            identity.Controls.Add(FieldLabel("云端连接"));
+            identity.Controls.Add(cloudEnabled);
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(identity,0,leftCol.RowCount-1);
             var settings=Section("云端授权");
             settings.Controls.Add(FieldLabel("接入状态"));
             settings.Controls.Add(enrollStateValue);
             settings.Controls.Add(FieldLabel("允许上传范围（由云端下发，本地不填）"));
             settings.Controls.Add(accessValue);
-            var reclaim=new StyledActionButton{Text="重新申请接入",Width=150,BackColor=UiTheme.Blue};
+            var saveCloud=new StyledActionButton{Text="保存并连接",Width=150,BackColor=UiTheme.Blue};
+            var reclaim=new StyledActionButton{Text="重新申请接入",Width=150};
             var diagnose=new StyledActionButton{Text="连接诊断（只发心跳，不上传测点）",Width=280};
             var actions=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=true,Margin=Padding.Empty,Padding=new Padding(0,4,0,0)};
-            actions.Controls.Add(reclaim);actions.Controls.Add(diagnose);settings.Controls.Add(actions);
+            actions.Controls.Add(saveCloud);actions.Controls.Add(reclaim);actions.Controls.Add(diagnose);
+            saveCloud.Click+=delegate{CloudConfiguration cur=Volatile.Read(ref config);cur.Alias=(aliasValue.Text??"").Trim();cur.Enabled=cloudEnabled.Checked;cur.Save();RefreshStatus();};settings.Controls.Add(actions);
             leftCol.RowCount++;leftCol.RowStyles.Add(new RowStyle(SizeType.AutoSize));leftCol.Controls.Add(settings,0,leftCol.RowCount-1);
             var credentials=Section("凭据备份");
             credentials.Controls.Add(new Label{Text="换机器或重装系统时用：导出后凭同一口令在另一台机器导入，独立数据源编号不变、无需重新注册。",AutoSize=true,MaximumSize=new Size(660,0),ForeColor=UiTheme.Muted,Margin=new Padding(2,0,2,6)});
@@ -203,14 +210,15 @@ namespace ExperimentMonitor {
             try
             {
                 var next=CloudConfiguration.Load(config.SavePath,config.DeviceId);
+                next.Alias=(aliasValue.Text??"").Trim();next.Enabled=cloudEnabled.Checked;
                 next.Token="";next.Save();Volatile.Write(ref config,next);
                 publisher.ResetEnrollment();RefreshStatus();
                 MessageBox.Show(this,"已重新提交接入申请。请在云端「待批准设备」中确认。","重新申请接入",MessageBoxButtons.OK,MessageBoxIcon.Information);
             }
             catch(Exception ex){MessageBox.Show(this,"重新申请失败："+ex.Message,"重新申请接入",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
         }
-        void RefreshStatus(){CloudPublisherStatus snapshot=publisher.SnapshotStatus;
-            aliasValue.Text=publisher.EnrollmentAlias;machineValue.Text=publisher.MachineKeyMasked;accessValue.Text=publisher.EnrollmentAccess;enrollStateValue.Text=publisher.EnrollmentState;
+        void RefreshStatus(){cloudEnabled.Checked=Volatile.Read(ref config).Enabled;CloudPublisherStatus snapshot=publisher.SnapshotStatus;
+            if(!aliasValue.Focused&&String.IsNullOrWhiteSpace(aliasValue.Text))aliasValue.Text=publisher.EnrollmentAlias;machineValue.Text=publisher.MachineKeyMasked;accessValue.Text=publisher.EnrollmentAccess;enrollStateValue.Text=publisher.EnrollmentState;
             status.Text=snapshot.State;contact.Text=snapshot.LastContactLocal;lease.Text=snapshot.LeaseValid?"有效至 "+snapshot.LeaseUntilLocal:"无有效租约";uploads.Text=snapshot.LastUploadLocal+" · 确认 "+snapshot.Accepted+" · 失败 "+snapshot.Failed+" · 待发设备 "+snapshot.QueuedDevices+" · 测点 "+snapshot.QueuedPoints;EventHandler h=StatusChanged;if(h!=null)h(this,EventArgs.Empty);PublishStatusLabel();}
         void PublishStatusLabel(){Action<string> h=CloudStatusChanged;if(h==null)return;string label=CurrentStatusLabel;try{if(IsHandleCreated&&InvokeRequired)BeginInvoke((Action)(()=>h(label)));else h(label);}catch{}}
         void OnObservation(Observation observation){publisher.Publish(observation);}
