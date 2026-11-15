@@ -152,7 +152,14 @@ if ($Test) {
         if ($result.passed -ne $true) { throw ('Self-test evidence failed: ' + $name + '. Evidence directory: ' + $testRoot) }
     }
     $uiResult = Get-Content -LiteralPath (Join-Path $testRoot 'ui-test-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($uiResult.cases.Count -ne 9 -or $uiResult.screenshots.Count -lt 49) { throw ('Self-test UI evidence is incomplete. Evidence directory: ' + $testRoot) }
+    # 截图期望值要跟着实际能验证的组合走：屏幕放不下的尺寸组合会被标
+    # skipped-screen-too-small 并跳过（每个组合 3 张截图），写死 49 会在
+    # 1080p 机器上永远失败 —— 「没条件验证」不该算成「证据不全」。
+    $skippedCases = @($uiResult.cases | Where-Object { $_.result -eq 'skipped-screen-too-small' }).Count
+    $expectedShots = 49 - $skippedCases * 3
+    if ($uiResult.cases.Count -ne 9 -or $uiResult.screenshots.Count -lt $expectedShots) {
+        throw ('Self-test UI evidence is incomplete (cases=' + $uiResult.cases.Count + ', screenshots=' + $uiResult.screenshots.Count + ', expected>=' + $expectedShots + ', skipped=' + $skippedCases + '). Evidence directory: ' + $testRoot)
+    }
     Write-Output ('Self-test passed. Isolated results: ' + $testRoot)
 }
 
