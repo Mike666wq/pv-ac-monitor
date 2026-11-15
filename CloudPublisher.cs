@@ -56,6 +56,8 @@ namespace ExperimentMonitor {
         CloudEnrollment enrollment;readonly string enrollmentPath;readonly object enrollmentGate=new object();
         // null = 云端还没说过这一项，按「允许」处理；收到配置后才有确定值。
         bool? uploadAllowed,allowSimulation;string deviceState;
+        // 上云节奏：采集仍按本地周期，每 10 秒打包最新一帧上云。
+        const int UploadCadenceMs=10000;
         long lastEnrollTick;int enrollIntervalMs=5000;
         public string Status { get { lock(gate)return status+"；已确认 "+sentCount+"，失败 "+failedCount; } }
         public CloudPublisherStatus SnapshotStatus { get {lock(gate)return new CloudPublisherStatus{State=status,LastContactLocal=lastContact.HasValue?lastContact.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"):"—",LeaseUntilLocal=leaseUntilUtc.HasValue?leaseUntilUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"):"—",LastUploadLocal=lastUpload.HasValue?lastUpload.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"):"—",LeaseValid=leaseUntilUtc.HasValue&&leaseUntilUtc.Value>DateTime.UtcNow,Accepted=sentCount,Failed=failedCount,QueuedDevices=devices.Count,QueuedPoints=devices.Values.Sum(d=>d.Points.Count),DiagnosticCategory=diagnosticCategory,DiagnosticMessage=diagnosticMessage};} }
@@ -342,7 +344,7 @@ namespace ExperimentMonitor {
                     if(clock.ElapsedMilliseconds<leaseUntil&&!String.IsNullOrWhiteSpace(subscription)&&clock.ElapsedMilliseconds>=uploadAt) {
                         ExperimentCloudSnapshot snapshot=null;string selectedKey=null,selectedSession=null;long version=0;
                         lock(gate) {
-                            foreach(var entry in devices.OrderBy(x=>x.Value.Version)) {
+                            foreach(var entry in devices.OrderByDescending(x=>x.Value.Version)) {
                                 Device d=entry.Value;long done;if(!requested.Contains(d.Id)||(d.Source=="simulation"&&!(allowSimulation??c.IncludeSimulation))||(sent.TryGetValue(entry.Key,out done)&&done==d.Version))continue;
                                 long now=Stopwatch.GetTimestamp();if(!d.Points.Values.Any(x=>x.InitialAge+(now-x.Tick)/(double)Stopwatch.Frequency<=30))continue;
                                 selectedKey=entry.Key;version=d.Version;selectedSession=connectionSession;if(d.Frozen!=null&&d.FrozenVersion==version&&d.FrozenSession==connectionSession){snapshot=d.Frozen;break;}
@@ -352,7 +354,7 @@ namespace ExperimentMonitor {
                         }
                         if(snapshot!=null) {
                             uploading=true;await transport.SendSnapshotAsync(c,new CloudSnapshotPost{SubscriptionId=subscription,Snapshot=snapshot},stop.Token).ConfigureAwait(false);
-                            lock(gate){if(connectionSession==selectedSession){sent[selectedKey]=version;sentCount++;lastUpload=DateTime.UtcNow;}}backoff=1;uploadAt=clock.ElapsedMilliseconds+1000;Update("在线；已上传实验快照");
+                            lock(gate){if(connectionSession==selectedSession){sent[selectedKey]=version;sentCount++;lastUpload=DateTime.UtcNow;}}backoff=1;uploadAt=clock.ElapsedMilliseconds+10000;Update("在线；已上传实验快照");
                         }else Update("在线；租约有效，等待新鲜数据");
                     }else Update(clock.ElapsedMilliseconds>=leaseUntil?"在线；无人观看或租约过期":"在线；观看租约有效");
                 }catch(OperationCanceledException){if(stop.IsCancellationRequested)break;failedCount++;uploadAt=clock.ElapsedMilliseconds+backoff*1000L;heartbeatAt=uploadAt;backoff=Math.Min(60,backoff*2);Update("请求取消；本地采集继续");}
