@@ -76,7 +76,8 @@ namespace ExperimentMonitor {
             // 这里在创建 publisher 之前就把结果算好，避免工作线程先跑一轮看到 Enabled=true。
             bool enrollmentActive=false;
             if(productionRoot){try{CloudEnrollment probe=CloudEnrollmentStore.Load(Path.Combine(settingsDirectory,CloudEnrollmentStore.FileName),CloudIdentity.LoadOrCreateMachineKey("ExperimentMonitorDemo",AppDomain.CurrentDomain.BaseDirectory));enrollmentActive=probe!=null&&probe.IsActive;}catch(Exception probeError){CloudNetworkErrors.Write(probeError);}}
-            config.Enabled=enabledOnStart&&enrollmentActive;
+            // 启动一律不连云端：必须由使用者点「保存并连接」才发起请求。
+            config.Enabled=false;
             // 接入状态写进实际生效的设置目录；--root= 测试根不写真实 ProgramData。
             publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"),productionRoot?settingsDirectory:null);
 engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
