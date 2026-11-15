@@ -190,10 +190,12 @@ namespace ExperimentMonitor {
                 form.Shown+=async(s,e)=>{try{
                     form.MainNavigation.SelectedIndex=4;
                     // 零配置改造：服务地址、令牌、启用开关、别名、模拟开关全部由云端下发，
-                    // 页面上不再有任何可编辑输入框。
+                    // 令牌仍然不落在页面上（由云端下发、本地保存）。
                     check(Find<TextBox>(cloud,t=>t.UseSystemPasswordChar)==null,"云端页不再有令牌输入框");
-                    check(Find<TextBox>(cloud,t=>t!=null)==null,"云端页不再有文本输入框");
-                    check(Find<CheckBox>(cloud,c=>c.Text.Contains("启用"))==null,"云端页不再有启用开关");
+                    // 设备别名是本地可填的唯一输入框：先命名，再点申请。
+                    check(Find<TextBox>(cloud,t=>t!=null&&!t.UseSystemPasswordChar)!=null,"云端页有可编辑的设备别名字段");
+                    check(Find<CheckBox>(cloud,c=>c.Text.Contains("启用云端连接"))!=null,"云端页有云端连接启用开关");
+                    check(Find<Button>(cloud,b=>b.Text=="保存并连接")!=null,"保存并连接按钮存在");
                     check(Find<Button>(cloud,b=>b.Text=="重新申请接入")!=null,"重新申请接入按钮存在");
                     Button diagnose=Find<Button>(cloud,b=>b.Text.StartsWith("连接诊断"));check(diagnose!=null,"连接诊断按钮存在");
                     // 未配置令牌时诊断只做本地判定，不会发出外部请求。
