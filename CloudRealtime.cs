@@ -22,6 +22,7 @@ namespace ExperimentMonitor
         [DataMember(Name="subscriptionId",IsRequired=true)]public string SubscriptionId{get;set;}
         [DataMember(Name="leaseSeconds",IsRequired=true)]public int LeaseSeconds{get;set;}
         [DataMember(Name="requestedDevices",IsRequired=true)]public string[] RequestedDevices{get;set;}
+        [DataMember(Name="allowSimulation",EmitDefaultValue=false)]public bool? AllowSimulation{get;set;}
         [DataMember(Name="requestedHistoryPoints",EmitDefaultValue=false)]public string[] RequestedHistoryPoints{get;set;}
         [DataMember(Name="backfillSeconds",EmitDefaultValue=false)]public int BackfillSeconds{get;set;}
         // 以下为设备配置下行（云端说了算）。全部可选且不带 IsRequired：

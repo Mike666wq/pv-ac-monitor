@@ -121,6 +121,7 @@ namespace ExperimentMonitor {
             bool changed=false;
             if(!String.IsNullOrEmpty(reply.State)&&!String.Equals(deviceState,reply.State,StringComparison.Ordinal)){deviceState=reply.State;changed=true;}
             if(reply.UploadAllowed.HasValue&&uploadAllowed!=reply.UploadAllowed){uploadAllowed=reply.UploadAllowed;changed=true;}
+            if(reply.AllowSimulation.HasValue&&allowSimulation!=reply.AllowSimulation){allowSimulation=reply.AllowSimulation;changed=true;}
             CloudEnrollment state;lock(enrollmentGate){state=enrollment;}
             if(state!=null)
             {
