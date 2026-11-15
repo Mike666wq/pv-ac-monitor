@@ -197,11 +197,18 @@ namespace ExperimentMonitor {
                 }
                 if(String.Equals(reply.State,"rejected",StringComparison.Ordinal))
                 {
-                    state.State="rejected";try{lock(enrollmentGate)CloudEnrollmentStore.Save(state);}catch{}
-                    Update("接入被拒绝："+(String.IsNullOrEmpty(reply.Message)?"管理员拒绝了该设备":reply.Message));await Delay(30000);return false;
+                    // 与 BMS 同一处缺陷：不清 ClaimId 就会一直走「查询状态」，
+                    // 那条记录永远是 rejected，设备再也上不了线。清掉后下一轮重新发起认领。
+                    state.State="rejected";
+                    state.ClaimId=null;state.ClaimSecret=null;
+                    try{lock(enrollmentGate)CloudEnrollmentStore.Save(state);}catch{}
+                    Update("接入被拒绝："+(String.IsNullOrEmpty(reply.Message)?"管理员拒绝了该设备":reply.Message)+"；5 分钟后自动重试，或点「重新申请接入」立即重试");
+                    enrollIntervalMs=300000;
+                    return false;
                 }
                 // 认领凭据必须落盘：否则进程重启会生成新 secret，而云端那条记录的哈希对不上。
                 try{lock(enrollmentGate)CloudEnrollmentStore.Save(state);}catch(Exception saveError){CloudNetworkErrors.Write(saveError);}
+                state.State="pending";   // 重新认领成功后状态要跟着回来
                 Update("等待批准：已提交接入申请，等待管理员在云端网页批准");
                 return false;
             }

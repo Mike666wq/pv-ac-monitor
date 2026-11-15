@@ -9,6 +9,9 @@ namespace ExperimentMonitor {
         // 云端只有一个站点，地址是编译期常量：现场不再需要填服务地址。
         internal const string CloudEndpoint="https://pv-ac.bbben.xyz";
         CloudConfiguration config;readonly CloudPublisher publisher;
+        // 文件里保存的「用户意愿」：启动时 Enabled 被强制关掉（不自动连），
+        // 复选框要反映这个值，否则用户点保存会把 0 写回去。
+        bool enabledOnStart;
         // 零配置：服务地址、令牌、启用开关、别名、模拟开关全部由云端下发，页面上不再有输入框。
         readonly TextBox aliasValue=new TextBox{Width=300,Margin=new Padding(2,0,2,6)};
         readonly CheckBox cloudEnabled=new CheckBox{Text="启用云端连接（不勾选只做本地采集）",AutoSize=true,Margin=new Padding(2,6,2,6)};
@@ -67,6 +70,7 @@ namespace ExperimentMonitor {
             // 原来这里每次启动都置 true，等于点开程序就自动认领。
             // 启动一律不连云端：等用户在「云端连接」页填好设备名、点「保存并连接」再连。
             // 之前沿用配置里的值，程序一打开就用上一次的名字发认领，本地改名云端看不到。
+            enabledOnStart=config.Enabled;
             config.Enabled=false;   // 仅运行时；文件里的值由「保存并连接」写
             // 接入状态写进实际生效的设置目录；--root= 测试根不写真实 ProgramData。
             publisher=new CloudPublisher(()=>Volatile.Read(ref config),null,Path.Combine(root,"data","storage"),productionRoot?settingsDirectory:null);engine.ObservationReceived+=OnObservation;engine.ConnectionChanged+=OnConnectionChanged;
@@ -219,7 +223,7 @@ namespace ExperimentMonitor {
             }
             catch(Exception ex){MessageBox.Show(this,"重新申请失败："+ex.Message,"重新申请接入",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
         }
-        void RefreshStatus(){cloudEnabled.Checked=Volatile.Read(ref config).Enabled;CloudPublisherStatus snapshot=publisher.SnapshotStatus;
+        void RefreshStatus(){cloudEnabled.Checked=enabledOnStart;CloudPublisherStatus snapshot=publisher.SnapshotStatus;
             if(!aliasValue.Focused&&String.IsNullOrWhiteSpace(aliasValue.Text))aliasValue.Text=publisher.EnrollmentAlias;machineValue.Text=publisher.MachineKeyMasked;accessValue.Text=publisher.EnrollmentAccess;enrollStateValue.Text=publisher.EnrollmentState;
             status.Text=snapshot.State;contact.Text=snapshot.LastContactLocal;lease.Text=snapshot.LeaseValid?"有效至 "+snapshot.LeaseUntilLocal:"无有效租约";uploads.Text=snapshot.LastUploadLocal+" · 确认 "+snapshot.Accepted+" · 失败 "+snapshot.Failed+" · 待发设备 "+snapshot.QueuedDevices+" · 测点 "+snapshot.QueuedPoints;EventHandler h=StatusChanged;if(h!=null)h(this,EventArgs.Empty);PublishStatusLabel();}
         void PublishStatusLabel(){Action<string> h=CloudStatusChanged;if(h==null)return;string label=CurrentStatusLabel;try{if(IsHandleCreated&&InvokeRequired)BeginInvoke((Action)(()=>h(label)));else h(label);}catch{}}
