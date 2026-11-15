@@ -1,5 +1,15 @@
 # 变更记录
 
+## 0.9.10 — --control-write 控制写入自检入口
+
+控制页的设定值是 DataGridView 的单元格（WinForms 虚拟控件，没有独立 HWND）：
+UIA 看不到、消息发不进、坐标点击又难对准。与其硬啃界面，不如让程序自己跑一遍。
+
+    ExperimentMonitorDemo.exe --control-write=D2202:25
+
+自动完成：连接模拟 → 采集一轮 → 开控制开关 → FC06 写入 → 回读核对 → 写结果文件。
+实测输出：old=24 new=25 readback=25，tx=rx=0206089A00196A7C，1554ms，auditOk=True。
+
 ## 0.9.9 — --open-page 直达页签
 
 - 新增 `--open-page=<页签文本>`：启动后直接选中文本包含该参数的页签。

@@ -4,6 +4,7 @@ using System.Data;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using System.IO.Ports;
 using System.Linq;
 using System.Windows.Forms;
@@ -115,6 +116,50 @@ namespace ExperimentMonitor {
             shell.Controls.Add(toolbar,0,1);
             MainNavigation=new TabControl { Dock=DockStyle.Fill,DrawMode=TabDrawMode.OwnerDrawFixed,ItemSize=new Size(120,34),SizeMode=TabSizeMode.Fixed,Padding=new DrawingPoint(12,4) };
 
+        // 测试/现场入口：--control-write=D2202:25
+        // 控制页的设定值是 DataGridView 的单元格（WinForms 虚拟控件，没有独立 HWND），
+        // UIA 看不到、消息发不进、坐标点击又难对准。与其硬啃界面，不如让程序自己跑一遍：
+        // 连接模拟 -> 采集一轮 -> 开控制 -> 写入 -> 等回读 -> 把结果写到文件。
+        Load += delegate {
+            string spec = null;
+            foreach (string a in Environment.GetCommandLineArgs()) if (a.StartsWith("--control-write=")) { spec = a.Substring(16); break; }
+            if (String.IsNullOrEmpty(spec)) return;
+            string resultPath = Path.Combine(appRoot, "control-write-result.txt");
+            try {
+                string[] parts = spec.Split(':');
+                string cwPoint = parts[0];
+                int cwValue = Int32.Parse(parts[1], CultureInfo.InvariantCulture);
+                Engine.Connect(true, "模拟", 9600);
+                Engine.Start(2, 8, points.Select(x => x.name));
+                System.Threading.Thread.Sleep(5000);
+                Engine.SetControlEnabled(true, "cli");
+                System.Threading.Thread.Sleep(1500);
+                System.Threading.ManualResetEventSlim cwDone = new System.Threading.ManualResetEventSlim();
+                Action<ControlResult> cwHandler = delegate { cwDone.Set(); };
+                Engine.ControlCompleted += cwHandler;
+                ControlResult cwSubmit = Engine.ExecuteControl(cwPoint, cwValue, "cli");
+                bool cwWaited = cwDone.Wait(20000);
+                Engine.ControlCompleted -= cwHandler;
+                ControlResult cwLast = Engine.LastControlResult;
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("submit.Status=" + cwSubmit.Status);
+                sb.AppendLine("submit.Detail=" + cwSubmit.Detail);
+                sb.AppendLine("waited=" + cwWaited);
+                if (cwLast != null) {
+                    sb.AppendLine("result.Status=" + cwLast.Status);
+                    sb.AppendLine("result.Detail=" + cwLast.Detail);
+                    sb.AppendLine("point=" + cwLast.Point + " label=" + cwLast.Label);
+                    sb.AppendLine("old=" + (cwLast.OldValue.HasValue ? cwLast.OldValue.Value.ToString(CultureInfo.InvariantCulture) : "-") + " new=" + cwLast.NewValue);
+                    sb.AppendLine("readback=" + (cwLast.HasReadback ? cwLast.Readback.Value.ToString(CultureInfo.InvariantCulture) : "-"));
+                    sb.AppendLine("tx=" + BitConverter.ToString(cwLast.Tx).Replace("-", ""));
+                    sb.AppendLine("rx=" + BitConverter.ToString(cwLast.Rx).Replace("-", ""));
+                    sb.AppendLine("ms=" + cwLast.Milliseconds + " auditOk=" + cwLast.AuditOk + " writeId=" + cwLast.WriteId);
+                }
+                File.WriteAllText(resultPath, sb.ToString(), new UTF8Encoding(true));
+            } catch (Exception ex) {
+                File.WriteAllText(resultPath, "FAIL: " + ex, new UTF8Encoding(true));
+            }
+        };
         // 测试入口：--open-page=云端连接 直达页签（自绘页签无法被 UIA/合成消息驱动）。
         Load += delegate {
             string want = null;
